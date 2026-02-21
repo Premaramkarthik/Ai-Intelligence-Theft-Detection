@@ -1,0 +1,52 @@
+# Environment / secrets
+.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+videos/
+# Logs
+logs/*.log
+
+# Evidence snapshots (local NVMe — never commit)
+data/
+.agent/
+# Quantized engine binaries (large — generate with model_quantization/scripts/quantize.py)
+models/**/quantized/*.engine
+models/**/quantized/*.bin
+models/**/onnx/*.onnx
+
+# Model weights (already in repo but too large for most remotes — adjust as needed)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.keras
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,24 @@
+{
+    "data_dir": "../data",
+    "output_dir": "./checkpoints",
+    "model_name": "efficient_x3d_xs",
+    "num_classes": 2,
+    "class_names": [
+        "normal",
+        "shoplifting"
+    ],
+    "batch_size": 4,
+    "num_workers": 4,
+    "learning_rate": 0.0001,
+    "num_epochs": 100,
+    "num_frames": 8,
+    "frame_size": [
+        224,
+        224
+    ],
+    "seed": 42,
+    "device": "cpu",
+    "train_split": 0.7,
+    "val_split": 0.15,
+    "test_split": 0.15
+}

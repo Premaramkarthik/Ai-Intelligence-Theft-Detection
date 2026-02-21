@@ -1,0 +1,27 @@
+# ── Stage 1: Builder ─────────────────────────────────────
+FROM python:3.11-slim AS builder
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc python3-dev libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 2: Runtime ─────────────────────────────────────
+FROM python:3.11-slim
+WORKDIR /app
+
+# OpenCV runtime deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 libglib2.0-0 libsm6 libxext6 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /install /usr/local
+
+COPY libs /app/libs
+COPY services/inference /app/services/inference
+
+ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+CMD ["python", "-m", "services.inference.main"]

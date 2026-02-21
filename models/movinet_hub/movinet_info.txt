@@ -1,0 +1,45 @@
+Official MoViNet Transfer Learning - Shoplifting Detection
+======================================================================
+
+MODEL CONFIGURATION:
+  MoViNet Model ID:  a0
+  Mode:              base
+  Version:           3
+  Num Frames:        8
+  Resolution:        224x224
+  Batch Size:        4
+  Num Epochs:        100
+
+TEST SET PERFORMANCE (Keras):
+  Loss:              0.4819
+  Accuracy:          0.8019 (80.19%)
+
+DETAILED METRICS (sklearn):
+  Accuracy:          0.8019 (80.19%)
+  Precision:         0.7949
+  Recall:            0.7045
+  F1-Score:          0.7470
+  AUC Score:         0.7878
+
+CONFUSION MATRIX:
+  True Negatives (TN):   54
+  False Positives (FP):  8
+  False Negatives (FN):  13
+  True Positives (TP):   31
+
+METRICS EXPLANATION:
+  Accuracy:   Percentage of correct predictions
+  Recall:     Ability to find all shoplifting cases (TP/(TP+FN))
+              - Higher recall = catches more shoplifters
+  Precision:  Accuracy of shoplifting predictions (TP/(TP+FP))
+              - Higher precision = fewer false alarms
+  F1-Score:   Harmonic mean of precision and recall (0-1, higher is better)
+  AUC Score:  Area Under ROC Curve (0.5=random, 1.0=perfect)
+
+TENSORFLOW HUB URL:
+  https://tfhub.dev/tensorflow/movinet/a0/base/kinetics-600/classification/3
+
+TRAINING FILES:
+  training_metrics.csv   - Epoch-by-epoch metrics
+  best_model.keras       - Best model weights (Keras format)
+  final_movinet_model.keras - Final model (Keras format)
