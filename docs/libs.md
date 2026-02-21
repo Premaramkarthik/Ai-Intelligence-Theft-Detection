@@ -1,36 +1,41 @@
 # Shared Libraries (`libs/`)
 
-The `libs/` directory contains all core logic that is shared across multiple services. This centralized approach ensures consistency, reduces bug surface, and simplifies maintenance.
-
-## Folder: `libs/shared/`
-
-The primary library is `libs.shared`, which is organized by functionality:
-
-### 1. `core/` (Settings & Configuration)
-- **`settings.py`**: A centralized Pydantic-Settings model that loads environment variables from `.env`. It provides type-safety and default values for the entire project.
-- **`config.py`**: Contains the `ConfigManager`, which handles live updates from Redis (e.g., changing camera ROI during runtime).
-
-### 2. `logging/` (Structured Logging)
-- Implements a unified logging configuration using `structlog`.
-- All services emit logs in **JSON format**, which includes standard fields like `timestamp`, `level`, `service_name`, and `camera_id` for easy ingestion into log aggregators (Loki, Elasticsearch).
-
-### 3. `shm/` (Shared Memory IPC)
-- The backbone of the zero-copy pipeline. 
-- Implements a `RingBuffer` using Python's `multiprocessing.shared_memory`. 
-- Provides `SHMWriter` (used by MediaBridge) and `SHMReader` (used by Inference/Signaling).
-
-### 4. `types/` (Data Models)
-- Defines all inter-process communication (IPC) contracts using Pydantic.
-- **`Detection`**: Bounding box + class info.
-- **`FramePointer`**: Metadata about a frame slot in SHM.
-- **`Prediction`**: The final output of the Inference service.
-
-### 5. `utils/` (Helpers)
-- General purpose utilities for time conversion, image processing (OpenCV wrappers), and metrics collection (Prometheus).
+The `libs/` directory contains the core infrastructure and business logic shared across all services. This centralization ensures that critical components like Shared Memory handling and data contracts are consistent throughout the entire pipeline.
 
 ---
 
-## Why this structure?
-1. **DRY (Don't Repeat Yourself)**: Shared logic like Redis connection handling or logging setup is written once and imported everywhere.
-2. **Type Safety**: Using Pydantic models in `libs/` ensures that if the `Prediction` model changes, every service using it is immediately aware through type-checking.
-3. **Simpler Containerization**: All services mount or copy the `libs/` folder, ensuring they all run on the exact same infrastructure code.
+## 🏗️ Folder: `libs/shared/`
+
+### 1. `shm/` (Zero-Copy Transport)
+This is the performance backbone of the project.
+- **`ring_buffer.py`**: Implements a high-performance ring buffer using `multiprocessing.shared_memory`.
+    - **`RingBufferWriter`**: Used by `MediaBridge` to write raw BGR frames into slots.
+    - **`RingBufferReader`**: Used by `Inference` and `Signaling` to read frames based on slot IDs.
+    - **`ReaderCache`**: A thread-safe utility ensuring services maintain a persistent, cached connection to SHM segments, preventing the overhead of re-attaching for every frame.
+
+### 2. `types/` (Data Contracts)
+Standardizes the communication between services.
+- **`models.py`**: Contains the single source of truth for our data models:
+    - **`FramePointer`**: The lightweight Redis payload (Camera ID, Slot ID, Timestamp, Trace ID).
+    - **`BBox`**: Pixel-perfect bounding box with built-in IOU math.
+    - **`Detection`**: Individual frame results (BBox, Confidence, Class).
+    - **`DetectionEvent`**: The object pushed to the `persistence_queue`.
+
+### 3. `core/` (System Configuration)
+- **`settings.py`**: Manages environment variable loading via `pydantic-settings`. Every service uses this to access `.env` variables with full type-safety.
+
+### 4. `logging/` (Structured Observability)
+- **`logger.py`**: Configures `structlog` for the entire system.
+- **Features**:
+    - **JSON Output**: Optimized for ingestion by Logstash/Loki.
+    - **Contextual Injection**: Automatically tags every log line with the service name and camera ID when available.
+
+### 5. `utils/` (General Helpers)
+- Shared helper functions for time formatting, path resolution, and Prometheus metric initialization.
+
+---
+
+## 💡 Why Centralize Logic in `libs/`?
+- **Zero-Bugs IPC**: By using the same `FramePointer.to_bytes()` and `.from_bytes()` logic in both sender and receiver, we eliminate "broken contract" bugs.
+- **Performance Consistency**: Optimizations made to the `RingBuffer` immediately benefit every service in the pipeline.
+- **Atomic Types**: Shared types like `BBox` allow us to use the same logic for intersection-over-union tracking and UI overlay rendering.

@@ -16,7 +16,6 @@ venv/
 .venv/
 videos/
 # Logs
-logs/*.log
 
 # Evidence snapshots (local NVMe — never commit)
 data/

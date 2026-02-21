@@ -1,23 +1,49 @@
-# Signaling Service
+# Signaling Service: The External Interface
 
-The **Signaling Service** provides the external interface for the pipeline. It handles administrative tasks, live monitoring, and real-time event streaming.
+The **Signaling Service** acts as the dispatcher and management portal for the entire pipeline. It provides a FastAPI-powered gateway that bridges the internal Redis event bus with the outside world via REST and WebSockets.
 
-## Purpose
-- Provide a REST API for system management (ROI configuration, health checks).
-- Stream live detection results via WebSockets.
-- Handle user authentication and authorization.
+---
 
-## Technologies Used
-- **FastAPI**: A modern, high-performance web framework for building APIs with Python 3.7+ based on standard Python type hints.
-- **WebSockets**: Enables bi-directional, real-time communication between the backend and the frontend for live video overlays.
-- **JWT (JSON Web Tokens)**: Securely transmits information between parties as a JSON object, used for API authentication.
-- **Pydantic**: Data validation and settings management using Python type annotations.
-- **SlowAPI**: Rate limiting for FastAPI to prevent abuse of the `/auth/token` and `/ws` endpoints.
+## 1. Core Functions
 
-## Key Features
-- **Live WebSocket Feed**: Subscribes to the Redis "predictions" channel and broadcasts events to connected clients.
-- **Dynamic Config**: Allows administrators to update Camera ROIs and Confidence Thresholds live via REST endpoints. These updates are reflected across all services via Redis.
-- **Safety**: Robust input validation and audit logging for all administrative actions.
+- **State Management**: Provides a REST API for reading and writing live camera configurations (ROIs, thresholds) stored in Redis.
+- **Real-Time Data Streaming**: Broadcasts JSON inference results to connected clients using standard WebSockets.
+- **Binary Media Streaming**: Implements an MJPEG-over-WebSocket streamer for real-time visual monitoring.
+- **Log Aggregation**: Collects logs from internal services and streams them live to a dedicated debug channel.
 
-## API Documentation
-See the dedicated [API Documentation](../api.md) for endpoint details.
+---
+
+## 2. Live Communication (WebSockets)
+
+Unlike conventional polling, the Signaling service maintains persistent connections to reduce latency and overhead.
+
+- **`/ws/predictions`**: Subscribes to the global detection bus. Every time the `Inference` service identifies a person or an action, this channel broadcasts the result (BBoxes, labels, track IDs) instantly.
+- **`/ws/camera/{cam_id}`**: Acts as a bridge between Shared Memory and the browser. It reads raw pixels from SHM, encodes them to JPEG, and sends them over the socket—perfect for live monitoring dashboards.
+- **`/ws/logs`**: Streams system health events and worker status logs in real-time.
+
+---
+
+## 3. Technology Stack
+
+- **FastAPI**: Asynchronous Python framework with built-in Pydantic v2 validation.
+- **Redis Pub/Sub**: The backend engine for all real-time events.
+- **Uvicorn**: High-performance ASGI server.
+- **Pydantic**: Ensures that all API inputs (ROI updates) are valid before being pushed to the hardware workers.
+
+---
+
+## 🛠️ Operational Reference
+
+### Startup Command (Local)
+```bash
+PYTHONPATH=. ./.venv/bin/python3 services/signaling/main.py
+```
+
+### Swagger UI
+Detailed interactive documentation is available at:
+`http://localhost:9000/docs`
+
+---
+
+## 💡 Notes on Authentication
+While the service supports JWT-based security, it is currently configured for **Local Open Access** to facilitate rapid prototyping and testing without token management overhead.

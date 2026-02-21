@@ -1,60 +1,70 @@
-# API Documentation
+# API Reference
 
-The Signaling Service provides a FastAPI-powered REST API and WebSocket interface for interacting with the Pipeline.
-
-## Authentication
-Most endpoints require a **JWT (JSON Web Token)**. Obtain a token by sending credentials to:
-- `POST /auth/token`
-- **Body**: `username`, `password` (Default: `admin`/`admin`)
-- **Returns**: `access_token`
-
-Add the token to your header: `Authorization: Bearer <token>`
+The **Signaling Service** provides a FastAPI-powered REST API and WebSocket interface for system management and real-time data streaming.
 
 ---
 
-## REST Endpoints
+## 🚀 Interactive Documentation
+Visit the Swagger UI on your local deployment for a full interactive reference:
+- **URL**: `http://localhost:9000/docs`
+
+---
+
+## 🛠️ REST Endpoints
 
 ### 1. System Health
 - **`GET /health`**
-- **Description**: Returns the heartbeat status of all active components (Inference, MediaBridge).
-- **Auth**: None
+- **Description**: Returns the heartbeat status of the inference engine and active camera workers.
 
 ### 2. Camera Configuration
 - **`GET /api/config/{camera_id}`**
-- **Description**: Returns the current ROI, confidence thresholds, and input settings for a specific camera.
-- **Auth**: JWT Required
-
+- **Description**: Retrieves the current ROI (Region of Interest), confidence thresholds, and interaction parameters for a camera.
 - **`PUT /api/config/{camera_id}`**
-- **Description**: Updates the camera settings live. Changes are pushed to Redis and picked up immediately by the relevant workers.
-- **Body**: `ROI` (list of [x,y,w,h]), `thresholds` (object).
-- **Auth**: JWT Required
+- **Description**: Updates camera settings live. Changes are written to Redis and picked up immediately by `Inference` and `MediaBridge`.
+- **Payload**:
+  ```json
+  {
+    "roi": {"x": 0, "y": 0, "w": 1280, "h": 720},
+    "confidence_threshold": 0.5,
+    "enabled": true
+  }
+  ```
 
-### 3. Event History
+### 3. Historical Events
 - **`GET /api/events`**
-- **Description**: Query historical detections from the database. Support filters for `camera_id`, `start_time`, and `end_time`.
-- **Auth**: JWT Required
+- **Description**: Query the PostgreSQL database for historical shoplifting alerts and interaction events.
 
 ---
 
-## WebSocket Interface
+## 📡 WebSocket Interface
 
-### Live Predictions Stream
-- **URL**: `ws://<host>:<port>/ws/predictions`
-- **Description**: A real-time stream of all detections and alerts.
-- **Data Format**: 
-```json
-{
-  "camera_id": "cam01",
-  "detections": [...],
-  "alerts": [...],
-  "timestamp": 1708512345.123
-}
-```
-- **Usage**: Typically used by the frontend to draw bounding boxes and status overlays on the video stream.
+The system uses WebSockets for high-frequency data (predictions) and binary media (camera streams).
+
+### 1. Live Predictions Stream
+- **URL**: `ws://localhost:9000/ws/predictions`
+- **Description**: Broadcasts a unified stream of detections from all cameras.
+- **Payload Format**:
+  ```json
+  {
+    "camera_id": "cam01",
+    "ts": 1708512345.678,
+    "detections": [
+      {"bbox": [100, 200, 300, 400], "label": "person", "track_id": 42}
+    ],
+    "action": {"label": "shoplifting", "confidence": 0.92}
+  }
+  ```
+
+### 2. Live Camera Stream (MJPEG)
+- **URL**: `ws://localhost:9000/ws/camera/{camera_id}`
+- **Description**: Streams a live MJPEG video feed for a specific camera. Useful for dashboards that don't support RTSP directly.
+
+### 3. Log Stream
+- **URL**: `ws://localhost:9000/ws/logs`
+- **Description**: A real-time stream of system-wide logs (JSON format) filtered from the `inference` and `mediabridge` services.
 
 ---
 
-## API Design Principles
-- **Asynchronous**: All handlers are `async def` to maximize concurrency.
-- **Self-Documenting**: Visit `/docs` on the Signaling port (default 9000) for the interactive Swagger UI.
-- **Standardized Errors**: All failure responses follow a JSON format with descriptive `detail` fields.
+## 💡 Notes
+- **Authentication**: Authentication is currently optional/disabled for local deployment to simplify development. 
+- **CORS**: The API is configured to allow connections from common frontend dev ports (3000, 5173, 8501).

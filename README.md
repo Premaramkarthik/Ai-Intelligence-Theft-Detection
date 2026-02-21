@@ -1,14 +1,14 @@
 # Pipeline OpenCV — Real-Time Video Inference Pipeline
 
-A Python-only, production-ready shoplifting detection pipeline using YOLOv8, ByteTrack, EfficientX3D, Telegram, and Redis.
+A high-performance, production-ready shoplifting detection pipeline using YOLOv8, ByteTrack, EfficientX3D, and Redis.
 
 ## Project Structure
 
-```
+```text
 pipeline_opencv/
 ├── docs/                # Comprehensive technical documentation
 ├── libs/                # Shared business & infrastructure libraries
-│   └── shared/          # Core internal library (logging, SHM, settings)
+│   └── shared/          # Core internal library (logging, SHM, types)
 ├── services/            # Independent service containers
 │   ├── alerting/        # Telegram & MQTT alert dispatching
 │   ├── inference/       # ML Pipeline (TensorRT/OpenVINO)
@@ -16,15 +16,14 @@ pipeline_opencv/
 │   ├── persistence/     # DB worker (Automatic schema init)
 │   └── signaling/       # WebSocket streaming & Management API
 ├── models/              # AI Engines & Model weights
-├── docker/              # Service-specific Dockerfiles
-├── scripts/             # Database initialization (schema.sql)
-├── tests/               # Pytest suite (Unit, Integration, E2E)
+├── scripts/             # Startup, inspection, and DB scripts
+├── tests/               # Pytest suite & latency benchmarks
 ├── docker-compose.yml   # Multi-service orchestration
 ├── .env.example         # Configuration template
 └── pyproject.toml       # Root package management
 ```
 
-See [Backend Architecture](docs/backend_architecture.md) for a deep dive or [Local Setup](docs/local_setup.md) for non-docker instructions.
+See [Backend Architecture](docs/backend_architecture.md) for a deep dive or [Testing Guide](docs/testing_guide.md) for verification.
 
 ## Quick Start
 
@@ -32,45 +31,29 @@ See [Backend Architecture](docs/backend_architecture.md) for a deep dive or [Loc
 
 ```bash
 cp .env.example .env
-# Edit .env with your Redis password, Telegram token, etc.
+# Edit .env with your Redis settings, model paths, etc.
 ```
 
-### 2. Quantize Your Models (one-time, do before running inference)
+### 2. Start Project (Automatic)
+
+The easiest way to start everything locally (Redis, MQTT, and all Python services) is:
 
 ```bash
-pip install -r model_quantization/requirements.txt
-
-# Quantize EfficientX3D to TensorRT FP16 (recommended)
-python model_quantization/scripts/quantize.py --model efficient_x3d --backend tensorrt --precision fp16
-
-# For CPU-only (MoViNet → OpenVINO)
-python model_quantization/scripts/quantize.py --model movinet --backend openvino --precision int8
+./scripts/run_local.sh
 ```
 
-### 3. Start Infrastructure
+### 3. Start Manually (Infrastructure Only)
+
+If you want to run services in your debugger:
 
 ```bash
+# Start Docker infra
 docker compose up redis postgres mqtt -d
-```
 
-### 4. Apply DB Schema
-
-```bash
-psql -h localhost -U pipeline_user -d pipeline_events -f scripts/schema.sql
-```
-
-### 5. Start All Services
-
-```bash
-# Option A: Docker (recommended)
-docker compose up --build
-
-# Option B: Manual (dev mode)
-python backend/mediabridge/main.py &
-python backend/inference/main.py &
-python backend/alerting/main.py &
-python backend/persistence/main.py &
-uvicorn backend.signaling.main:app --host 0.0.0.0 --port 9000
+# Start services individually (requires ./.venv)
+./.venv/bin/python3 services/mediabridge/main.py
+./.venv/bin/python3 services/inference/main.py
+./.venv/bin/python3 services/signaling/main.py
 ```
 
 ## Detection Pipeline
@@ -78,49 +61,31 @@ uvicorn backend.signaling.main:app --host 0.0.0.0 --port 9000
 | Stage | Component | Description |
 |---|---|---|
 | D1 | `PersonDetector` | YOLOv8n-seg — person bbox + segmentation mask |
-| D2 | `BackgroundBlur` | Gaussian blur on inverse seg mask |
-| D3 | `PersonTracker` | ByteTrack — stable `track_id` across frames |
-| D4 | `ItemInteractionDetector` | IDLE→WATCHING→TRIGGERED state machine |
-| D5 | `TriggeredClassifier` | EfficientX3D inference on 16-frame window |
+| D2 | `BackgroundBlur` | Optimized Gaussian blur on inverse mask |
+| D3 | `PersonTracker` | IOU-based tracker for stable `track_id` |
+| D4 | `ItemInteractionDetector` | Proximity-based interaction state machine |
+| D5 | `TriggeredClassifier` | **Async** EfficientX3D classification on 16-frame window |
 
 ## API Endpoints (Signaling Service)
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| `POST` | `/auth/token` | — | Get JWT token |
-| `GET` | `/health` | — | Inference heartbeat status |
-| `GET` | `/api/config/{camera_id}` | JWT | Read camera config |
-| `PUT` | `/api/config/{camera_id}` | JWT | Update ROI / thresholds live |
-| `WS` | `/ws/predictions` | — | Live predictions stream |
+| `GET` | `/health` | — | System heartbeat & worker status |
+| `GET` | `/api/config/{camera_id}` | — | Read camera ROI/thresholds |
+| `PUT` | `/api/config/{camera_id}` | — | Update configuration live |
+| `WS` | `/ws/predictions` | — | Live detections stream (JSON) |
+| `WS` | `/ws/camera/{camera_id}` | — | MJPEG live camera stream |
 
-## Environment Variables
+## Verification Tools
 
-See [`.env.example`](.env.example) for all variables with descriptions.
+| Tool | Command | Purpose |
+|---|---|---|
+| **Inspector** | `python3 scripts/inspect_data.py` | Live terminal dashboard for Redis/MQTT |
+| **Video Test** | `python3 tests/integration/test_video_pipeline.py` | Feed a video file into the pipeline |
+| **Latency** | `python3 tests/integration/test_e2e_latency.py` | Benchmarking frame-to-prediction speed |
 
-## Code Quality
+## Operations
 
-```bash
-# Lint + format
-ruff check libs/ services/ --fix && ruff format libs/ services/
-
-# Static analysis (must score ≥ 8.5)
-pylint libs/ services/ --rcfile=.pylintrc --fail-under=8.5
-
-# Install pre-commit hooks
-pre-commit install
-```
-
-## Adding More Cameras
-
-1. Add `CAM03_INPUT_TYPE`, `CAM03_RTSP_URL` etc. to `.env`
-2. Set `NUM_CAMERAS=3`
-3. Run: `psql … -c "HSET config:cam03 roi '[0,0,1280,720]' threshold 0.7"`
-4. Restart MediaBridge and Inference (they auto-discover new camera count)
-
-## Future: Frontend
-
-The `frontend/` directory is reserved. When you're ready:
-- Drop in a Next.js or Vite project there.
-- The Signaling service already mounts it at `/ui`.
-- The `/ws/predictions` WebSocket provides the live feed.
-- Consider enabling the Nginx block in `docker-compose.yml` for TLS.
+- **Automatic Seeding**: MediaBridge automatically seeds default ROI and thresholds into Redis on startup if they don't exist.
+- **Lag Prevention**: Inference service automatically drains its queue if a backlog > 100 frames is detected to maintain real-time parity.
+- **Dashboard**: Use the Streamlit dashboard at `http://localhost:8501` for a visual overview.

@@ -1,27 +1,52 @@
-# Inference Service
+# Inference Service: The Intelligent Core
 
-The **Inference Service** is the "brain" of the pipeline. It executes complex AI models at high speed to detect people, track their movements, and identify suspicious interactions.
+The **Inference Service** is the most complex component of the pipeline. It orchestrates multiple AI models and state machines to transform raw pixels into actionable security insights.
 
-## Purpose
-- Process video frames at 15-30 FPS per camera.
-- Detect people and segment them from the background.
-- Track unique individuals across time.
-- Identify shoplifting interactions (e.g., reaching for an item, concealing).
+---
 
-## Technologies Used
-- **TensorRT**: NVIDIA's high-performance deep learning inference optimizer and runtime. Many models are quantized to FP16 for maximum GPU throughput.
-- **OpenVINO**: Intel's toolset for optimizing and deploying AI inference on CPUs and integrated GPUs.
-- **YOLOv8-seg**: Used for real-time person detection and segmentation.
-- **ByteTrack**: A simple yet effective association algorithm that tracks objects by associating almost every detection box instead of only high-score ones.
-- **EfficientX3D**: A state-of-the-art spatio-temporal model designed for efficient video classification.
+## 1. Multi-Stage Pipeline (D1–D5)
 
-## The Pipeline Stages (D1-D5)
-1. **D1: Person Detection**: YOLOv8 segments persons in the frame.
-2. **D2: Privacy Blur**: (Optional) Blurs the background or non-tracked persons for privacy compliance.
-3. **D3: Tracking**: ByteTrack assigns a persistent `track_id` to each person.
-4. **D4: Interaction Detection**: A state machine monitors the proximity of tracked persons to defined regions-of-interest (ROIs) or items.
-5. **D5: Action Recognition**: If a suspicious interaction is triggered, a 16-frame window is sent to the EfficientX3D model for behavior classification (e.g., "Normal" vs "Concealing").
+Every frame received from `MediaBridge` passes through five distinct stages of processing:
 
-## Performance Optimization
-- **Zero-Copy**: Reads frames directly from Shared Memory allocated by MediaBridge.
-- **Batched Inference**: Can be configured to batch frames from multiple cameras for improved GPU utilization.
+### D1: Detection & Segmentation
+- **Model**: YOLOv8n-seg (quantized to FP16/INT8).
+- **Output**: Bounding boxes for people and high-resolution segmentation masks.
+- **Optimization**: We use segmentation masks for both privacy and as a filter for item interaction.
+
+### D2: Optimized Privacy Blur
+- **Logic**: Background components are blurred while tracked persons remain sharp.
+- **Optimization**: This is implemented using **vectorized NumPy operations**. Instead of iterating through segments, we create a combined binary mask and use `cv2.GaussianBlur` on the inverse, then blend using `np.where`.
+- **Resolution Stability**: Automatically handles cases where the detector returns masks at a different resolution than the source frame.
+
+### D3: Object Tracking
+- **Algorithm**: IOU-based matching (or ByteTrack).
+- **Stability**: Ensures that a person walking through the frame retains their unique `track_id`. This is critical for the temporal classification in D5.
+
+### D4: Interaction State Machine
+- **State Logic**: `IDLE` → `WATCHING` (Near item) → `TRIGGERED` (Item moved/concealed).
+- **Proximity**: Compares person bounding boxes with ROI coordinates defined in Redis.
+
+### D5: Asynchronous Action Classification
+- **Model**: EfficientX3D.
+- **Temporal Buffer**: Maintains a rolling window (default 16 frames) of past video frames.
+- **Non-Blocking Execution**: Since video classification is computationally expensive (~7s), it is triggered as an **asynchronous background task**. This allows the main pipeline to continue processing frames at 25+ FPS while the classification runs.
+- **Concurrency Control**: Ensures only one classification task is active per camera at a time to prevent GPU memory overflow.
+
+---
+
+## 2. Performance & Reliability
+
+### Zero-Copy Reads
+The service never "receives" image data over the network. It receives a `FramePointer` and uses the `libs.shared.shm.ReaderCache` to read the pixels directly from the system's shared memory.
+
+### Self-Healing (Lag Mitigation)
+If the processing time per frame exceeds the arrival rate, the `frames` queue will grow. The inference service includes a **drain-on-backlog** logic:
+- If `queue_length > 100`, it purges all oldest messages and jumps to the most recent frame.
+- This ensures that alerts are always based on the latest possible information.
+
+### Metrics & Monitoring
+The service exposes a `/metrics` endpoint for Prometheus, tracking:
+- **Inference Latency**: Time taken for D1-D4.
+- **Queue Depth**: Real-time backlog size.
+- **Processed Frames**: Total count since startup.
+- **Dropped Frames**: Count of frames skipped due to backlog.

@@ -1,25 +1,45 @@
-# Persistence Service
+# Persistence Service: Reliable Event Logging
 
-The **Persistence Service** ensures that all detection data is recorded for long-term storage, auditing, and retraining.
+The **Persistence Service** is responsible for the long-term storage of detection data. It ensures that every important interaction and shoplifting event is safely recorded in the PostgreSQL database for later auditing and retrieval.
 
-## Purpose
-- Buffer and write detection events to the relational database.
-- Save "evidence" images/videos of suspicious events to persistent storage.
-- Manage data retention and pruning.
+---
 
-## Technologies Used
-- **PostgreSQL**: The primary relational database for structured event data.
-- **Asyncpg**: A high-performance, asynchronous PostgreSQL client library for Python.
-- **Aiofiles**: Used for non-blocking file I/O when saving evidence images to the filesystem.
-- **SQLAlchemy (Core)**: Used for robust SQL expression building (optional, often alongside asyncpg).
+## 1. Reliable Queue Pattern
 
-## Operations
-- **Automatic Initialization**: On startup, it checks the database schema and executes `scripts/schema.sql` if tables are missing.
-- **Batched Inserts**: To minimize DB load, it collects events over a short window (`PERSISTENCE_BATCH_WINDOW_MS`) and performs a bulk insert.
-- **Evidence Archiving**: When a shoplifting event is confirmed, it extracts the relevant frames from SHM and saves them as JPEGs in `EVIDENCE_STORAGE_PATH`.
-- **Pruning**: Automatically deletes records and files older than `EVIDENCE_RETENTION_DAYS`.
+The system uses a **Reliable Producer-Consumer** pattern via Redis:
+1.  The `Inference` service pushes serialized `DetectionEvent` objects into a Redis list called `persistence_queue`.
+2.  The `Persistence` service continuously "blocks" on this queue (`BRPOP`), ensuring no events are missed even during database maintenance or high-load spikes.
 
-## Schema Highlights
-- `events`: Individual detections (timestamp, camera_id, track_id, class_id, confidence).
-- `alerts`: Records of dispatched notifications.
-- `cameras`: Status and configuration history of each source.
+---
+
+## 2. Core Operations
+
+- **Database Normalization**: Maps asynchronous Redis payloads into the structured SQL schema in PostgreSQL.
+- **Batching**: To improve performance, the service can be configured to perform batch inserts, reducing the number of round-trips to the database.
+- **Evidence Management**: (Future) Responsible for taking relevant frame snapshots from SHM and saving them to disk/S3 as JPEG evidence.
+
+---
+
+## 3. Technology Stack
+
+- **PostgreSQL**: Industry-standard relational database for high-integrity event logs.
+- **Asyncpg**: Extremely fast, asynchronous PostgreSQL client library.
+- **Redis Streams/Lists**: Used as the temporary buffer to decouple AI processing from Database writing.
+
+---
+
+## 4. Database Schema Overview
+
+The service interacts with the following primary tables (defined in `scripts/schema.sql`):
+- **`events`**: The core log table recording `camera_id`, `label`, `confidence`, and `timestamp`.
+- **`sessions`**: (Future) Records of prolonged person presence in the store.
+
+---
+
+## 🛠️ Operational Commands
+
+### Checking Database Health
+You can verify that persistence is working by checking the row counts in the database:
+```bash
+docker exec -it pipeline_opencv-postgres-1 psql -U pipeline_user -d pipeline_events -c "SELECT count(*) FROM events;"
+```

@@ -1,142 +1,86 @@
-# Project Architecture & Backend Documentation
+# Backend Architecture & System Design
 
-## 1. Overall Architecture Overview
-
-The Pipeline OpenCV project implements a **High-Performance Distributed Vision Pipeline**. It follows a **microservices-oriented architecture** where specialized services handle distinct stages of the video processing lifecycle.
-
-### Design Principles
-- **Modularity**: Every stage of the pipeline (capture, inference, signaling, persistence) is a standalone service.
-- **Separation of Concerns**: Shared logic is strictly separated into `libs/`, while service-specific logic resides in `services/`.
-- **Zero-Copy Performance**: Using **Shared Memory (SHM)** for video frame transport between capturing and inference processes to bypass serialization overhead and Python's GIL.
-- **Asynchronous Event-Driven**: Services communicate via **Redis Pub/Sub** for live event streaming and **Redis Hash** for real-time configuration updates.
-
-### Service Interaction
-1. **MediaBridge**: Captures raw video from RTSP/Webcam, writes frames to SHM, and pushes frame pointers to Redis.
-2. **Inference**: Consumes frame pointers, reads frames from SHM, runs AI models, and publishes detection events to Redis.
-3. **Signaling**: Subscribes to Redis events to stream predictions via WebSockets and provides an API for system management.
-4. **Alerting**: Monitors prediction events and dispatches notifications via Telegram/MQTT.
-5. **Persistence**: Batches prediction events and persists them to the PostgreSQL database.
+This document provides a deep technical dive into the **Pipeline OpenCV** architecture, focusing on performance, scalability, and real-time reliability.
 
 ---
 
-## 2. Detailed File & Folder Structure Breakdown
+## 1. System Topology & Data Flow
 
-```text
-.
-├── docker/                 # Service-specific Dockerfiles
-├── libs/                   # Shared business & infrastructure libraries
-│   └── shared/             # The core internal library
-│       ├── core/           # Settings management and base config
-│       ├── logging/        # Unified structlog configuration
-│       ├── shm/            # Shared Memory ring-buffer implementation
-│       ├── types/          # Pydantic models for IPC messages
-│       └── utils/          # Common helper functions
-├── services/               # Independent service entry points
-│   ├── alerting/           # Notification dispatcher (Telegram/MQTT)
-│   ├── inference/          # AI Model execution (TensorRT/OpenVINO)
-│   ├── mediabridge/        # Video capture & SHM management
-│   ├── persistence/        # Database writer & event batching
-│   └── signaling/          # WebSocket streaming & FastAPI management
-├── scripts/                # Database initialization (SQL)
-├── tests/                  # Pytest suite (Unit, Integration, E2E)
-├── models/                 # AI Engines & Model weights
-├── docker-compose.yml      # Multi-service orchestration
-└── pyproject.toml          # Root package management
+The system is designed as a **decoupled microservices pipeline**. Individual services communicate via high-bandwidth **Shared Memory (SHM)** for pixel data and low-latency **Redis Pub/Sub/Streams** for metadata and events.
+
+### High-Level Data Flow
+
+```mermaid
+graph LR
+    Camera[RTSP/Webcam] -- Frames --> MB[MediaBridge]
+    MB -- Raw Pixels --> SHM[Shared Memory]
+    MB -- FramePointer --> Redis[(Redis frames queue)]
+    Redis -- Event --> INF[Inference]
+    SHM -- Zero-Copy Read --> INF
+    INF -- Detection Events --> R_DET[(Redis detections:*)]
+    R_DET -- Sub --> SIG[Signaling]
+    R_DET -- Sub --> ALT[Alerting]
+    SIG -- WebSockets --> UI[Live Dashboard]
+    ALT -- Notification --> TG[Telegram]
+    INF -- Job --> PER[Persistence]
+    PER -- SQL BATCH --> DB[(PostgreSQL)]
 ```
 
-### Key Shared Modules
-- **`libs.shared.core.settings`**: Centralized Pydantic-Settings module managing all environment variables.
-- **`libs.shared.shm.ring_buffer`**: Low-level shared memory implementation using `multiprocessing.shared_memory`.
-- **`libs.shared.logging.logger`**: Structured JSON logging across all services.
+---
+
+## 2. Core Infrastructure Components
+
+### A. Zero-Copy Shared Memory (libs.shared.shm)
+To avoid the overhead of serializing multi-megabyte images (720p/1080p) across processes, we use **Ring Buffers** in shared memory.
+
+1.  **Memory Allocation**: `MediaBridge` allocates a large block of shared memory (approx 100MB per camera) using `multiprocessing.shared_memory`.
+2.  **Ring Index**: A separate 8-byte atomic counter (using `ctypes` and SHM) keeps track of the current write slot.
+3.  **FramePointer**: Only a lightweight reference (Camera ID + Slot ID + Timestamp) is sent over Redis.
+4.  **ReaderCache**: The `Inference` service uses a `ReaderCache` to maintain persistent attachments to these SHM segments, preventing the performance hit of frequent attachment/detachment.
+
+### B. Redis Topology
+Redis acts as the central nervous system for the pipeline:
+
+-   **`frames` (List/Queue)**: A high-priority queue for `FramePointer` messages.
+-   **`detections:{cam_id}` (Pub/Sub)**: Real-time broadcast of JSON detections.
+-   **`config:{cam_id}` (Hash)**: Storage for live configurations (ROI, thresholds).
+-   **`persistence_queue` (List)**: Reliable queue for events that must be saved to the database.
 
 ---
 
-## 3. Technology Stack
+## 3. Inference Pipeline (D1–D5)
 
-| Layer | Technology | Justification |
-| :--- | :--- | :--- |
-| **Language** | Python 3.11 | Rapid development with excellent AI/Vision ecosystem. |
-| **Video Processing** | OpenCV | Industry standard for hardware-accelerated video I/O. |
-| **ML Inference** | TensorRT / OpenVINO | High-throughput AI execution on Edge/GPU hardware. |
-| **API Framework** | FastAPI | Asynchronous performance with automatic OpenAPI documentation. |
-| **Message Broker** | Redis | sub-millisecond latency for event streaming and IPC. |
-| **Database** | PostgreSQL | Relational integrity for event logs and audit trails. |
-| **Serialization** | Pydantic v2 | High-speed data validation and type safety. |
-| **Containerization**| Docker / Compose | Consistent multi-service deployment. |
+The `inference` service executes a staged pipeline on every frame:
 
----
-
-## 4. Setup & Usage
-
-### Local Development
-1. **Environment**: Copy `.env.example` to `.env` and fill in your credentials.
-2. **Dependencies**: Run `make dev-install` to install the project in editable mode.
-3. **Database**: The `persistence` service automatically initializes the database using `scripts/schema.sql` on startup.
-
-### Running the System
-- **Single Command**: `docker compose up -d`
-- **Manual Debug**: `python -m services.<service_name>.main`
+1.  **D1: Detection/Segmentation (YOLOv8)**: Extracts person bounding boxes and high-res polygon masks.
+2.  **D2: Privacy/Background Blur**: Vectorized NumPy operations blend a target person with a blurred background using the inverse segment mask.
+3.  **D3: Tracking (IOU Tracker)**: Maintains identity consistency across frames using Intersection-over-Union matching.
+4.  **D4: Interaction Logic**: A spatial state machine checks if a tracked person is in proximity to items or specific ROIs.
+5.  **D5: Behavior Classification (EfficientX3D)**: 
+    -   **Non-Blocking**: Highly expensive (7s+) classifications run in background `asyncio` tasks.
+    -   **Temporal Buffer**: A rolling window of processed frames is maintained in memory for video classification.
 
 ---
 
-## 5. Security & Observability
+## 4. Real-Time Stability Measures
 
-### Security
-- **JWT Authentication**: All Signaling API endpoints are protected via JSON Web Tokens.
-- **Rate Limiting**: `slowapi` protects WebSocket and Token endpoints from brute-force/abuse.
-- **Secrets**: Managed strictly via `.env` (excluded from Git).
+### Queue Draining (Lag Recovery)
+In a real-time system, "stale" data is worse than "no" data. If the system lags (e.g., due to a temporary GPU spike):
+-   The `Inference` service monitors the length of the `frames` queue.
+-   If the backlog exceeds **100 frames**, the service automatically **drains the queue**, keeping only the single newest frame.
+-   This "jumps" the system back into real-time parity immediately.
 
-### Observability
-- **Structured Logging**: All logs are emitted in JSON format for easy ingestion by ELK/Loki.
-- **Prometheus Metrics**: Each service exposes a `/metrics` endpoint (Ports 9100-9104) tracking capture rates, latency, and system health.
-
----
-
-## 6. Testing Strategy
-
-The project uses `pytest` with a dedicated `tests/` directory:
-- **Unit Tests**: Test logic in `libs/` and individual service components.
-- **Integration Tests**: Verify Redis IPC and Database persistence.
-- **E2E Tests**: Mock camera input and verify the flow from MediaBridge to Signaling WebSockets.
-
-Run tests: `make test`
+### Memory Integrity
+-   **Leaked SHM Prevention**: Scripts like `run_local.sh` and service clean-up handlers (SIGTERM) ensure that `/dev/shm` handles are unlinked to prevent system memory exhaustion.
 
 ---
 
-## 8. Detailed Component Guides
+## 5. Deployment Guidelines
 
-For a deep dive into specific parts of the system, refer to these detailed guides:
+### Hardware Requirements
+-   **GPU**: NVIDIA Jetson (Orin/Xavier) or Desktop GPU (RTX 3060+) for FP16 TensorRT inference.
+-   **Memory**: At least 8GB RAM (approx 2GB allocated for SHM).
 
-- **Services**:
-    - [MediaBridge](services/mediabridge.md) — Video Ingestion & SHM.
-    - [Inference](services/inference.md) — AI Pipelines (D1-D5).
-    - [Signaling](services/signaling.md) — API & WebSockets.
-    - [Alerting](services/alerting.md) — Telegram & MQTT.
-    - [Persistence](services/persistence.md) — Database & Evidence.
-- **Core Library**:
-    - [Shared Libraries](libs.md) — Settings, Logging, and IPC.
-- **Interfaces**:
-    - [API Reference](api.md) — REST & WebSocket endpoints.
-- **Verification**:
-    - [Testing Guide](testing_guide.md) — Automated & Manual procedures.
-- **Ops**:
-    - [Local Setup](local_setup.md) — Running without Docker.
-
----
-
-## 9. How we are using the Backend
-
-The backend is used as a **continuous monitoring engine**. It is designed to run 24/7 on edge hardware (like NVIDIA Jetson) or centralized GPU servers.
-
-### 1. Data Flow Summary
-1. Raw video enters via **MediaBridge**.
-2. Intelligence is applied by **Inference**.
-3. High-priority events are announced by **Alerting**.
-4. All data is anchored by **Persistence**.
-5. The outside world interacts via **Signaling**.
-
-### 2. Operational Workflow
-- **Admins** use the REST API to define security zones (ROIs) for each camera.
-- **Security Teams** receive instant snapshots on Telegram when concealing behavior is detected.
-- **Dashboards** connect via WebSockets to provide real-time visual feedback of the store floor.
-- **Analysts** query the historical API to understand store traffic and theft trends over months.
+### Operational Maintenance
+-   **Logging**: All services use `structlog` for JSON-formatted logs.
+-   **Monitoring**: Check `scripts/inspect_data.py` for a live health dashboard of the Redis queues and MQTT latency.
