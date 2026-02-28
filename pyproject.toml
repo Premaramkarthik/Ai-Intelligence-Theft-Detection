@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipeline-opencv"
@@ -8,17 +8,80 @@ version = "0.2.0"
 description = "Real-time video inference pipeline"
 requires-python = ">=3.11"
 dependencies = [
-    # Dependencies are managed via requirements.txt for simplicity across Docker/Local
-    # but we can list the core ones here if we want 'pip install .' to work partially.
-    # For now, we'll keep it as the user requested: one requirements.txt.
+    # ── Shared internal library ────────────────────────────────────────────────
+    "pipeline-shared",
+
+    # ── API & Web ──────────────────────────────────────────────────────────────
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets",
+    "python-multipart",
+    "slowapi",
+    "aiohttp",
+    "aiortc",
+
+    # ── Data & Config ──────────────────────────────────────────────────────────
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "pyyaml",
+
+    # ── Auth ───────────────────────────────────────────────────────────────────
+    "PyJWT",
+    "python-jose[cryptography]",
+
+    # ── Database & Messaging ───────────────────────────────────────────────────
+    "asyncpg",
+    "redis[hiredis]",
+    "asyncio-mqtt",
+    "aiofiles",
+
+    # ── ML & Computer Vision ───────────────────────────────────────────────────
+    "torch",
+    "torchvision",
+    "pytorch-lightning",
+    "ultralytics",
+    "timm",
+    "transformers",
+    "numpy",
+    "opencv-python-headless",
+    "av",
+
+    # ── Messaging & Alerts ─────────────────────────────────────────────────────
+    "aiogram",
+
+    # ── Observability ──────────────────────────────────────────────────────────
+    "structlog",
+    "prometheus-client",
+    "psutil",
+    "tenacity",
+
+    # ── Dashboard ─────────────────────────────────────────────────────────────
+    "streamlit",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+# Tell uv where pipeline-shared lives (local workspace member)
+[tool.uv.sources]
+pipeline-shared = { workspace = true }
+
+# uv workspace — members are installed into the shared .venv
+[tool.uv.workspace]
+members = ["packages/shared"]
 
 [tool.setuptools]
 package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["libs*", "services*"]
+include = ["services*", "packages*", "apps*"]
 
 # ── Ruff (linter + formatter) ─────────────────────────────────────────────────
 [tool.ruff]

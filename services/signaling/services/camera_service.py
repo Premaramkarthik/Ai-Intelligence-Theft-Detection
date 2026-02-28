@@ -7,9 +7,9 @@ import cv2
 import numpy as np
 import redis.asyncio as aioredis
 
-from libs.shared.logging.logger import get_logger
-from libs.shared.shm.ring_buffer import RingBufferReader
-from libs.shared.core.settings import get_settings
+from shared.logging.logger import get_logger
+from shared.shm.ring_buffer import RingBufferReader
+from shared.core.settings import get_settings
 
 log = get_logger(__name__)
 
@@ -22,7 +22,7 @@ async def grab_jpeg(redis: aioredis.Redis, camera_id: str) -> bytes | None:
         if raw is None:
             return None
         slot_idx = int(raw)
-        from libs.shared.shm.ring_buffer import ReaderCache
+        from shared.shm.ring_buffer import ReaderCache
         reader = ReaderCache.get_reader(
             camera_id,
             settings.shm_slots_per_cam,

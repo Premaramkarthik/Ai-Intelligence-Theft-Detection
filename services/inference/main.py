@@ -11,11 +11,11 @@ import signal
 import redis.asyncio as aioredis
 from prometheus_client import start_http_server
 
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 from services.inference.ml.pipeline import InferencePipeline
 from services.inference.utils.metrics import METRICS_PORT
 
-from libs.shared.core.settings import get_settings
+from shared.core.settings import get_settings
 
 log = get_logger(__name__)
 
@@ -62,7 +62,7 @@ async def run() -> None:
             _, payload = item
             await pipeline.process(payload, redis)
     finally:
-        from libs.shared.shm.ring_buffer import ReaderCache
+        from shared.shm.ring_buffer import ReaderCache
         ReaderCache.clear()
         await redis.aclose()
         log.info("Inference service stopped")

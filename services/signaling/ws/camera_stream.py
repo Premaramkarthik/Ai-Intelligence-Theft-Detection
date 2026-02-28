@@ -7,8 +7,8 @@ import cv2
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from libs.shared.logging.logger import get_logger
-from libs.shared.core.settings import get_settings
+from shared.logging.logger import get_logger
+from shared.core.settings import get_settings
 from services.signaling.services.camera_service import grab_jpeg
 
 router = APIRouter()

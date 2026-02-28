@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mediabridge"
+version = "0.1.0"
+description = "RTSP ingestion and Shared Memory transport service"
+requires-python = ">=3.11"
+dependencies = [
+    "opencv-python-headless",
+    "numpy",
+    "redis[hiredis]",
+    "aiortc",
+    "av",
+    "structlog",
+    "pipeline-shared",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

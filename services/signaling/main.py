@@ -15,8 +15,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from libs.shared.logging.logger import get_logger
-from libs.shared.core.settings import get_settings
+from shared.logging.logger import get_logger
+from shared.core.settings import get_settings
 from services.signaling.api.router import api_router
 
 log = get_logger(__name__)
@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
 
     @application.on_event("shutdown")
     async def _shutdown() -> None:
-        from libs.shared.shm.ring_buffer import ReaderCache
+        from shared.shm.ring_buffer import ReaderCache
         ReaderCache.clear()
         await application.state.redis.aclose()
         log.info("Signaling service stopped")

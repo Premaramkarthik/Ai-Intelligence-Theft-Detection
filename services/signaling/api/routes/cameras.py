@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import redis.asyncio as aioredis
 from services.signaling.api.deps import get_redis
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 
 router = APIRouter()
 log = get_logger(__name__)

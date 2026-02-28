@@ -2,20 +2,22 @@
 FROM python:3.11-slim AS builder
 WORKDIR /build
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 # ── Stage 2: Runtime ─────────────────────────────────────
 FROM python:3.11-slim
 WORKDIR /app
 
 RUN adduser --disabled-password --gecos "" appuser
-COPY --from=builder /install /usr/local
+COPY --from=builder /build/.venv /app/.venv
 
-COPY libs /app/libs
+COPY packages/shared /app/packages/shared
 COPY scripts /app/scripts
 COPY services/persistence /app/services/persistence
 
 USER appuser
-ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 CMD ["python", "-m", "services.persistence.main"]

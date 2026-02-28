@@ -19,7 +19,6 @@ videos/
 
 # Evidence snapshots (local NVMe — never commit)
 data/
-.agent/
 # Quantized engine binaries (large — generate with model_quantization/scripts/quantize.py)
 models/**/quantized/*.engine
 models/**/quantized/*.bin
@@ -49,3 +48,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+
+
+.agent

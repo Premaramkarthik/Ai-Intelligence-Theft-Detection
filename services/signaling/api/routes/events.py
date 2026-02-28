@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from libs.shared.db.session import DatabaseSession
+from shared.db.session import DatabaseSession
 from services.signaling.api.deps import verify_jwt
 
 router = APIRouter()

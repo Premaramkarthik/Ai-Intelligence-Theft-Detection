@@ -13,7 +13,7 @@ import logging
 
 # Fallback logger if project libs are not available
 try:
-    from libs.shared.logging.logger import get_logger
+    from shared.logging.logger import get_logger
     log = get_logger(__name__)
 except ImportError:
     logging.basicConfig(level=logging.INFO)

@@ -5,6 +5,6 @@
 TABLE_NAME = "detection_events"
 
 INSERT_QUERY = """
-INSERT INTO detection_events (camera_id, trace_id, label, confidence, evidence_path, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO detection_events (camera_id, trace_id, class_name, confidence, evidence_uri, created_at, t_capture, t_output)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 """

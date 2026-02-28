@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persistence"
+version = "0.1.0"
+description = "Async PostgreSQL / TimescaleDB event writer"
+requires-python = ">=3.11"
+dependencies = [
+    "asyncpg",
+    "pydantic>=2",
+    "redis[hiredis]",
+    "structlog",
+    "pipeline-shared",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

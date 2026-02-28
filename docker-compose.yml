@@ -61,7 +61,7 @@ services:
   # ── Backend Services ─────────────────────────────────────
   signaling:
     build:
-      context: . # root so COPY libs/shared works
+      context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.signaling
     env_file: .env
     ports: [ "9000:9000", "9100:9100" ]
@@ -70,7 +70,7 @@ services:
 
   mediabridge:
     build:
-      context: . # root so COPY libs/shared works
+      context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.mediabridge
     env_file: .env
     ports: [ "9102:9102" ]
@@ -80,7 +80,7 @@ services:
 
   inference:
     build:
-      context: . # root so COPY libs/shared works
+      context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.inference
     env_file: .env
     ipc: host # reads shared memory written by mediabridge
@@ -99,7 +99,7 @@ services:
 
   alerting:
     build:
-      context: . # root so COPY libs/shared works
+      context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.alerting
     env_file: .env
     ports: [ "9103:9103" ]
@@ -108,7 +108,7 @@ services:
 
   persistence:
     build:
-      context: . # root so COPY libs/shared works
+      context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.persistence
     env_file: .env
     volumes:

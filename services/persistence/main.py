@@ -12,11 +12,11 @@ import signal
 import redis.asyncio as aioredis
 from prometheus_client import start_http_server
 
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 from services.persistence.services.writer import DBWriter
 from services.persistence.utils.metrics import METRICS_PORT
 
-from libs.shared.core.settings import get_settings
+from shared.core.settings import get_settings
 
 log = get_logger(__name__)
 

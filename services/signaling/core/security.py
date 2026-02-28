@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
 
-from libs.shared.core.settings import get_settings
+from shared.core.settings import get_settings
 
 
 def create_access_token(username: str) -> str:

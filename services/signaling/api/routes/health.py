@@ -1,6 +1,6 @@
 """GET /health"""
 from fastapi import APIRouter
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 
 router = APIRouter()
 log = get_logger(__name__)

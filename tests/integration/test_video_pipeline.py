@@ -25,8 +25,8 @@ import numpy as np
 import redis.asyncio as aioredis
 from dotenv import load_dotenv
 
-from libs.shared.shm.ring_buffer import RingBufferWriter
-from libs.shared.types.models import FramePointer
+from shared.shm.ring_buffer import RingBufferWriter
+from shared.types.models import FramePointer
 
 load_dotenv()
 

@@ -9,7 +9,7 @@ import torch.nn as nn
 from torchvision.models import efficientnet_b0
 import numpy as np
 import cv2
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 
 log = get_logger(__name__)
 

@@ -1,0 +1,23 @@
+{"ts": "2026-02-25T22:55:38.324+00:00", "level": "INFO", "logger": "__main__", "msg": "Prometheus metrics", "port": 9101}
+{"ts": "2026-02-25T22:55:41.747+00:00", "level": "INFO", "logger": "services.inference.ml.engines.person_detector", "msg": "PersonDetector loaded", "path": "models/yolo26n-seg.pt", "device": "tensorrt"}
+{"ts": "2026-02-25T22:55:45.447+00:00", "level": "INFO", "logger": "services.inference.ml.engines.item_detector", "msg": "ItemDetector loaded", "path": "models/yolo26n.pt", "device": "tensorrt"}
+{"ts": "2026-02-25T22:55:49.106+00:00", "level": "INFO", "logger": "services.inference.services.tracker", "msg": "PersonTracker initialized"}
+{"ts": "2026-02-25T22:55:52.856+00:00", "level": "INFO", "logger": "services.inference.services.interaction", "msg": "ItemInteractionDetector initialized", "dist": 80, "frames": 5}
+{"ts": "2026-02-25T22:55:56.727+00:00", "level": "INFO", "logger": "services.inference.ml.engines.shoplifting_model", "msg": "Loading shoplifting model weights", "path": "models/cnn_transformers/cnn_Transformer.pth", "device": "cuda"}
+/home/karthik/Downloads/pipeline_opencv/.venv/lib/python3.11/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/karthik/Downloads/pipeline_opencv/.venv/lib/python3.11/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=None`.
+  warnings.warn(msg)
+{"ts": "2026-02-25T22:56:00.897+00:00", "level": "INFO", "logger": "services.inference.ml.engines.shoplifting_model", "msg": "Detected Transformer architecture"}
+{"ts": "2026-02-25T22:56:05.231+00:00", "level": "INFO", "logger": "services.inference.ml.engines.shoplifting_model", "msg": "Shoplifting model loaded successfully"}
+{"ts": "2026-02-25T22:56:09.121+00:00", "level": "INFO", "logger": "services.inference.ml.pipeline", "msg": "Models loaded", "device": "tensorrt"}
+{"ts": "2026-02-25T22:56:13.105+00:00", "level": "INFO", "logger": "__main__", "msg": "Inference service ready"}
+{"ts": "2026-02-25T22:56:16.857+00:00", "level": "WARNING", "logger": "__main__", "msg": "Inference lagging, draining queue", "qlen": 168}
+{"ts": "2026-02-25T22:56:20.688+00:00", "level": "DEBUG", "logger": "shared.shm.ring_buffer", "msg": "RingBufferReader attached", "shm": "cam_cam01_ring"}
+{"ts": "2026-02-25T22:58:21.097+00:00", "level": "INFO", "logger": "__main__", "msg": "SIGTERM \u2014 shutting down inference"}
+{"ts": "2026-02-25T22:58:24.611+00:00", "level": "INFO", "logger": "__main__", "msg": "SIGTERM \u2014 shutting down inference"}
+{"ts": "2026-02-25T22:58:28.608+00:00", "level": "INFO", "logger": "__main__", "msg": "Inference service stopped"}
+/home/karthik/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked shared_memory objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+/home/karthik/.local/share/uv/python/cpython-3.11.14-linux-x86_64-gnu/lib/python3.11/multiprocessing/resource_tracker.py:267: UserWarning: resource_tracker: '/cam_cam01_ring': [Errno 2] No such file or directory: '/cam_cam01_ring'
+  warnings.warn('resource_tracker: %r: %s' % (name, e))

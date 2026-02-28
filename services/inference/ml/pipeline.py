@@ -10,7 +10,7 @@ import time
 import numpy as np
 import redis.asyncio as aioredis
 
-from libs.shared.core.settings import get_settings
+from shared.core.settings import get_settings
 from services.inference.ml.engines.person_detector import PersonDetector
 from services.inference.ml.engines.item_detector import ItemDetector
 from services.inference.ml.engines.background_blur import BackgroundBlur
@@ -21,9 +21,9 @@ from services.inference.services.temporal_buffer import TemporalBuffer
 from services.inference.utils.metrics import (
     frames_dropped, frames_processed, inference_latency, update_gpu_memory,
 )
-from libs.shared.logging.logger import get_logger
-from libs.shared.shm.ring_buffer import RingBufferReader
-from libs.shared.types.models import FramePointer
+from shared.logging.logger import get_logger
+from shared.shm.ring_buffer import RingBufferReader
+from shared.types.models import FramePointer
 
 log = get_logger(__name__)
 
@@ -61,7 +61,7 @@ class InferencePipeline:
         t0 = time.perf_counter()
         try:
             ptr = FramePointer.from_bytes(payload)
-            from libs.shared.shm.ring_buffer import ReaderCache
+            from shared.shm.ring_buffer import ReaderCache
             reader = ReaderCache.get_reader(ptr.camera_id, 32, 720, 1280)
             frame = reader.read(ptr.slot_id)
         except Exception as exc:

@@ -10,9 +10,9 @@ import time
 import cv2
 import redis.asyncio as aioredis
 
-from libs.shared.logging.logger import get_logger
-from libs.shared.types.models import FramePointer
-from libs.shared.core.settings import get_settings
+from shared.logging.logger import get_logger
+from shared.types.models import FramePointer
+from shared.core.settings import get_settings
 from services.mediabridge.services.shm_writer import SHMWriter
 from services.mediabridge.sources.sources import get_source
 from services.mediabridge.utils.metrics import (

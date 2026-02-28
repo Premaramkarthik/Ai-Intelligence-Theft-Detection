@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inference"
+version = "0.1.0"
+description = "GPU AI inference pipeline — TensorRT / ONNX"
+requires-python = ">=3.11"
+dependencies = [
+    "torch",
+    "torchvision",
+    "ultralytics",
+    "timm",
+    "transformers",
+    "pytorch-lightning",
+    "opencv-python-headless",
+    "numpy",
+    "redis[hiredis]",
+    "structlog",
+    "prometheus_client",
+    "pipeline-shared",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

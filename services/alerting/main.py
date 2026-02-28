@@ -12,8 +12,8 @@ import signal
 import redis.asyncio as aioredis
 from prometheus_client import start_http_server
 
-from libs.shared.logging.logger import get_logger
-from libs.shared.core.settings import get_settings
+from shared.logging.logger import get_logger
+from shared.core.settings import get_settings
 from services.alerting.utils.metrics import METRICS_PORT, alerts_sent
 from services.alerting.services.telegram import TelegramService
 from services.alerting.services.mqtt import MQTTService

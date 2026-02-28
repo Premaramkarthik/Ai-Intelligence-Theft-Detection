@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import aiohttp
-from libs.shared.logging.logger import get_logger
-from libs.shared.core.settings import get_settings
+from shared.logging.logger import get_logger
+from shared.core.settings import get_settings
 
 log = get_logger(__name__)
 

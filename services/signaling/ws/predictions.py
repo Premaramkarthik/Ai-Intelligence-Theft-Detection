@@ -7,7 +7,7 @@ import json
 import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 from services.signaling.api.deps import get_redis
 
 router = APIRouter()

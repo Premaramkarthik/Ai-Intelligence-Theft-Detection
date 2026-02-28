@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 
-from libs.shared.core.settings import get_settings
+from shared.core.settings import get_settings
 from services.signaling.core.security import create_access_token
 from services.signaling.schemas.auth import TokenResponse
 

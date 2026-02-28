@@ -1,0 +1,9 @@
+{"ts": "2026-02-25T22:55:35.401+00:00", "level": "INFO", "logger": "__main__", "msg": "Prometheus metrics", "port": 9104}
+{"ts": "2026-02-25T22:55:37.899+00:00", "level": "INFO", "logger": "shared.db.session", "msg": "DB Pool created", "dsn": "postgresql://pipeline_user:postgres@localhost:5432/pipeline_events"}
+{"ts": "2026-02-25T22:55:41.614+00:00", "level": "INFO", "logger": "shared.db.session", "msg": "Database schema initialized successfully"}
+{"ts": "2026-02-25T22:55:45.359+00:00", "level": "INFO", "logger": "__main__", "msg": "Persistence service ready"}
+{"ts": "2026-02-25T22:55:49.218+00:00", "level": "ERROR", "logger": "services.persistence.services.writer", "msg": "DB Save failed", "error": "no partition of relation \"detection_events\" found for row\nDETAIL:  Partition key of the failing row contains (created_at) = (1970-01-01 00:00:00+00)."}
+{"ts": "2026-02-25T22:58:21.026+00:00", "level": "INFO", "logger": "__main__", "msg": "SIGTERM \u2014 shutting down persistence"}
+{"ts": "2026-02-25T22:58:24.612+00:00", "level": "INFO", "logger": "__main__", "msg": "SIGTERM \u2014 shutting down persistence"}
+{"ts": "2026-02-25T22:58:28.610+00:00", "level": "INFO", "logger": "shared.db.session", "msg": "DB Pool closed"}
+{"ts": "2026-02-25T22:58:32.362+00:00", "level": "INFO", "logger": "__main__", "msg": "Persistence service stopped"}

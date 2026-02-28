@@ -110,7 +110,7 @@ class RingBufferReader:
         try:
             self._shm = mp_shm.SharedMemory(name=self.shm_name, create=False)
             # Use cached logger to avoid overhead
-            from libs.shared.logging.logger import get_logger
+            from shared.logging.logger import get_logger
             get_logger(__name__).debug("RingBufferReader attached", extra={"shm": self.shm_name})
         except FileNotFoundError:
             raise FileNotFoundError(f"Shared memory segment '{self.shm_name}' not found. Is MediaBridge running for {camera_id}?")

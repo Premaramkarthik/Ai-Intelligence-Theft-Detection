@@ -2,7 +2,7 @@
 Centralised JSON structured logger using only stdlib logging.
 
 Usage:
-    from libs.shared.logging.logger import get_logger
+    from shared.logging.logger import get_logger
     log = get_logger(__name__)
     log.info("frame processed", extra={"camera_id": "cam01", "latency_ms": 42})
 """

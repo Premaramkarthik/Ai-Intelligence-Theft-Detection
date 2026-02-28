@@ -6,22 +6,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# Install deps from lockfile — no network needed at runtime
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
 # ── Stage 2: Runtime ─────────────────────────────────────
 FROM python:3.11-slim
 WORKDIR /app
 
 RUN adduser --disabled-password --gecos "" appuser
-COPY --from=builder /install /usr/local
+COPY --from=builder /build/.venv /app/.venv
 
-# Copy shared and service code
-COPY libs /app/libs
+# Copy shared package and service code
+COPY packages/shared /app/packages/shared
 COPY services/signaling /app/services/signaling
 
 USER appuser
-ENV PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH" PYTHONPATH=/app PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 EXPOSE 9000
 CMD ["uvicorn", "services.signaling.main:app", "--host", "0.0.0.0", "--port", "9000"]

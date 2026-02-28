@@ -4,8 +4,8 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from libs.shared.logging.logger import get_logger
-from libs.shared.db.session import DatabaseSession
+from shared.logging.logger import get_logger
+from shared.db.session import DatabaseSession
 from services.persistence.models.events import INSERT_QUERY
 from services.persistence.utils.metrics import db_write_latency
 
@@ -35,10 +35,12 @@ class DBWriter:
                 INSERT_QUERY,
                 data.get("camera_id"),
                 data.get("trace_id", "0"),
-                data.get("label"),
+                data.get("label") or data.get("class_name"), # Support both
                 data.get("confidence"),
-                data.get("evidence_path", ""),
+                data.get("evidence_path") or data.get("evidence_uri", ""),
                 datetime.fromtimestamp(data.get("ts", time.time()), tz=timezone.utc),
+                data.get("t_capture", 0),
+                data.get("t_output", 0),
             )
             elapsed = time.perf_counter() - t0
             db_write_latency.observe(elapsed)

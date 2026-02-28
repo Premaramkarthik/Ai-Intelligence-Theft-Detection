@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 import numpy as np
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 
 log = get_logger(__name__)
 

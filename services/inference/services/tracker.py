@@ -5,7 +5,7 @@ Moved from services.inference.tracking.person_tracker
 from __future__ import annotations
 
 import numpy as np
-from libs.shared.logging.logger import get_logger
+from shared.logging.logger import get_logger
 
 log = get_logger(__name__)
 

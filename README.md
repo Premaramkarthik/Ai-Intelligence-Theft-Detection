@@ -2,25 +2,36 @@
 
 A high-performance, production-ready shoplifting detection pipeline using YOLOv8, ByteTrack, EfficientX3D, and Redis.
 
-## Project Structure
+## Project Structure (Monorepo)
 
 ```text
 pipeline_opencv/
-├── docs/                # Comprehensive technical documentation
-├── libs/                # Shared business & infrastructure libraries
-│   └── shared/          # Core internal library (logging, SHM, types)
-├── services/            # Independent service containers
-│   ├── alerting/        # Telegram & MQTT alert dispatching
-│   ├── inference/       # ML Pipeline (TensorRT/OpenVINO)
-│   ├── mediabridge/     # Video capture & Shared Memory management
-│   ├── persistence/     # DB worker (Automatic schema init)
-│   └── signaling/       # WebSocket streaming & Management API
-├── models/              # AI Engines & Model weights
-├── scripts/             # Startup, inspection, and DB scripts
-├── tests/               # Pytest suite & latency benchmarks
-├── docker-compose.yml   # Multi-service orchestration
-├── .env.example         # Configuration template
-└── pyproject.toml       # Root package management
+├── apps/
+│   └── dashboard/           # Streamlit UI  (pyproject.toml + Dockerfile)
+│       └── src/dashboard/
+│           ├── pages/
+│           └── components/
+├── services/                # Independent backend microservices
+│   ├── signaling/           # WebSocket + REST API  (FastAPI)
+│   ├── mediabridge/         # RTSP ingestion + SHM transport
+│   ├── inference/           # GPU AI pipeline  (TensorRT/ONNX)
+│   ├── alerting/            # Telegram + MQTT dispatch
+│   └── persistence/         # PostgreSQL async writer
+├── packages/
+│   └── shared/              # Internal shared library (pip install -e)
+│       └── src/shared/      # SHM utils, logging, types, DB
+├── data/
+│   └── samples/             # Local test videos only
+├── research/
+│   └── notebooks/           # Exploratory notebooks (not imported by services)
+├── models/                  # AI weight artifacts (use DVC / S3 in prod)
+├── scripts/                 # run_local.sh, cleanup.sh, inspect_data.py
+├── docker/                  # Per-service Dockerfiles
+├── docs/                    # ADRs + per-service guides
+├── tests/                   # Cross-service integration & E2E tests
+├── docker-compose.yml       # Full-stack local orchestration
+├── pyproject.toml           # Root: workspace-level linting (Ruff, Mypy)
+└── Makefile
 ```
 
 See [Backend Architecture](docs/backend_architecture.md) for a deep dive or [Testing Guide](docs/testing_guide.md) for verification.
@@ -54,6 +65,7 @@ docker compose up redis postgres mqtt -d
 ./.venv/bin/python3 services/mediabridge/main.py
 ./.venv/bin/python3 services/inference/main.py
 ./.venv/bin/python3 services/signaling/main.py
+./.venv/bin/streamlit run app.py
 ```
 
 ## Detection Pipeline

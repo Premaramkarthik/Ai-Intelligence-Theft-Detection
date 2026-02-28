@@ -1,6 +1,6 @@
 """
 ConfigManager — polls Redis for live camera config updates.
-Moved from libs.shared.config.config_manager → libs.shared.core.config
+Moved from shared.config.config_manager → shared.core.config
 """
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 
 import redis.asyncio as aioredis
 
-from libs.shared.core.settings import get_settings
+from shared.core.settings import get_settings
+from shared.logging.logger import get_logger
 
 log = get_logger(__name__)
 

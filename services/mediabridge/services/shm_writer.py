@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from libs.shared.shm.ring_buffer import RingBufferWriter
+from shared.shm.ring_buffer import RingBufferWriter
 
 class SHMWriter:
     def __init__(self, camera_id: str, slots: int, h: int, w: int) -> None:
