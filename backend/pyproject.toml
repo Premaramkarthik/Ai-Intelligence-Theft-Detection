@@ -16,23 +16,19 @@ dependencies = [
     "slowapi",
     "aiohttp",
     "aiortc",
-
     # ── Data & Config ──────────────────────────────────────────────────────────
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
     "pyyaml",
-
     # ── Auth ───────────────────────────────────────────────────────────────────
     "PyJWT",
     "python-jose[cryptography]",
-
     # ── Database & Messaging ───────────────────────────────────────────────────
     "asyncpg",
     "redis[hiredis]",
     "asyncio-mqtt",
     "aiofiles",
-
     # ── ML & Computer Vision ───────────────────────────────────────────────────
     "torch",
     "torchvision",
@@ -43,18 +39,16 @@ dependencies = [
     "numpy",
     "opencv-python-headless",
     "av",
-
     # ── Messaging & Alerts ─────────────────────────────────────────────────────
     "python-telegram-bot",
-
     # ── Observability ──────────────────────────────────────────────────────────
     "structlog",
     "prometheus-client",
     "psutil",
     "tenacity",
-
     # ── Dashboard ─────────────────────────────────────────────────────────────
     "streamlit",
+    "git-filter-repo>=2.47.0",
 ]
 
 [dependency-groups]
