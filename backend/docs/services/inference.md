@@ -1,6 +1,6 @@
 # Inference Service: The Intelligent Core
 
-The **Inference Service** is the most complex component of the pipeline. It orchestrates multiple AI models and state machines to transform raw pixels into actionable security insights.
+The **Inference Service** is the brain of the pipeline. It orchestrates a multi-staged AI engine to transform raw pixels into actionable security insights using a high-efficiency model management system.
 
 ---
 
@@ -8,45 +8,51 @@ The **Inference Service** is the most complex component of the pipeline. It orch
 
 Every frame received from `MediaBridge` passes through five distinct stages of processing:
 
-### D1: Detection & Segmentation
-- **Model**: YOLOv8n-seg (quantized to FP16/INT8).
-- **Output**: Bounding boxes for people and high-resolution segmentation masks.
-- **Optimization**: We use segmentation masks for both privacy and as a filter for item interaction.
+### D1: Human Detection & Segmentation
+- **Model**: YOLO 2.6 (Ultralytics).
+- **Function**: Extracts person bounding boxes and pixel-perfect masks.
+- **Optimization**: Prioritizes human signals to reduce false positives in complex retail environments.
 
-### D2: Optimized Privacy Blur
-- **Logic**: Background components are blurred while tracked persons remain sharp.
-- **Optimization**: This is implemented using **vectorized NumPy operations**. Instead of iterating through segments, we create a combined binary mask and use `cv2.GaussianBlur` on the inverse, then blend using `np.where`.
-- **Resolution Stability**: Automatically handles cases where the detector returns masks at a different resolution than the source frame.
+### D2: Vectorized Privacy Blur
+- **Logic**: Blurs the background while keeping tracked subjects sharp.
+- **Optimization**: Uses **vectorized NumPy operations** for near-instant execution, ensuring privacy compliance without impacting FPS.
 
-### D3: Object Tracking
-- **Algorithm**: IOU-based matching (or ByteTrack).
-- **Stability**: Ensures that a person walking through the frame retains their unique `track_id`. This is critical for the temporal classification in D5.
+### D3: Consistent Tracking
+- **Algorithm**: ByteTrack / Kalman Filter.
+- **Function**: Assigns and maintains unique `track_id`s for every person, even during partial occlusions.
 
-### D4: Interaction State Machine
-- **State Logic**: `IDLE` → `WATCHING` (Near item) → `TRIGGERED` (Item moved/concealed).
-- **Proximity**: Compares person bounding boxes with ROI coordinates defined in Redis.
+### D4: Interaction & Proximity
+- **State Logic**: Detects relationships between persons and "restricted ROIs" or items.
+- **Integration**: Leverages real-time configuration from Redis (thresholds, ROI coordinates).
 
-### D5: Asynchronous Action Classification
-- **Model**: EfficientX3D.
-- **Temporal Buffer**: Maintains a rolling window (default 16 frames) of past video frames.
-- **Non-Blocking Execution**: Since video classification is computationally expensive (~7s), it is triggered as an **asynchronous background task**. This allows the main pipeline to continue processing frames at 25+ FPS while the classification runs.
-- **Concurrency Control**: Ensures only one classification task is active per camera at a time to prevent GPU memory overflow.
+### D5: Asynchronous Behavior Analysis
+- **Model**: EfficientNet-Transformer (Temporal).
+- **Mechanism**: Triggered when interaction logic detects suspicious movement.
+- **Non-Blocking**: classification runs as a background `asyncio` task, allowing the live 25+ FPS feed to remain uninterrupted.
 
 ---
 
-## 2. Performance & Reliability
+## 2. Model Management & Optimization
 
-### Zero-Copy Reads
-The service never "receives" image data over the network. It receives a `FramePointer` and uses the `libs.shared.shm.ReaderCache` to read the pixels directly from the system's shared memory.
+### Singleton ModelManager
+To minimize GPU memory (VRAM) overhead, the service uses a centralized **ModelManager**:
+1.  **Lazy Loading**: Models are not loaded into memory until the first camera begins streaming. This allows the system to sit idle with near-zero GPU footprint.
+2.  **CUDA Warm-up**: Upon first load, the manager runs "dummy" inference to initialize CUDA kernels, preventing the 1-2 second lag usually seen on the first frame.
+3.  **Context Sharing**: One model instance serves all camera workers, significantly reducing VRAM fragmentation.
 
-### Self-Healing (Lag Mitigation)
-If the processing time per frame exceeds the arrival rate, the `frames` queue will grow. The inference service includes a **drain-on-backlog** logic:
-- If `queue_length > 100`, it purges all oldest messages and jumps to the most recent frame.
-- This ensures that alerts are always based on the latest possible information.
+### Zero-Copy SHM Reads
+The service uses `shared.shm.ReaderCache` to read pixels directly from system memory pointers. This eliminates expensive network serialization and local CPU copies.
 
-### Metrics & Monitoring
-The service exposes a `/metrics` endpoint for Prometheus, tracking:
-- **Inference Latency**: Time taken for D1-D4.
-- **Queue Depth**: Real-time backlog size.
-- **Processed Frames**: Total count since startup.
-- **Dropped Frames**: Count of frames skipped due to backlog.
+---
+
+## 3. Reliability Measures
+
+### Lag Mitigation (Auto-Parity)
+If hardware performance dips, the service implements **backlog draining**:
+- If the `frames` queue exceeds **100 items**, the service flushes all stale entries and "jumps" to the newest frame to maintain real-time parity.
+
+### Metrics & Observability
+Exposes live performance data via the System Status API and Prometheus:
+- **`inference_latency`**: Total time for stages D1-D4.
+- **`queue_depth`**: Live monitoring of the Redis frame buffer.
+- **`gpu_memory_usage`**: Real-time VRAM telemetry.

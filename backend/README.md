@@ -1,6 +1,6 @@
 # Pipeline OpenCV — Real-Time Video Inference Pipeline
 
-A high-performance, production-ready shoplifting detection pipeline using YOLOv8, ByteTrack, EfficientX3D, and Redis.
+A high-performance, production-ready shoplifting detection pipeline using YOLO 2.6, ByteTrack, EfficientX3D, and Redis.
 
 ## Project Structure (Monorepo)
 
@@ -72,7 +72,7 @@ docker compose up redis postgres mqtt -d
 
 | Stage | Component | Description |
 |---|---|---|
-| D1 | `PersonDetector` | YOLOv8n-seg — person bbox + segmentation mask |
+| D1 | `PersonDetector` | YOLO 2.6 — person bbox + segmentation mask |
 | D2 | `BackgroundBlur` | Optimized Gaussian blur on inverse mask |
 | D3 | `PersonTracker` | IOU-based tracker for stable `track_id` |
 | D4 | `ItemInteractionDetector` | Proximity-based interaction state machine |
@@ -85,6 +85,8 @@ docker compose up redis postgres mqtt -d
 | `GET` | `/health` | — | System heartbeat & worker status |
 | `GET` | `/api/config/{camera_id}` | — | Read camera ROI/thresholds |
 | `PUT` | `/api/config/{camera_id}` | — | Update configuration live |
+| `POST` | `/api/camera/connect` | — | Connect new Webcam or RTSP camera |
+| `DELETE` | `/api/cameras/{id}` | — | Remove camera source & config |
 | `WS` | `/ws/predictions` | — | Live detections stream (JSON) |
 | `WS` | `/ws/camera/{camera_id}` | — | MJPEG live camera stream |
 

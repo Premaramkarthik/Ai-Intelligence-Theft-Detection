@@ -47,11 +47,18 @@ docker compose up redis postgres mqtt -d
 ### 4. Running Services Individually
 To run services with hot-reloading or individual log control:
 
-- **MediaBridge**: `python3 services/mediabridge/main.py`
-- **Inference**: `python3 services/inference/main.py`
-- **Signaling**: `python3 services/signaling/main.py`
-- **Alerting**: `python3 services/alerting/main.py`
-- **Persistence**: `python3 services/persistence/main.py`
+- **Signaling** (API Gateway): `python3 services/signaling/main.py`
+- **MediaBridge** (Ingestion): `python3 services/mediabridge/main.py`
+- **Inference** (AI Pipeline): `python3 services/inference/main.py`
+
+---
+
+## 📽️ Adding Cameras
+In the current release, cameras are added **dynamically** via the API rather than static `.env` lists.
+
+1.  Start the services.
+2.  Open Swagger at `http://localhost:9000/docs`.
+3.  Use the `POST /api/camera/connect` endpoint to launch a worker for your local webcam or RTSP stream.
 
 ---
 
@@ -64,13 +71,13 @@ If you experience "FileExistsError" or "Leaked shared_memory objects", use the c
 ```
 
 ### ModuleNotFoundError
-Ensure you are running commands from the **root directory** of the project and that your `PYTHONPATH` includes the current directory:
+Ensure you are running commands from the **root directory** and that your `PYTHONPATH` includes `.`:
 ```bash
 export PYTHONPATH=$PYTHONPATH:.
 ```
 
-### RTSP/Webcam Failures
+### Camera Failures
 If the `mediabridge` logs show connection failures:
-1. Verify the URL in `.env`.
-2. For local webcams, ensure no other application (like Zoom) is using the camera.
-3. Test connectivity with `ffplay <url>`.
+1. Verify the credentials in your API request.
+2. For local webcams (`/dev/video0`), Ensure no other application is using the device.
+3. Test RTSP connectivity directly with `ffplay <url>`.

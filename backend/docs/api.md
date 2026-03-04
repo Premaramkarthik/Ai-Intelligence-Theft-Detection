@@ -1,6 +1,6 @@
 # API Reference
 
-The **Signaling Service** provides a FastAPI-powered REST API and WebSocket interface for system management and real-time data streaming.
+The **Signaling Service** provides a FastAPI-powered REST API and WebSocket interface for system management, real-time data streaming, and hardware monitoring.
 
 ---
 
@@ -12,59 +12,72 @@ Visit the Swagger UI on your local deployment for a full interactive reference:
 
 ## 🛠️ REST Endpoints
 
-### 1. System Health
-- **`GET /health`**
-- **Description**: Returns the heartbeat status of the inference engine and active camera workers.
+### 1. System Monitoring
+- **`GET /api/status`**
+- **Description**: Returns real-time health metrics including:
+  - **GPU**: VRAM usage, utilization %, and temperature.
+  - **Redis**: Connection status ping.
+  - **Cameras**: Count of total configured vs. active streaming sources.
+  - **System**: CPU/RAM load.
 
-### 2. Camera Configuration
-- **`GET /api/config/{camera_id}`**
-- **Description**: Retrieves the current ROI (Region of Interest), confidence thresholds, and interaction parameters for a camera.
-- **`PUT /api/config/{camera_id}`**
-- **Description**: Updates camera settings live. Changes are written to Redis and picked up immediately by `Inference` and `MediaBridge`.
-- **Payload**:
+### 2. Camera Management
+- **`POST /api/camera/connect`**
+- **Description**: Dynamically adds a new camera source (Webcam or RTSP).
+- **Payload (Webcam)**:
+  ```json
+  {"type": "webcam", "device_index": 0}
+  ```
+- **Payload (RTSP)**:
   ```json
   {
-    "roi": {"x": 0, "y": 0, "w": 1280, "h": 720},
-    "confidence_threshold": 0.5,
-    "enabled": true
+    "type": "rtsp",
+    "rtsp_config": {
+      "username": "admin",
+      "password": "password",
+      "ip_address": "192.168.1.100",
+      "substreams": ["stream1"]
+    }
   }
   ```
 
-### 3. Historical Events
+- **`GET /api/cameras`**
+- **Description**: Lists all currently registered camera IDs and their sources.
+
+- **`DELETE /api/cameras/{camera_id}`**
+- **Description**: Safely disconnects a camera and cleans up its Redis configuration and frame pointers.
+
+### 3. Live Configuration
+- **`GET /api/config/{camera_id}`**
+- **Description**: Retrieves ROI, confidence thresholds, and interaction metadata.
+- **`PUT /api/config/{camera_id}`**
+- **Description**: Updates camera parameters live without service restart.
+
+### 4. Historical Events
 - **`GET /api/events`**
-- **Description**: Query the PostgreSQL database for historical shoplifting alerts and interaction events.
+- **Description**: Query the PostgreSQL database for historical shoplifting alerts.
 
 ---
 
 ## 📡 WebSocket Interface
 
-The system uses WebSockets for high-frequency data (predictions) and binary media (camera streams).
-
 ### 1. Live Predictions Stream
 - **URL**: `ws://localhost:9000/ws/predictions`
-- **Description**: Broadcasts a unified stream of detections from all cameras.
-- **Payload Format**:
+- **Payload**:
   ```json
   {
     "camera_id": "cam01",
     "ts": 1708512345.678,
-    "detections": [
-      {"bbox": [100, 200, 300, 400], "label": "person", "track_id": 42}
-    ],
+    "detections": [...],
     "action": {"label": "shoplifting", "confidence": 0.92}
   }
   ```
 
-### 2. Live Camera Stream (MJPEG)
+### 2. Live Camera Preview (MJPEG)
 - **URL**: `ws://localhost:9000/ws/camera/{camera_id}`
-- **Description**: Streams a live MJPEG video feed for a specific camera. Useful for dashboards that don't support RTSP directly.
-
-### 3. Log Stream
-- **URL**: `ws://localhost:9000/ws/logs`
-- **Description**: A real-time stream of system-wide logs (JSON format) filtered from the `inference` and `mediabridge` services.
+- **Description**: Dedicated binary stream for browser-native video preview.
 
 ---
 
 ## 💡 Notes
-- **Authentication**: Authentication is currently optional/disabled for local deployment to simplify development. 
-- **CORS**: The API is configured to allow connections from common frontend dev ports (3000, 5173, 8501).
+- **Hardware Agnostic**: The Status API works with or without NVIDIA GPUs (falls back gracefully).
+- **Persistence**: Camera configurations are persisted in Redis and indexed by unique `camera_id`.

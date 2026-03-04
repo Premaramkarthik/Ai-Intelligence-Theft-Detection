@@ -1,42 +1,51 @@
 """
-PersonDetector — wraps YOLOv8n-seg (TRT/OpenVINO/PyTorch).
-Moved from services.inference.detection.person_detector
+PersonDetector — wraps YOLO 2.6 segmentation models.
 """
 from __future__ import annotations
 
+import os
 import numpy as np
+from ultralytics import YOLO
 from shared.logging.logger import get_logger
 
 log = get_logger(__name__)
 
 
 class PersonDetector:
-    def __init__(self, model_path: str, device: str = "cuda") -> None:
+    def __init__(self, model_path: str | None = None, device: str = "cuda") -> None:
         self._model_path = model_path
         self._device = device
         self._model = None
         self._load()
 
     def _load(self) -> None:
+        """
+        Loads the YOLO 2.6 segmentation model.
+        Order: 
+        1. Provided model_path (if any)
+        2. backend/models/yolo26n-seg.pt
+        3. Fallback to Ultralytics API (auto-download)
+        """
         try:
-            from ultralytics import YOLO
-            import os
+            # Search order
+            paths_to_try: list[str] = []
+            if self._model_path:
+                paths_to_try.append(str(self._model_path))
             
-            # Search order: 1. Exact path, 2. Path as dir with engine, 3. Path as dir with pt
-            paths_to_try = [
-                self._model_path,
-                os.path.join(self._model_path, "yolo26n-seg.engine"),
-                os.path.join(self._model_path, "yolo26n-seg.pt"),
-                "models/yolo26n-seg.pt" # Last resort default
-            ]
+            # Default local path
+            paths_to_try.append("models/yolo26n-seg.pt")
             
             for path in paths_to_try:
                 if os.path.exists(path) and not os.path.isdir(path):
                     self._model = YOLO(path)
-                    log.info("PersonDetector loaded", extra={"path": path, "device": self._device})
+                    log.info("PersonDetector loaded from local file", extra={"path": path, "device": self._device})
                     return
             
-            log.error("PersonDetector load failed: No model file found", extra={"tried": paths_to_try})
+            # Fallback to Ultralytics API
+            log.info("PersonDetector: Local model not found, falling back to Ultralytics API")
+            self._model = YOLO("yolo26n-seg.pt")
+            log.info("PersonDetector loaded via Ultralytics API", extra={"model": "yolo26n-seg.pt"})
+                
         except Exception as exc:
             log.error("PersonDetector load failed", extra={"error": str(exc)})
 

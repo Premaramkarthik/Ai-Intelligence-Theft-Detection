@@ -14,3 +14,23 @@ class ROIConfigRequest(BaseModel):
 
 class ROIConfigResponse(ROIConfigRequest):
     camera_id: str
+
+
+class RTSPConfig(BaseModel):
+    username: str
+    password: str
+    ip_address: str
+    port: int = 554
+    substreams: list[str] = Field(default_factory=list)
+
+
+class CameraConnectRequest(BaseModel):
+    source_type: str # "rtsp" or "webcam"
+    rtsp_config: Optional[RTSPConfig] = None
+    device_index: Optional[int] = 0
+
+
+class ConnectResponse(BaseModel):
+    status: str
+    message: str
+    stream_ids: list[str] = Field(default_factory=list)

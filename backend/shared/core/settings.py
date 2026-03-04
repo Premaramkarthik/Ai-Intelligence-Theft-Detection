@@ -56,12 +56,10 @@ class Settings(BaseSettings):
     heartbeat_interval_ms: int = int(os.getenv("HEARTBEAT_INTERVAL_MS", "500"))
 
     # Person Detector
-    person_detector_engine: str = os.getenv("PERSON_DETECTOR_ENGINE", "")
     person_conf_threshold: float = float(os.getenv("PERSON_CONF_THRESHOLD", "0.5"))
     person_input_size: int = int(os.getenv("PERSON_INPUT_SIZE", "640"))
 
     # Item Detection
-    item_detector_engine: str = os.getenv("ITEM_DETECTOR_ENGINE", "")
     item_detect_every_n_frames: int = int(os.getenv("ITEM_DETECT_EVERY_N_FRAMES", "5"))
     item_watch_classes: str = os.getenv("ITEM_WATCH_CLASSES", "bottle,backpack,handbag")
     item_iou_threshold: float = float(os.getenv("ITEM_IOU_THRESHOLD", "0.15"))

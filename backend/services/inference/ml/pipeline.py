@@ -24,6 +24,7 @@ from services.inference.utils.metrics import (
 from shared.logging.logger import get_logger
 from shared.shm.ring_buffer import RingBufferReader
 from shared.types.models import FramePointer
+from services.inference.ml.model_manager import ModelManager
 
 log = get_logger(__name__)
 
@@ -34,28 +35,24 @@ class InferencePipeline:
     def __init__(self) -> None:
         cfg = get_settings()
         self._cfg = cfg
-        self._detector: PersonDetector | None = None
-        self._item_detector: ItemDetector | None = None
+        self._models = ModelManager()
         self._blur: BackgroundBlur | None = None
         self._tracker: PersonTracker | None = None
         self._interaction: ItemInteractionDetector | None = None
-        self._classifier: ShopliftingModel | None = None
         self._buffer: TemporalBuffer | None = None
+        self._active_tasks: set[str] = set()
 
     async def load_models(self) -> None:
+        """Initializes non-GPU heavy components."""
         cfg = self._cfg
-        # Use specific engines for person and item detection
-        self._detector = PersonDetector(cfg.person_detector_engine, cfg.model_backend)
-        self._item_detector = ItemDetector(cfg.item_detector_engine, cfg.model_backend)
         self._blur = BackgroundBlur()
         self._tracker = PersonTracker()
         self._interaction = ItemInteractionDetector(
             hand_dist_px=cfg.hand_dist_px,
             interaction_frames=cfg.interaction_frames,
         )
-        self._classifier = ShopliftingModel(cfg.model_engine_path, cfg.model_backend, cfg.temporal_window)
         self._buffer = TemporalBuffer(maxlen=cfg.temporal_window)
-        log.info("Models loaded", extra={"device": cfg.model_backend})
+        log.info("Pipeline components initialized (GPU models on lazy-load)")
 
     async def process(self, payload: bytes, redis: aioredis.Redis) -> None:
         t0 = time.perf_counter()
@@ -69,16 +66,16 @@ class InferencePipeline:
             frames_dropped.inc()
             return
 
-        if not self._detector or not self._item_detector:
-            log.warning("Skipping frame: Model(s) not loaded")
-            return
+        # Get models lazily
+        person_detector = await self._models.get_person_detector()
+        item_detector = await self._models.get_item_detector()
         
-        if not self._classifier:
-            # We can still track even if classifier is missing, but log it
-            log.debug("Classifier not loaded, will skip shoplifting detection")
+        if not person_detector or not item_detector:
+            log.warning("Skipping frame: Model(s) not available")
+            return
 
         # D1 — Person detection + segmentation
-        detections, masks = self._detector.detect(frame)
+        detections, masks = person_detector.detect(frame)
 
         # D2 — Background blur
         frame_out = self._blur.apply(frame, masks)
@@ -87,7 +84,7 @@ class InferencePipeline:
         tracks = self._tracker.update(detections)
 
         # D4 — Item interaction
-        item_detections = self._item_detector.detect(frame)
+        item_detections = item_detector.detect(frame)
         self._interaction.update(tracks, item_detections)
         self._interaction.delete_stale_tracks()
 
@@ -109,27 +106,24 @@ class InferencePipeline:
                 "track_id": None
             })
 
-        # D5 — Temporal classification trigger (Asynchronous/Non-blocking)
+        # D5 — Temporal classification trigger
         self._buffer.push(frame_out)
-        if self._classifier and self._interaction.should_classify():
-            # Check if we are already classifying for this camera to avoid overload
-            if not hasattr(self, "_active_tasks"):
-                self._active_tasks = set()
-            
+        classifier = await self._models.get_shoplifting_model()
+        
+        if classifier and self._interaction.should_classify():
             if ptr.camera_id not in self._active_tasks:
                 clip = self._buffer.get_clip()
-                task = asyncio.create_task(self._run_classification(ptr.camera_id, clip, redis))
+                task = asyncio.create_task(self._run_classification(ptr.camera_id, clip, redis, classifier))
                 self._active_tasks.add(ptr.camera_id)
-                # Task cleanup call
                 task.add_done_callback(lambda t: self._active_tasks.remove(ptr.camera_id) if ptr.camera_id in self._active_tasks else None)
 
-        # Publish all detections + classification to Redis
+        # Publish results
         import json
         payload_data = {
             "camera_id": ptr.camera_id,
             "ts": time.time(),
             "detections": ui_detections,
-            "action": None # Live stream doesn't wait for classification
+            "action": None
         }
         await redis.publish(f"detections:{ptr.camera_id}", json.dumps(payload_data))
 
@@ -138,30 +132,28 @@ class InferencePipeline:
         frames_processed.inc()
         update_gpu_memory()
 
-    async def _run_classification(self, camera_id: str, clip: np.ndarray, redis: aioredis.Redis) -> None:
+    async def _run_classification(self, camera_id: str, clip: np.ndarray, redis: aioredis.Redis, classifier: ShopliftingModel) -> None:
         """Background task for slow action classification."""
         try:
-            label, conf = await self._classifier.classify(clip)
+            label, conf = await classifier.classify(clip)
             result = {"label": label, "confidence": conf}
             log.info("Action classification complete", extra=result)
             
-            # Publish alert if positive
             import json
             payload = {
                 "camera_id": camera_id,
                 "ts": time.time(),
-                "detections": [], # Historical frames don't need bbox again for alerts
+                "detections": [],
                 "action": result
             }
             await redis.publish(f"detections:{camera_id}", json.dumps(payload))
             
-            # If shoplifting, we might want to push to persistence or alerting queue
             if label == "shoplifting":
-                 await redis.lpush("persistence_queue", json.dumps({
-                     "camera_id": camera_id,
-                     "event": "shoplifting",
-                     "confidence": conf,
-                     "ts": time.time()
-                 }))
+                  await redis.lpush("persistence_queue", json.dumps({
+                      "camera_id": camera_id,
+                      "event": "shoplifting",
+                      "confidence": conf,
+                      "ts": time.time()
+                  }))
         except Exception as e:
             log.error("Background classification failed", extra={"error": str(e)})

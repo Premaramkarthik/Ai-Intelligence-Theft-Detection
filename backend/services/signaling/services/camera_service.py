@@ -30,6 +30,9 @@ async def grab_jpeg(redis: aioredis.Redis, camera_id: str) -> bytes | None:
             settings.frame_width,
         )
         frame = reader.read(slot_idx)
+        if frame is None or frame.size == 0:
+            return None
+            
         _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
         return jpeg.tobytes()
     except Exception as exc:

@@ -12,16 +12,15 @@ The system is designed as a **decoupled microservices pipeline**. Individual ser
 
 ```mermaid
 graph LR
-    Camera[RTSP/Webcam] -- Frames --> MB[MediaBridge]
+    Camera[RTSP/Webcam] -- FFmpeg/Pipe --> MB[MediaBridge]
     MB -- Raw Pixels --> SHM[Shared Memory]
     MB -- FramePointer --> Redis[(Redis frames queue)]
     Redis -- Event --> INF[Inference]
     SHM -- Zero-Copy Read --> INF
     INF -- Detection Events --> R_DET[(Redis detections:*)]
     R_DET -- Sub --> SIG[Signaling]
-    R_DET -- Sub --> ALT[Alerting]
+    SIG -- /api/status --> Monitor[Health Dashboard]
     SIG -- WebSockets --> UI[Live Dashboard]
-    ALT -- Notification --> TG[Telegram]
     INF -- Job --> PER[Persistence]
     PER -- SQL BATCH --> DB[(PostgreSQL)]
 ```
@@ -30,57 +29,60 @@ graph LR
 
 ## 2. Core Infrastructure Components
 
-### A. Zero-Copy Shared Memory (libs.shared.shm)
+### A. Zero-Copy Shared Memory (shared.shm)
 To avoid the overhead of serializing multi-megabyte images (720p/1080p) across processes, we use **Ring Buffers** in shared memory.
 
 1.  **Memory Allocation**: `MediaBridge` allocates a large block of shared memory (approx 100MB per camera) using `multiprocessing.shared_memory`.
-2.  **Ring Index**: A separate 8-byte atomic counter (using `ctypes` and SHM) keeps track of the current write slot.
-3.  **FramePointer**: Only a lightweight reference (Camera ID + Slot ID + Timestamp) is sent over Redis.
-4.  **ReaderCache**: The `Inference` service uses a `ReaderCache` to maintain persistent attachments to these SHM segments, preventing the performance hit of frequent attachment/detachment.
+2.  **Ring Index**: A separate 8-byte atomic counter keeps track of the current write slot.
+3.  **ReaderCache**: The `Inference` service maintains persistent attachments to these SHM segments, preventing frequent attachment hits.
 
-### B. Redis Topology
-Redis acts as the central nervous system for the pipeline:
+### B. Media Ingestion (FFmpeg Source)
+For production-grade RTSP reliability, we use a piped **FFmpeg process** instead of basic OpenCV capture:
+-   **Stability**: FFmpeg handles network jitter and connection drops with high resilience.
+-   **Performance**: Uses hardware acceleration (CUDA/auto) and TCP transport for lossless packet delivery.
+-   **Supervisor**: A health monitor automatically restarts crashed camera worker processes within 5 seconds.
 
--   **`frames` (List/Queue)**: A high-priority queue for `FramePointer` messages.
--   **`detections:{cam_id}` (Pub/Sub)**: Real-time broadcast of JSON detections.
--   **`config:{cam_id}` (Hash)**: Storage for live configurations (ROI, thresholds).
--   **`persistence_queue` (List)**: Reliable queue for events that must be saved to the database.
+### C. GPU Model Management (ModelManager)
+To optimize VRAM consumption, we use a **Singleton ModelManager**:
+-   **Lazy Loading**: Models (YOLO 2.6, X3D) are only loaded when the first frame arrives, saving memory on idle.
+-   **CUDA Warm-up**: Runs dummy inference to initialize kernels, eliminating the "first-frame lag".
+-   **Shared Context**: All inference tasks share the same GPU handle for better memory fragmentation management.
 
 ---
 
 ## 3. Inference Pipeline (D1–D5)
 
-The `inference` service executes a staged pipeline on every frame:
+A high-performance pipeline using YOLO 2.6, ByteTrack, EfficientNetB0-Transformer, and Redis.
 
-1.  **D1: Detection/Segmentation (YOLOv8)**: Extracts person bounding boxes and high-res polygon masks.
-2.  **D2: Privacy/Background Blur**: Vectorized NumPy operations blend a target person with a blurred background using the inverse segment mask.
-3.  **D3: Tracking (IOU Tracker)**: Maintains identity consistency across frames using Intersection-over-Union matching.
-4.  **D4: Interaction Logic**: A spatial state machine checks if a tracked person is in proximity to items or specific ROIs.
-5.  **D5: Behavior Classification (EfficientX3D)**: 
-    -   **Non-Blocking**: Highly expensive (7s+) classifications run in background `asyncio` tasks.
-    -   **Temporal Buffer**: A rolling window of processed frames is maintained in memory for video classification.
+1.  **D1: Detection (YOLO 2.6)**: extracts person bounding boxes and masks.
+2.  **D2: Privacy/Blur**: Vectorized NumPy operations blend target players with blurred backgrounds.
+3.  **D3: Tracking (ByteTrack)**: Maintains identity consistency using IOU/Kalman matching.
+4.  **D4: Interaction Logic**: Spatial state machine for proximity detection.
+5.  **D5: Behavior Classification (X3D/EfficientNet)**: 
+    -   **Non-Blocking**: Classifications run as asynchronous tasks to avoid blocking the live stream.
+    -   **Temporal Buffer**: A rolling window of processed frames is buffered for action recognition.
 
 ---
 
-## 4. Real-Time Stability Measures
+## 4. Health & Monitoring
+
+### Standard Status API
+The `Signaling` service exposes a comprehensive health check at `/api/status`:
+-   **GPU Analytics**: Real-time VRAM (used/free) and GPU utilization.
+-   **Camera Health**: Counter of total vs. active streaming cameras.
+-   **Infrastructure**: Redis connectivity status and system CPU/RAM usage.
 
 ### Queue Draining (Lag Recovery)
-In a real-time system, "stale" data is worse than "no" data. If the system lags (e.g., due to a temporary GPU spike):
--   The `Inference` service monitors the length of the `frames` queue.
--   If the backlog exceeds **100 frames**, the service automatically **drains the queue**, keeping only the single newest frame.
--   This "jumps" the system back into real-time parity immediately.
-
-### Memory Integrity
--   **Leaked SHM Prevention**: Scripts like `run_local.sh` and service clean-up handlers (SIGTERM) ensure that `/dev/shm` handles are unlinked to prevent system memory exhaustion.
+If the system lags (e.g., due to background classification spikes), the `Inference` service monitors the `frames` queue length. If backlog exceeds **100 frames**, it automatically drains the queue to return to real-time parity.
 
 ---
 
 ## 5. Deployment Guidelines
 
 ### Hardware Requirements
--   **GPU**: NVIDIA Jetson (Orin/Xavier) or Desktop GPU (RTX 3060+) for FP16 TensorRT inference.
--   **Memory**: At least 8GB RAM (approx 2GB allocated for SHM).
+-   **GPU**: NVIDIA (Desktop RTX 3060+ or Jetson Orin) for FP16 inference.
+-   **Memory**: Min 8GB RAM (2GB+ dedicated to SHM).
 
 ### Operational Maintenance
--   **Logging**: All services use `structlog` for JSON-formatted logs.
--   **Monitoring**: Check `scripts/inspect_data.py` for a live health dashboard of the Redis queues and MQTT latency.
+-   **Logging**: Services use `structlog` for JSON-formatted logs suitable for ELK/Grafana.
+-   **Verification**: Final system audit via `python .agent/scripts/checklist.py .`.

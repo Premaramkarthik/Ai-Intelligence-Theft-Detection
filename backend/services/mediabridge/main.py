@@ -79,20 +79,33 @@ async def run() -> None:
                     task = asyncio.create_task(worker.run())
                     active_workers[cam_id] = (worker, task)
             
-            # Stop removed workers
+            # Monitor health & Stop removed workers
             to_remove = []
             for cam_id, (worker, task) in active_workers.items():
                 if cam_id not in sources:
-                    log.info("Stopping camera worker", extra={"id": cam_id})
+                    log.info("Stopping camera worker (Source removed)", extra={"id": cam_id})
                     task.cancel()
                     to_remove.append(cam_id)
+                elif task.done():
+                    # Worker crashed or finished unexpectedly
+                    try:
+                        exc = task.exception()
+                        log.error("Camera worker crashed", extra={"id": cam_id, "error": str(exc)})
+                    except Exception:
+                        log.warning("Camera worker stopped unexpectedly", extra={"id": cam_id})
+                    
+                    # Restart after delay
+                    log.info("Restarting camera worker", extra={"id": cam_id})
+                    new_worker = CameraWorker(sources[cam_id], redis, shutdown_event, camera_id=cam_id)
+                    new_task = asyncio.create_task(new_worker.run())
+                    active_workers[cam_id] = (new_worker, new_task)
             
             for cid in to_remove:
                 del active_workers[cid]
                 
             # Wait or check shutdown event
             try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=10.0)
+                await asyncio.wait_for(shutdown_event.wait(), timeout=5.0) # More frequent polling for production
             except asyncio.TimeoutError:
                 continue
 

@@ -6,29 +6,31 @@ The **MediaBridge** service is responsible for high-performance video ingestion.
 
 ## 1. Core Responsibilities
 
-- **Multi-Source Ingestion**: Pulls video from RTSP, RTMP, or local USB webcams.
-- **Process Isolation**: Each camera is managed by an independent child process (`CameraWorker`), ensuring that a network hang on one camera doesn't freeze the rest of the system.
-- **Normalization**: Resizes and converts incoming frames into a standardized BGR format for the inference engine.
-- **Seeding**: On startup, it automatically seeds default ROI and thresholds into Redis for any newly discovered cameras.
+- **Multi-Source Ingestion**: Pulls video from RTSP, HTTP, or local USB webcams.
+- **Robustness**: Uses piped **FFmpeg** processes for RTSP streams, providing significantly better network resilience than standard OpenCV.
+- **Process Isolation**: Each camera is managed by an independent `CameraWorker` task.
+- **Normalization**: Standardizes incoming frames to a unified resolution (default 720p) and BGR format.
 
 ---
 
 ## 2. Technical Workflow
 
-1.  **Discovery**: On boot, the supervisor reads the `CAMERA_SOURCES` configuration.
-2.  **Worker Launch**: For each source, it spawns a `CameraWorker`.
-3.  **Capture Loop**:
-    -   Requests a frame from `cv2.VideoCapture`.
-    -   Writes the frame into the next available slot in the **Shared Memory Ring Buffer**.
-    -   Generates a `FramePointer` containing the Slot ID and precise capture timestamp.
-4.  **Inference Trigger**: Pushes the `FramePointer` to the Redis `frames` queue.
-5.  **Health Heartbeat**: Updates a Redis key every few seconds to signal that the ingestion is active.
+1.  **Dynamic Discovery**: The supervisor monitors Redis for new camera connection requests initiated via the Signaling API (`/api/camera/connect`).
+2.  **Health Supervisor**: The main loop continuously audits active workers. If a worker task stops (due to process crash or network failure), the supervisor automatically restarts it within 5 seconds.
+3.  **Ingestion Modes**:
+    -   **Webcam**: Uses standard `cv2.VideoCapture`.
+    -   **RTSP**: Spawns an FFmpeg sub-process using TCP transport and auto-hardware acceleration for maximum stability.
+4.  **SHM Write**: Frames are written into a **Shared Memory Ring Buffer** for zero-copy access by the inference engine.
+5.  **Notification**: Pushes a `FramePointer` to the Redis `frames` queue to trigger the detection pipeline.
 
 ---
 
-## 3. Zero-Latency via Shared Memory
+## 3. High-Reliability RTSP (FFmpeg)
 
-To achieve high frame rates (30 FPS+ across multiple cameras), MediaBridge uses the `libs.shared.shm.RingBufferWriter`. This allows frames to be passed to the `Inference` service without ever leaving the system's RAM or requiring expensive serialization.
+Unlike simple capture libraries, our FFmpeg implementation handles jitter and packet loss professionally:
+-   **Transport**: Enforces TCP to prevent UDP-related frame corruption ("smearing").
+-   **Acceleration**: Leverages `hwaccel auto` to reduce CPU load during stream decoding.
+-   **Resilience**: Piped raw video output is validated by the `CameraWorker` to ensure data integrity.
 
 ---
 
@@ -36,17 +38,15 @@ To achieve high frame rates (30 FPS+ across multiple cameras), MediaBridge uses 
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `CAMERA_SOURCES` | `None` | Comma-separated list of URLs/Indices. |
-| `FRAME_WIDTH` | `1280` | Target horizontal resolution. |
-| `FRAME_HEIGHT` | `720` | Target vertical resolution. |
-| `SHM_SLOTS_PER_CAM` | `32` | Size of the rolling buffer in memory. |
-| `RTSP_TRANSPORT` | `tcp` | Transport protocol (tcp/udp) for RTSP streams. |
+| `FRAME_WIDTH` | `1280` | Target horizontal resolution for SHM. |
+| `FRAME_HEIGHT` | `720` | Target vertical resolution for SHM. |
+| `SHM_SLOTS_PER_CAM` | `32` | Depth of the rolling buffer per camera. |
+| `POLL_INTERVAL` | `5.0` | Supervisor frequency for health audits (seconds). |
 
 ---
 
-## 🛠️ Operational Commands
-If running without Docker, start the service using:
-```bash
-PYTHONPATH=. ./.venv/bin/python3 services/mediabridge/main.py
-```
-Check `logs/mediabridge.log` for ingestion metrics and connectivity status.
+## 🛠️ Management
+The service is primarily managed via the **Signaling API**.
+- To add a camera: `POST /api/camera/connect`.
+- To monitor health: `GET /api/status`.
+- To view logs: Check `logs/mediabridge.log` for per-worker connectivity status.

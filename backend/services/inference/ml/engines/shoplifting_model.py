@@ -16,7 +16,7 @@ log = get_logger(__name__)
 class EfficientNet_Transformer(nn.Module):
     def __init__(self, num_classes=1, d_model=1280, nhead=8):
         super().__init__()
-        backbone = efficientnet_b0(pretrained=False)
+        backbone = efficientnet_b0(weights=None)
         backbone.classifier = nn.Identity()
         self.backbone = backbone
 
@@ -44,7 +44,7 @@ class EfficientNet_Transformer(nn.Module):
 class EfficientNetB0_LSTM(nn.Module):
     def __init__(self, hidden_size=128, num_classes=1):
         super().__init__()
-        backbone = efficientnet_b0(pretrained=False)
+        backbone = efficientnet_b0(weights=None)
         backbone.classifier = nn.Identity()
         self.backbone = backbone
 
