@@ -44,10 +44,12 @@ async def run() -> None:
     redis = aioredis.from_url(REDIS_URL, decode_responses=True)
     CAMERA_SOURCES_KEY = "camera_sources"
 
-    # Initial seeding from settings if Redis is empty
+    # Initial seeding from settings if Redis is empty and sources are defined
     existing = await redis.hgetall(CAMERA_SOURCES_KEY)
-    if not existing:
-        for i, src in enumerate(cfg.camera_sources.split(",")):
+    if not existing and cfg.camera_sources.strip():
+        # Clean the sources list
+        sources_list = [s.strip() for s in cfg.camera_sources.split(",") if s.strip()]
+        for i, src in enumerate(sources_list):
             cam_id = f"cam{i+1:02d}"
             await redis.hset(CAMERA_SOURCES_KEY, cam_id, src)
             log.info("Seeded initial camera", extra={"id": cam_id, "src": src})

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     cors_origins: str = os.getenv("CORS_ORIGINS", "*")
 
     # MediaBridge
-    camera_sources: str = os.getenv("CAMERA_SOURCES", "0")  # comma-separated webcam IDs or RTSP URLs
+    camera_sources: str = os.getenv("CAMERA_SOURCES", "")  # comma-separated webcam IDs or RTSP URLs
     shm_slots_per_cam: int = int(os.getenv("SHM_SLOTS_PER_CAM", "32"))
     default_input_type: str = os.getenv("DEFAULT_INPUT_TYPE", "rtsp")
     frame_width: int = int(os.getenv("FRAME_WIDTH", "1280"))

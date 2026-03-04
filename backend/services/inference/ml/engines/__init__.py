@@ -1,10 +1,9 @@
 """
 services.inference.ml.engines — Individual ML model engine wrappers.
 
-    from services.inference.ml.engines import PersonDetector, ItemDetector, BackgroundBlur, ShopliftingModel
+    from services.inference.ml.engines import ObjectDetector, BackgroundBlur, ShopliftingModel
 """
-from services.inference.ml.engines.person_detector import PersonDetector
-from services.inference.ml.engines.item_detector import ItemDetector
+from services.inference.ml.engines.object_detector import ObjectDetector
 from services.inference.ml.engines.background_blur import BackgroundBlur
 from services.inference.ml.engines.shoplifting_model import (
     ShopliftingModel,
@@ -13,8 +12,7 @@ from services.inference.ml.engines.shoplifting_model import (
 )
 
 __all__ = [
-    "PersonDetector",
-    "ItemDetector",
+    "ObjectDetector",
     "BackgroundBlur",
     "ShopliftingModel",
     "EfficientNet_Transformer",

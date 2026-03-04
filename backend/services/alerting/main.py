@@ -1,12 +1,16 @@
 """
-Alerting service main — Redis consumer for predictions.
+Alerting service main — consumes from Redis Stream with consumer groups.
 Entry: python -m services.alerting.main
+
+Uses Redis Streams (XREADGROUP) instead of Pub/Sub for:
+  - Message persistence (survives restart)
+  - Consumer groups (load-balanced if scaled)
+  - Message acknowledgment (no lost alerts)
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import signal
 
 import redis.asyncio as aioredis
@@ -22,6 +26,21 @@ log = get_logger(__name__)
 
 cfg = get_settings()
 REDIS_URL = cfg.redis_url
+STREAM_KEY = "stream:predictions"
+GROUP_NAME = "alerting_group"
+CONSUMER_NAME = "alerting_worker_0"
+
+
+async def _ensure_consumer_group(redis: aioredis.Redis) -> None:
+    """Create the consumer group if it doesn't exist."""
+    try:
+        await redis.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
+        log.info("Created consumer group", extra={"group": GROUP_NAME, "stream": STREAM_KEY})
+    except aioredis.ResponseError as e:
+        if "BUSYGROUP" in str(e):
+            pass  # Group already exists
+        else:
+            raise
 
 
 async def run() -> None:
@@ -39,26 +58,45 @@ async def run() -> None:
     log.info("Prometheus metrics", extra={"port": METRICS_PORT})
 
     redis = aioredis.from_url(REDIS_URL, decode_responses=True)
-    pubsub = redis.pubsub()
-    await pubsub.subscribe("predictions")
+    await _ensure_consumer_group(redis)
 
     telegram = TelegramService()
     mqtt = MQTTService()
 
-    log.info("Alerting service ready")
+    log.info("Alerting service ready (Redis Streams)")
     try:
         while not shutdown_event.is_set():
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if msg:
-                data = json.loads(msg["data"])
-                # Alerting logic
-                if data.get("confidence", 0) > cfg.alert_confidence_threshold:
-                    await telegram.send_alert(f"Alert: {data['label']} detected!")
-                    await mqtt.publish("alerts", data)
-                    alerts_sent.inc()
-            await asyncio.sleep(0.1)
+            # Read from stream with consumer group — blocks up to 1s
+            entries = await redis.xreadgroup(
+                GROUP_NAME, CONSUMER_NAME,
+                {STREAM_KEY: ">"},
+                count=10, block=1000,
+            )
+            if not entries:
+                continue
+
+            for _stream_name, messages in entries:
+                for msg_id, fields in messages:
+                    try:
+                        data = json.loads(fields.get("payload", "{}"))
+                        action = data.get("action", {})
+                        label = action.get("label", "")
+                        confidence = action.get("confidence", 0)
+                        camera_id = data.get("camera_id", "unknown")
+
+                        if label == "shoplifting" and confidence > cfg.alert_confidence_threshold:
+                            await telegram.send_shoplifting_alert(
+                                camera_id=camera_id,
+                                confidence=confidence,
+                                timestamp=data.get("ts"),
+                            )
+                            await mqtt.publish("alerts", data)
+                            alerts_sent.inc()
+                        # Acknowledge message
+                        await redis.xack(STREAM_KEY, GROUP_NAME, msg_id)
+                    except Exception as exc:
+                        log.error("Alert processing failed", extra={"msg_id": msg_id, "error": str(exc)})
     finally:
-        await pubsub.unsubscribe("predictions")
         await redis.aclose()
         log.info("Alerting service stopped")
 

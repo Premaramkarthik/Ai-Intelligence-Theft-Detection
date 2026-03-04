@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-import time
-import subprocess
 import os
+import shutil
+import subprocess
+import threading
+import time
 from shared.logging.logger import get_logger
 
 log = get_logger(__name__)
@@ -23,7 +25,12 @@ class BaseSource:
 class OpenCVSource(BaseSource):
     def __init__(self, src: str | int) -> None:
         self._src = src
-        self._cap = cv2.VideoCapture(src)
+        # Force V4L2 for webcam indices on Linux to avoid FFmpeg warnings and improve stability
+        if isinstance(src, int):
+            self._cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
+        else:
+            self._cap = cv2.VideoCapture(src)
+            
         if not self._cap.isOpened():
             log.error("Failed to open video source", extra={"src": src})
 
@@ -38,51 +45,71 @@ class OpenCVSource(BaseSource):
     def is_opened(self) -> bool:
         return self._cap.isOpened()
 
+def _has_nvdec() -> bool:
+    """Check if NVDEC hardware decode is available."""
+    return shutil.which("nvidia-smi") is not None
+
+
 class FFmpegSource(BaseSource):
     """Robust RTSP ingestion using a piped FFmpeg process."""
     def __init__(self, url: str) -> None:
         self._url = url
-        # We assume 720p output for now, worker will resize if needed
         self._w, self._h = 1280, 720
         self._frame_size = self._w * self._h * 3
         self._proc: subprocess.Popen | None = None
-        
-        self._cmd = [
-            "ffmpeg",
+        self._stderr_thread: threading.Thread | None = None
+
+        cmd = ["ffmpeg"]
+        if _has_nvdec():
+            cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+            log.info("FFmpeg using NVDEC GPU decode")
+        else:
+            cmd.extend(["-hwaccel", "auto"])
+
+        cmd.extend([
             "-rtsp_transport", "tcp",
-            "-hwaccel", "auto",
             "-i", url,
             "-f", "rawvideo",
             "-pix_fmt", "bgr24",
             "-s", f"{self._w}x{self._h}",
             "-an", "-sn",
             "-loglevel", "error",
-            "pipe:1"
-        ]
-        
+            "pipe:1",
+        ])
+
         try:
             self._proc = subprocess.Popen(
-                self._cmd, 
-                stdout=subprocess.PIPE, 
+                cmd,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                bufsize=self._frame_size
+                bufsize=self._frame_size,
             )
+            # Drain stderr in background to prevent pipe deadlock
+            self._stderr_thread = threading.Thread(
+                target=self._drain_stderr, daemon=True
+            )
+            self._stderr_thread.start()
             log.info("FFmpeg process started", extra={"url": url})
         except Exception as e:
             log.error("Failed to start FFmpeg", extra={"error": str(e)})
             self._proc = None
 
+    def _drain_stderr(self) -> None:
+        """Read stderr continuously to prevent pipe buffer deadlock."""
+        if self._proc and self._proc.stderr:
+            for line in self._proc.stderr:
+                log.debug("FFmpeg stderr", extra={"line": line.decode(errors="replace").strip()})
+
     def read(self) -> np.ndarray | None:
-        if not self._proc:
+        if not self._proc or not self._proc.stdout:
             return None
-        
         try:
             raw_frame = self._proc.stdout.read(self._frame_size)
             if len(raw_frame) != self._frame_size:
                 return None
-            
-            frame = np.frombuffer(raw_frame, dtype=np.uint8).reshape((self._h, self._w, 3))
-            return frame
+            return np.frombuffer(raw_frame, dtype=np.uint8).reshape(
+                (self._h, self._w, 3)
+            )
         except Exception:
             return None
 
@@ -128,7 +155,11 @@ class RTSPSource(FFmpegSource):
 
 def validate_source(src: str | int, timeout_s: float = 3.0) -> bool:
     """Check if source is actually readable using OpenCV (fast check)."""
-    cap = cv2.VideoCapture(src)
+    if isinstance(src, int):
+        cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
+    else:
+        cap = cv2.VideoCapture(src)
+        
     try:
         start = time.time()
         while time.time() - start < timeout_s:

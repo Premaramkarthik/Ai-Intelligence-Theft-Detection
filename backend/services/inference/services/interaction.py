@@ -5,7 +5,6 @@ Moved from services.inference.interaction.item_interaction
 from __future__ import annotations
 
 import time
-import numpy as np
 from shared.logging.logger import get_logger
 
 log = get_logger(__name__)
@@ -16,8 +15,8 @@ class ItemInteractionDetector:
     def __init__(self, hand_dist_px: int = 80, interaction_frames: int = 5) -> None:
         self._hand_dist_px = hand_dist_px
         self._interaction_frames = interaction_frames
-        self._states: dict[int, int] = {}  # track_id -> frame_count
-        self._tracks: dict[int, float] = {} # track_id -> last_seen
+        self._states: dict[str | int, int] = {}  # track_id -> frame_count
+        self._tracks: dict[str | int, float] = {} # track_id -> last_seen
         self._should_classify = False
         log.info("ItemInteractionDetector initialized", extra={"dist": hand_dist_px, "frames": interaction_frames})
 

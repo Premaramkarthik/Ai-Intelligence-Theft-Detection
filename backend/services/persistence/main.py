@@ -1,12 +1,17 @@
 """
-Persistence service main — Redis consumer for DB writes.
+Persistence service main — consumes from Redis Stream for DB writes.
 Entry: python -m services.persistence.main
+
+Uses Redis Streams (XREADGROUP) instead of Pub/Sub for:
+  - Guaranteed delivery (no lost writes)
+  - Consumer groups
+  - Message acknowledgment after successful DB write
+  - Graceful shutdown with in-flight drain
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import signal
 
 import redis.asyncio as aioredis
@@ -22,6 +27,21 @@ log = get_logger(__name__)
 
 cfg = get_settings()
 REDIS_URL = cfg.redis_url
+STREAM_KEY = "stream:predictions"
+GROUP_NAME = "persistence_group"
+CONSUMER_NAME = "persistence_worker_0"
+
+
+async def _ensure_consumer_group(redis: aioredis.Redis) -> None:
+    """Create the consumer group if it doesn't exist."""
+    try:
+        await redis.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
+        log.info("Created consumer group", extra={"group": GROUP_NAME, "stream": STREAM_KEY})
+    except aioredis.ResponseError as e:
+        if "BUSYGROUP" in str(e):
+            pass  # Group already exists
+        else:
+            raise
 
 
 async def run() -> None:
@@ -39,24 +59,50 @@ async def run() -> None:
     log.info("Prometheus metrics", extra={"port": METRICS_PORT})
 
     redis = aioredis.from_url(REDIS_URL, decode_responses=True)
-    pubsub = redis.pubsub()
-    await pubsub.subscribe("predictions")
+    await _ensure_consumer_group(redis)
 
     writer = DBWriter()
     await writer.connect()
     await writer.initialize_db()
 
-    log.info("Persistence service ready")
+    log.info("Persistence service ready (Redis Streams)")
     try:
         while not shutdown_event.is_set():
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if msg:
-                data = json.loads(msg["data"])
-                await writer.save_event(data)
-            await asyncio.sleep(0.1)
+            entries = await redis.xreadgroup(
+                GROUP_NAME, CONSUMER_NAME,
+                {STREAM_KEY: ">"},
+                count=20, block=1000,
+            )
+            if not entries:
+                continue
+
+            for _stream_name, messages in entries:
+                for msg_id, fields in messages:
+                    try:
+                        data = json.loads(fields.get("payload", "{}"))
+                        await writer.save_event(data)
+                        await redis.xack(STREAM_KEY, GROUP_NAME, msg_id)
+                    except Exception as exc:
+                        log.error("Write failed", extra={"msg_id": msg_id, "error": str(exc)})
+
+        # Graceful drain — process remaining pending messages before exit
+        log.info("Draining pending messages before shutdown...")
+        pending = await redis.xreadgroup(
+            GROUP_NAME, CONSUMER_NAME,
+            {STREAM_KEY: "0"},
+            count=100,
+        )
+        if pending:
+            for _stream_name, messages in pending:
+                for msg_id, fields in messages:
+                    try:
+                        data = json.loads(fields.get("payload", "{}"))
+                        await writer.save_event(data)
+                        await redis.xack(STREAM_KEY, GROUP_NAME, msg_id)
+                    except Exception:
+                        pass
     finally:
         await writer.disconnect()
-        await pubsub.unsubscribe("predictions")
         await redis.aclose()
         log.info("Persistence service stopped")
 

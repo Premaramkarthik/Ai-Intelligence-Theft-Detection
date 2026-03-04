@@ -4,8 +4,7 @@ Entry point: uvicorn services.signaling.main:app
 """
 from __future__ import annotations
 
-import asyncio
-import signal
+from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
@@ -17,26 +16,43 @@ from slowapi.util import get_remote_address
 
 from shared.logging.logger import get_logger
 from shared.core.settings import get_settings
+from shared.db.session import DatabaseSession
 from services.signaling.api.router import api_router
 
 log = get_logger(__name__)
 cfg = get_settings()
 
-# ── Rate limiter ──────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """Startup / shutdown lifecycle."""
+    # ── Startup ──
+    application.state.redis = aioredis.from_url(cfg.redis_url, decode_responses=True)
+    application.state.db = DatabaseSession()
+    await application.state.db.connect()
+    log.info("Signaling service started")
+    yield
+    # ── Shutdown ──
+    from shared.shm.ring_buffer import ReaderCache
+    ReaderCache.clear()
+    await application.state.db.disconnect()
+    await application.state.redis.aclose()
+    log.info("Signaling service stopped")
 
 
 def create_app() -> FastAPI:
     application = FastAPI(
         title="Pipeline Signaling API",
-        version="0.2.0",
+        version="0.3.0",
         docs_url="/docs",
         redoc_url="/redoc",
+        lifespan=lifespan,
     )
     application.state.limiter = limiter
     application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-    # CORS
     application.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.cors_origins.split(","),
@@ -45,29 +61,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Mount Prometheus metrics at /metrics
     metrics_app = make_asgi_app()
     application.mount("/metrics", metrics_app)
-
-    # API routes
     application.include_router(api_router)
 
-    # Lifespan events
-    @application.on_event("startup")
-    async def _startup() -> None:
-        application.state.redis = aioredis.from_url(cfg.redis_url, decode_responses=True)
-        log.info("Signaling service started")
-
-    @application.on_event("shutdown")
-    async def _shutdown() -> None:
-        from shared.shm.ring_buffer import ReaderCache
-        ReaderCache.clear()
-        await application.state.redis.aclose()
-        log.info("Signaling service stopped")
-
     return application
-
-
 
 
 app = create_app()

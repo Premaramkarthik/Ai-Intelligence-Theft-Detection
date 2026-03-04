@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 import redis.asyncio as aioredis
-from services.signaling.api.deps import get_redis
+from services.signaling.api.deps import get_redis, verify_jwt
 from shared.logging.logger import get_logger
 
 router = APIRouter()
@@ -15,7 +15,7 @@ async def list_cameras(redis: aioredis.Redis = Depends(get_redis)):
     return sources
 
 @router.delete("/{camera_id}")
-async def remove_camera(camera_id: str, redis: aioredis.Redis = Depends(get_redis)):
+async def remove_camera(camera_id: str, _user: str = Depends(verify_jwt), redis: aioredis.Redis = Depends(get_redis)):
     """Remove a camera source and its configuration."""
     await redis.hdel(CAMERA_SOURCES_KEY, camera_id)
     # Also cleanup config and tracking state if needed

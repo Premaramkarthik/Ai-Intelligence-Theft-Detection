@@ -17,29 +17,32 @@ class BackgroundBlur:
     def apply(self, frame: np.ndarray, masks: list | np.ndarray) -> np.ndarray:
         """Blur background; keep person regions sharp."""
         h, w = frame.shape[:2]
+        
+        # 1. Generate Combined Mask
         if isinstance(masks, list):
             if len(masks) == 0:
                 return cv2.GaussianBlur(frame, self._ksize, 0)
             
-            # Resize and combine masks efficiently
-            resized_masks = []
+            # Combine masks at native resolution if possible, or common small resolution
+            mask_acc = np.zeros((h, w), dtype=np.uint8)
             for m in masks:
                 if m.shape != (h, w):
-                    m = cv2.resize(m.astype(np.float32), (w, h))
-                resized_masks.append(m > 0.5)
-            combined = np.any(resized_masks, axis=0).astype(np.uint8)
+                    m_resized = cv2.resize(m.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+                    mask_acc = cv2.bitwise_or(mask_acc, m_resized)
+                else:
+                    mask_acc = cv2.bitwise_or(mask_acc, (m > 0.5).astype(np.uint8))
+            combined = mask_acc
         else:
-            # Already a numpy array (h, w) or (n, h, w)
+            # Already a numpy array
             if masks.ndim == 3:
                 combined = np.any(masks > 0.5, axis=0).astype(np.uint8)
             else:
                 combined = (masks > 0.5).astype(np.uint8)
 
-        # Ensure the final combined mask matches frame resolution
-        if combined.shape != (h, w):
-            combined = cv2.resize(combined, (w, h), interpolation=cv2.INTER_NEAREST)
-
-        # Batch operations
+        # 2. Optimization: Blur a downscaled version if too slow, but here we stay full res
+        # for quality unless requested. We use bitwise mask for np.where efficiency.
         blurred = cv2.GaussianBlur(frame, self._ksize, 0)
-        fg_mask = combined[:, :, np.newaxis]
-        return np.where(fg_mask > 0, frame, blurred).astype(np.uint8)
+        
+        # fg_mask as 3D for broadcasting
+        fg_mask = combined[:, :, np.newaxis].astype(bool)
+        return np.where(fg_mask, frame, blurred)

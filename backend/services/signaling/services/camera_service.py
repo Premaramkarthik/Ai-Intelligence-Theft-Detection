@@ -1,9 +1,8 @@
 """Camera service — reads raw frame from SHM and returns JPEG bytes."""
 from __future__ import annotations
 
-import struct
-
 import cv2
+import json
 import numpy as np
 import redis.asyncio as aioredis
 
@@ -38,3 +37,12 @@ async def grab_jpeg(redis: aioredis.Redis, camera_id: str) -> bytes | None:
     except Exception as exc:
         log.warning("Failed to grab JPEG", extra={"camera_id": camera_id, "error": str(exc)})
         return None
+async def grab_metadata(camera_id: str, redis: aioredis.Redis) -> dict:
+    """Fetch latest detections and action state for a camera."""
+    data = await redis.get(f"detections:latest:{camera_id}")
+    if data:
+        try:
+            return json.loads(data)
+        except Exception:
+            pass
+    return {"detections": [], "action": None}

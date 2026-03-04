@@ -45,7 +45,7 @@ dependencies = [
     "av",
 
     # ── Messaging & Alerts ─────────────────────────────────────────────────────
-    "aiogram",
+    "python-telegram-bot",
 
     # ── Observability ──────────────────────────────────────────────────────────
     "structlog",
