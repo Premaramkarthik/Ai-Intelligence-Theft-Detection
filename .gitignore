@@ -218,3 +218,4 @@ __marimo__/
 .agent/
 backend/data
 backend/logs
+backend/models/
