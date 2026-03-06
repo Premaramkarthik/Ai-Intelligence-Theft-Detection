@@ -90,7 +90,7 @@ cd "$PROJECT_ROOT"
 
 echo "----------------------------------------------------"
 echo "✅ Antigravity Vision System is LIVE!"
-echo "🌐 Modern Dashboard: http://localhost:3000"
+echo "🌐 Modern Dashboard: http://localhost:8080/"
 echo "🌐 API Documentation: http://localhost:9001/docs"
 echo "----------------------------------------------------"
 echo "💡 All logs are in the '$LOGS_DIR/' folder."

@@ -37,6 +37,7 @@ async def grab_jpeg(redis: aioredis.Redis, camera_id: str) -> bytes | None:
     except Exception as exc:
         log.warning("Failed to grab JPEG", extra={"camera_id": camera_id, "error": str(exc)})
         return None
+        
 async def grab_metadata(camera_id: str, redis: aioredis.Redis) -> dict:
     """Fetch latest detections and action state for a camera."""
     data = await redis.get(f"detections:latest:{camera_id}")
