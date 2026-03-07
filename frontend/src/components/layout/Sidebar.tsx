@@ -5,7 +5,6 @@ import {
     LayoutDashboard,
     Camera,
     Activity,
-    Settings,
     Database,
     Cpu,
     Thermometer,
@@ -19,7 +18,6 @@ const navItems = [
     { icon: LayoutDashboard, label: 'Dashboard', href: '/' },
     { icon: Camera, label: 'Cameras', href: '/cameras' },
     { icon: Database, label: 'Persistence', href: '/history' },
-    { icon: Settings, label: 'Settings', href: '/settings' },
 ];
 
 export default function Sidebar() {
