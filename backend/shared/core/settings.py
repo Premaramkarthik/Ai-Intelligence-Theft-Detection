@@ -5,10 +5,12 @@ from urllib.parse import quote
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    app_env: str = os.getenv("APP_ENV", "development")
+
     # Redis
     redis_host: str = os.getenv("REDIS_HOST", "localhost")
     redis_port: int = int(os.getenv("REDIS_PORT", "6379"))
-    redis_password: str = os.getenv("REDIS_PASSWORD", "karthikS9")
+    redis_password: str = os.getenv("REDIS_PASSWORD", "")
     redis_db: int = int(os.getenv("REDIS_DB", "0"))
     redis_url_env: str = os.getenv("REDIS_URL", "")
 
@@ -26,7 +28,7 @@ class Settings(BaseSettings):
     postgres_port: int = int(os.getenv("POSTGRES_PORT", "5432"))
     postgres_db: str = os.getenv("POSTGRES_DB", "pipeline_events")
     postgres_user: str = os.getenv("POSTGRES_USER", "pipeline_user")
-    postgres_password: str = os.getenv("POSTGRES_PASSWORD", "postgres")
+    postgres_password: str = os.getenv("POSTGRES_PASSWORD", "")
     postgres_pool_size: int = int(os.getenv("POSTGRES_POOL_SIZE", "10"))
 
     @property
@@ -38,14 +40,14 @@ class Settings(BaseSettings):
     telegram_admin_chat_ids: str = os.getenv("TELEGRAM_ADMIN_CHAT_IDS", "")
 
     # JWT
-    jwt_secret: str = os.getenv("JWT_SECRET", "secret")
+    jwt_secret: str = os.getenv("JWT_SECRET", "")
     jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
     jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
 
     # Signaling
     signaling_host: str = os.getenv("SIGNALING_HOST", "0.0.0.0")
     signaling_port: int = int(os.getenv("SIGNALING_PORT", "9000"))
-    cors_origins: str = os.getenv("CORS_ORIGINS", "*")
+    cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 
     # MediaBridge
     camera_sources: str = os.getenv("CAMERA_SOURCES", "")  # comma-separated webcam IDs or RTSP URLs
@@ -53,6 +55,7 @@ class Settings(BaseSettings):
     default_input_type: str = os.getenv("DEFAULT_INPUT_TYPE", "rtsp")
     frame_width: int = int(os.getenv("FRAME_WIDTH", "1280"))
     frame_height: int = int(os.getenv("FRAME_HEIGHT", "720"))
+    frame_queue_maxlen: int = int(os.getenv("FRAME_QUEUE_MAXLEN", "256"))
 
     # Model
     model_name: str = os.getenv("MODEL_NAME", "efficient_x3d")
@@ -83,8 +86,8 @@ class Settings(BaseSettings):
     alert_confidence_threshold: float = float(os.getenv("ALERT_CONF_THRESHOLD", "0.8"))
 
     # Signaling
-    admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
-    admin_password: str = os.getenv("ADMIN_PASSWORD", "admin")
+    admin_username: str = os.getenv("ADMIN_USERNAME", "")
+    admin_password: str = os.getenv("ADMIN_PASSWORD", "")
     camera_stream_fps: float = float(os.getenv("CAMERA_STREAM_FPS", "15"))
 
     # Persistence

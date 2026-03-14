@@ -8,14 +8,14 @@ try:
 except ImportError:
     HAS_NVML = False
 
-from services.signaling.api.deps import get_redis
+from services.signaling.api.deps import get_redis, verify_jwt
 from shared.logging.logger import get_logger
 
 router = APIRouter()
 log = get_logger(__name__)
 
 @router.get("/status")
-async def get_system_status(redis: aioredis.Redis = Depends(get_redis)):
+async def get_system_status(_user: str = Depends(verify_jwt), redis: aioredis.Redis = Depends(get_redis)):
     """Comprehensive health check for the entire pipeline."""
     
     # 1. Redis Check
@@ -57,7 +57,7 @@ async def get_system_status(redis: aioredis.Redis = Depends(get_redis)):
     }
 
     return {
-        "status": "healthy" if redis_alive else "degraded",
+        "status": "healthy" if redis_alive and active_workers == len(cameras) else "degraded",
         "redis": "connected" if redis_alive else "disconnected",
         "cameras": {
             "total_configured": len(cameras),

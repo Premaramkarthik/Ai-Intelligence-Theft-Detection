@@ -13,7 +13,8 @@ try:
 except ImportError:
     HAS_NVML = False
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from services.signaling.api.deps import verify_ws_token
 from shared.logging.logger import get_logger
 
 router = APIRouter()
@@ -45,6 +46,11 @@ def _get_gpu_stats() -> dict:
 
 @router.websocket("/ws/status")
 async def ws_status(websocket: WebSocket) -> None:
+    try:
+        verify_ws_token(websocket)
+    except Exception:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await websocket.accept()
     log.info("System Status WS connected")
 

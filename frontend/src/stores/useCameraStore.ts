@@ -9,6 +9,7 @@ interface Camera {
 }
 
 interface SystemStatus {
+    status: 'healthy' | 'degraded';
     gpu_util: number;
     gpu_mem: number;
     gpu_temp: number;
@@ -49,7 +50,8 @@ export const useCameraStore = create<CameraState>((set) => ({
     })),
 
     removeCamera: (id) => set((state) => {
-        const { [id]: _, ...remaining } = state.cameras;
+        const remaining = { ...state.cameras };
+        delete remaining[id];
         return { cameras: remaining };
     }),
 

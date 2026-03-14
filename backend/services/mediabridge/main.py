@@ -36,7 +36,10 @@ async def run() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _handle_signal)
+        try:
+            loop.add_signal_handler(sig, _handle_signal)
+        except NotImplementedError:
+            signal.signal(sig, lambda _signum, _frame: _handle_signal())
 
     start_http_server(METRICS_PORT)
     log.info("Prometheus metrics", extra={"port": METRICS_PORT})

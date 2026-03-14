@@ -16,6 +16,7 @@ router = APIRouter()
 async def set_config(
     camera_id: str,
     body: ROIConfigRequest,
+    _user: str = Depends(verify_jwt),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> dict:
     data = {
@@ -32,6 +33,7 @@ async def set_config(
 @router.get("/config/{camera_id}", response_model=ROIConfigResponse)
 async def get_config(
     camera_id: str,
+    _user: str = Depends(verify_jwt),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> ROIConfigResponse:
     raw = await redis.hgetall(f"config:{camera_id}")

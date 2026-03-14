@@ -23,6 +23,7 @@ log = get_logger(__name__)
 
 MAX_CONSECUTIVE_FAILURES = 10
 BACKOFF_CAP_S = 30.0
+FRAME_QUEUE = "frames"
 
 
 class CameraWorker:
@@ -40,6 +41,7 @@ class CameraWorker:
         cfg = get_settings()
         self._h = cfg.frame_height
         self._w = cfg.frame_width
+        self._frame_queue_maxlen = cfg.frame_queue_maxlen
         self._shm = SHMWriter(
             camera_id,
             cfg.shm_slots_per_cam,
@@ -111,16 +113,25 @@ class CameraWorker:
                     frame = cv2.resize(frame, (self._w, self._h))
 
                 trace_id = str(uuid.uuid4())[:8]
-                slot_id = self._shm.write(frame)
+                slot_id, generation = self._shm.write(frame)
 
                 ptr = FramePointer(
                     camera_id=self._camera_id,
                     slot_id=slot_id,
+                    generation=generation,
                     t_capture=time.time(),
                     trace_id=trace_id,
                 )
-                await self._redis.rpush("frames", ptr.to_bytes())
-                await self._redis.set(f"frame_ptr:{self._camera_id}", str(slot_id))
+                queue_len = await self._redis.llen(FRAME_QUEUE)
+                if queue_len >= self._frame_queue_maxlen:
+                    await self._redis.lpop(FRAME_QUEUE)
+                    log.warning(
+                        "Dropping oldest queued frame due to backpressure",
+                        extra={"camera_id": self._camera_id, "queue_len": queue_len},
+                    )
+                payload = ptr.to_bytes().decode("utf-8")
+                await self._redis.rpush(FRAME_QUEUE, payload)
+                await self._redis.set(f"frame_ptr:{self._camera_id}", payload)
 
                 latency = (time.perf_counter() - t_start) * 1000
                 frame_latency.labels(camera_id=self._camera_id).set(latency)

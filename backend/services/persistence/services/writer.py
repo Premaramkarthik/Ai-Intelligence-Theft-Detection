@@ -1,15 +1,18 @@
-"""DB Writer — handles inserts and evidence storage."""
+"""DB writer for canonical incident events."""
 from __future__ import annotations
 
+import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
-from shared.logging.logger import get_logger
-from shared.db.session import DatabaseSession
 from services.persistence.models.events import INSERT_QUERY
 from services.persistence.utils.metrics import db_write_latency
+from shared.db.session import DatabaseSession
+from shared.logging.logger import get_logger
+from shared.types.events import IncidentEvent
 
 log = get_logger(__name__)
+
 
 class DBWriter:
     def __init__(self) -> None:
@@ -29,21 +32,27 @@ class DBWriter:
 
     async def save_event(self, data: dict) -> None:
         t0 = time.perf_counter()
+        event = IncidentEvent.model_validate(data)
         try:
             pool = self._db.get_pool()
             await pool.execute(
                 INSERT_QUERY,
-                data.get("camera_id"),
-                data.get("trace_id", "0"),
-                data.get("label") or data.get("class_name"), # Support both
-                data.get("confidence"),
-                data.get("evidence_path") or data.get("evidence_uri", ""),
-                datetime.fromtimestamp(data.get("ts", time.time()), tz=timezone.utc),
-                data.get("t_capture", 0),
-                data.get("t_output", 0),
+                event.event_id,
+                event.camera_id,
+                event.trace_id,
+                event.event_type,
+                event.label,
+                event.confidence,
+                event.severity.value,
+                datetime.fromisoformat(event.timestamp),
+                json.dumps(event.frame_ref.model_dump(mode="json")),
+                json.dumps(event.detections, default=lambda item: item.model_dump(mode="json")),
+                json.dumps(event.metadata),
+                event.schema_version,
+                json.dumps(event.model_dump(mode="json")),
             )
-            elapsed = time.perf_counter() - t0
-            db_write_latency.observe(elapsed)
-            log.info("Event saved", extra={"label": data.get("label"), "latency": elapsed})
+            db_write_latency.observe(time.perf_counter() - t0)
+            log.info("Incident saved", extra={"event_id": event.event_id, "label": event.label})
         except Exception as exc:
-            log.error("DB Save failed", extra={"error": str(exc)})
+            log.error("DB save failed", extra={"error": str(exc), "event_id": event.event_id})
+            raise

@@ -11,6 +11,7 @@ from services.signaling.schemas.camera import CameraConnectRequest, ConnectRespo
 from services.mediabridge.sources.sources import validate_source, RTSPSource
 
 router = APIRouter()
+CAMERA_SOURCES_KEY = "camera_sources"
 
 
 @router.get(
@@ -19,6 +20,7 @@ router = APIRouter()
 )
 async def snapshot(
     camera_id: str,
+    _user: str = Depends(verify_jwt),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> Response:
     jpeg = await grab_jpeg(redis, camera_id)
@@ -33,6 +35,7 @@ async def snapshot(
 )
 async def connect_camera(
     request: CameraConnectRequest,
+    _user: str = Depends(verify_jwt),
     redis: aioredis.Redis = Depends(get_redis),
 ):
     """
@@ -46,9 +49,14 @@ async def connect_camera(
         if not validate_source(device_index):
             raise HTTPException(status_code=400, detail=f"Webcam {device_index} not available")
         
-        # Generate a unique ID for the webcam
-        # In a real system, we might check existing cam IDs
         cam_id = f"webcam_{device_index}"
+        existing = await redis.hget(CAMERA_SOURCES_KEY, cam_id)
+        if existing == str(device_index):
+            return ConnectResponse(
+                status="success",
+                message="Camera already connected",
+                stream_ids=[cam_id],
+            )
         sources_to_add[cam_id] = str(device_index)
         
     elif request.source_type == "rtsp":
@@ -75,12 +83,14 @@ async def connect_camera(
             # Sanitize substream name for ID
             sub_id = substream.replace("/", "_").replace("\\", "_")
             cam_id = f"rtsp_{clean_ip}_{sub_id}"
+            existing = await redis.hget(CAMERA_SOURCES_KEY, cam_id)
+            if existing == url:
+                sources_to_add[cam_id] = url
+                continue
             sources_to_add[cam_id] = url
     else:
         raise HTTPException(status_code=400, detail="Invalid source_type")
 
-    # Write to Redis
-    CAMERA_SOURCES_KEY = "camera_sources"
     for cam_id, src in sources_to_add.items():
         await redis.hset(CAMERA_SOURCES_KEY, cam_id, src)
         # Also seed default config if not exists

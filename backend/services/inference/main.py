@@ -40,15 +40,6 @@ async def _inference_worker(
     log.info(f"GPU Worker {worker_id} ready")
 
     while not shutdown_event.is_set():
-        # Drain excess frames to prevent lag
-        qlen = await redis.llen(FRAME_QUEUE)
-        if qlen > 100:
-            log.warning("Inference lagging, draining queue", extra={"worker": worker_id, "qlen": qlen})
-            last_item = await redis.lindex(FRAME_QUEUE, -1)
-            await redis.delete(FRAME_QUEUE)
-            if last_item:
-                await redis.rpush(FRAME_QUEUE, last_item)
-
         item = await redis.blpop(FRAME_QUEUE, timeout=1)
         if item is None:
             continue
@@ -65,12 +56,16 @@ async def run() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _handle_signal)
+        try:
+            loop.add_signal_handler(sig, _handle_signal)
+        except NotImplementedError:
+            signal.signal(sig, lambda _signum, _frame: _handle_signal())
 
     start_http_server(METRICS_PORT)
     log.info("Prometheus metrics", extra={"port": METRICS_PORT})
 
     redis = aioredis.from_url(REDIS_URL, decode_responses=False)
+    await redis.ping()
 
     if GPU_WORKERS > 1:
         log.info(f"Starting {GPU_WORKERS} GPU inference workers")
@@ -93,14 +88,6 @@ async def run() -> None:
         log.info("Inference service ready (single worker)")
         try:
             while not shutdown_event.is_set():
-                qlen = await redis.llen(FRAME_QUEUE)
-                if qlen > 100:
-                    log.warning("Inference lagging, draining queue", extra={"qlen": qlen})
-                    last_item = await redis.lindex(FRAME_QUEUE, -1)
-                    await redis.delete(FRAME_QUEUE)
-                    if last_item:
-                        await redis.rpush(FRAME_QUEUE, last_item)
-
                 item = await redis.blpop(FRAME_QUEUE, timeout=1)
                 if item is None:
                     continue

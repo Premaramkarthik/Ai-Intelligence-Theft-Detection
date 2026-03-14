@@ -35,6 +35,7 @@ class RingBufferWriter:
         self.frame_bytes = int(np.prod(self.frame_shape))
         self.shm_name = f"cam_{camera_id}_ring"
         self.idx_name = f"cam_{camera_id}_idx"
+        self.gen_name = f"cam_{camera_id}_gen"
 
         # Allocate frame data block
         try:
@@ -74,21 +75,42 @@ class RingBufferWriter:
         self._idx_array = np.ndarray((1,), dtype=np.int64, buffer=self._idx_shm.buf)
         self._idx_array[0] = 0
 
-    def write(self, frame: np.ndarray) -> int:
-        """Write frame to next slot; returns the slot_id written."""
+        try:
+            self._gen_shm = mp_shm.SharedMemory(
+                name=self.gen_name,
+                create=True,
+                size=num_slots * ctypes.sizeof(ctypes.c_int64),
+            )
+        except FileExistsError:
+            stale = mp_shm.SharedMemory(name=self.gen_name)
+            stale.close()
+            stale.unlink()
+            self._gen_shm = mp_shm.SharedMemory(
+                name=self.gen_name,
+                create=True,
+                size=num_slots * ctypes.sizeof(ctypes.c_int64),
+            )
+        self._gen_array = np.ndarray((num_slots,), dtype=np.int64, buffer=self._gen_shm.buf)
+        self._gen_array.fill(0)
+
+    def write(self, frame: np.ndarray) -> tuple[int, int]:
+        """Write frame to next slot; returns (slot_id, generation)."""
         slot_id = int(self._idx_array[0]) % self.num_slots
         offset = slot_id * self.frame_bytes
         buf = np.ndarray(self.frame_shape, dtype=SLOT_DTYPE, buffer=self._shm.buf, offset=offset)
         np.copyto(buf, frame)
         # Advance the index (wraparound handled by modulo on read)
         self._idx_array[0] += 1
-        return slot_id
+        self._gen_array[slot_id] += 1
+        return slot_id, int(self._gen_array[slot_id])
 
     def close(self) -> None:
         self._shm.close()
         self._shm.unlink()
         self._idx_shm.close()
         self._idx_shm.unlink()
+        self._gen_shm.close()
+        self._gen_shm.unlink()
 
 
 class RingBufferReader:
@@ -106,24 +128,39 @@ class RingBufferReader:
         self.frame_shape = (frame_height, frame_width, 3)
         self.frame_bytes = int(np.prod(self.frame_shape))
         self.shm_name = f"cam_{camera_id}_ring"
+        self.gen_name = f"cam_{camera_id}_gen"
 
         try:
             self._shm = mp_shm.SharedMemory(name=self.shm_name, create=False)
+            self._gen_shm = mp_shm.SharedMemory(name=self.gen_name, create=False)
+            self._gen_array = np.ndarray((num_slots,), dtype=np.int64, buffer=self._gen_shm.buf)
             # Use cached logger to avoid overhead
             from shared.logging.logger import get_logger
             get_logger(__name__).debug("RingBufferReader attached", extra={"shm": self.shm_name})
         except FileNotFoundError:
             raise FileNotFoundError(f"Shared memory segment '{self.shm_name}' not found. Is MediaBridge running for {camera_id}?")
 
-    def read(self, slot_id: int) -> np.ndarray:
-        """Return a zero-copy NumPy view of the frame at slot_id."""
+    def read(self, slot_id: int, expected_generation: int | None = None) -> np.ndarray:
+        """Return a copy of the requested frame and guard against stale slot reuse."""
+        slot = slot_id % self.num_slots
+        if expected_generation is not None and int(self._gen_array[slot]) != expected_generation:
+            raise RuntimeError(
+                f"Stale frame pointer for {self.camera_id}: slot={slot_id} generation={expected_generation}"
+            )
         offset = (slot_id % self.num_slots) * self.frame_bytes
-        return np.ndarray(self.frame_shape, dtype=SLOT_DTYPE, buffer=self._shm.buf, offset=offset)
+        view = np.ndarray(self.frame_shape, dtype=SLOT_DTYPE, buffer=self._shm.buf, offset=offset)
+        frame = view.copy()
+        if expected_generation is not None and int(self._gen_array[slot]) != expected_generation:
+            raise RuntimeError(
+                f"Frame was overwritten during read for {self.camera_id}: slot={slot_id}"
+            )
+        return frame
 
     def close(self) -> None:
         try:
             self._shm.close()
-        except:
+            self._gen_shm.close()
+        except Exception:
             pass
 
 class ReaderCache:

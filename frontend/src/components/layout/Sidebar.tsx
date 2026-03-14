@@ -12,7 +12,8 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { cn } from '@/lib/utils';
+import type { LucideIcon } from 'lucide-react';
+import { cn } from '@/lib/cn';
 
 const navItems = [
     { icon: LayoutDashboard, label: 'Dashboard', href: '/' },
@@ -93,7 +94,7 @@ function StatusItem({
     progress,
     color
 }: {
-    icon: any;
+    icon: LucideIcon;
     label: string;
     value: string;
     progress: number;

@@ -9,7 +9,7 @@ log = get_logger(__name__)
 CAMERA_SOURCES_KEY = "camera_sources"
 
 @router.get("/")
-async def list_cameras(redis: aioredis.Redis = Depends(get_redis)):
+async def list_cameras(_user: str = Depends(verify_jwt), redis: aioredis.Redis = Depends(get_redis)):
     """List all configured camera sources."""
     sources = await redis.hgetall(CAMERA_SOURCES_KEY)
     return sources

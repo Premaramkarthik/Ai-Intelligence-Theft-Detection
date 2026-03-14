@@ -75,6 +75,7 @@ class FramePointer:
     """
     camera_id: str
     slot_id: int
+    generation: int
     t_capture: float            # time.time()
     trace_id: str = "0"         # UUID for end-to-end tracking
 
@@ -83,6 +84,7 @@ class FramePointer:
         return json.dumps({
             "camera_id": self.camera_id,
             "slot_id": self.slot_id,
+            "generation": self.generation,
             "t_capture": self.t_capture,
             "trace_id": self.trace_id,
         }).encode()
@@ -94,6 +96,7 @@ class FramePointer:
         return cls(
             camera_id=d["camera_id"],
             slot_id=d["slot_id"],
+            generation=d.get("generation", 0),
             t_capture=d["t_capture"],
             trace_id=d.get("trace_id", "0"),
         )

@@ -8,7 +8,7 @@ class SHMWriter:
     def __init__(self, camera_id: str, slots: int, h: int, w: int) -> None:
         self._writer = RingBufferWriter(camera_id, slots, h, w)
 
-    def write(self, frame: np.ndarray) -> int:
+    def write(self, frame: np.ndarray) -> tuple[int, int]:
         return self._writer.write(frame)
 
     def close(self) -> None:

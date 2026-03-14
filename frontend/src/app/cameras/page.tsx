@@ -1,7 +1,7 @@
 'use client';
 
 import DashboardShell from '@/components/layout/DashboardShell';
-import { Camera, Shield } from 'lucide-react';
+import { Camera } from 'lucide-react';
 
 export default function CamerasPage() {
     return (

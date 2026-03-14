@@ -27,7 +27,7 @@ log = get_logger(__name__)
 
 cfg = get_settings()
 REDIS_URL = cfg.redis_url
-STREAM_KEY = "stream:predictions"
+STREAM_KEY = "stream:incidents"
 GROUP_NAME = "persistence_group"
 CONSUMER_NAME = "persistence_worker_0"
 
@@ -53,12 +53,16 @@ async def run() -> None:
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, _handle_signal)
+        try:
+            loop.add_signal_handler(sig, _handle_signal)
+        except NotImplementedError:
+            signal.signal(sig, lambda _signum, _frame: _handle_signal())
 
     start_http_server(METRICS_PORT)
     log.info("Prometheus metrics", extra={"port": METRICS_PORT})
 
     redis = aioredis.from_url(REDIS_URL, decode_responses=True)
+    await redis.ping()
     await _ensure_consumer_group(redis)
 
     writer = DBWriter()
