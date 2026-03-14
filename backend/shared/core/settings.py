@@ -1,6 +1,8 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from functools import lru_cache
 import os
+from functools import lru_cache
+from urllib.parse import quote
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # Redis
@@ -8,10 +10,16 @@ class Settings(BaseSettings):
     redis_port: int = int(os.getenv("REDIS_PORT", "6379"))
     redis_password: str = os.getenv("REDIS_PASSWORD", "karthikS9")
     redis_db: int = int(os.getenv("REDIS_DB", "0"))
+    redis_url_env: str = os.getenv("REDIS_URL", "")
 
     @property
     def redis_url(self) -> str:
-        return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        if self.redis_url_env:
+            return self.redis_url_env
+        if self.redis_password:
+            password = quote(self.redis_password, safe="")
+            return f"redis://:{password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     # PostgreSQL
     postgres_host: str = os.getenv("POSTGRES_HOST", "localhost")

@@ -7,6 +7,13 @@
 echo "🐳 Starting Docker infrastructure services..."
 docker compose up -d redis postgres mqtt
 
+if ! docker compose ps redis | grep -q "Up"; then
+    echo "❌ Redis container is not running."
+    echo "   Another service is likely already bound to port 6379, or Redis failed to start."
+    echo "   Stop the conflicting Redis service or set REDIS_PASSWORD= in backend/.env if you intend to use a local no-auth Redis."
+    exit 1
+fi
+
 # 0. Cleanup any stale processes from previous runs
 ./scripts/cleanup.sh
 

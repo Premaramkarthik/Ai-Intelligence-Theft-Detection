@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 
 import redis
 
+from shared.core.settings import get_settings
+
 class _JsonFormatter(logging.Formatter):
     """Emit every log record as a single-line JSON object."""
 
@@ -48,14 +50,8 @@ class RedisLogHandler(logging.Handler):
         super().__init__()
         self.channel = channel
         self.redis_client = None
-        
-        # Build Redis URL dynamically from env vars
-        host = os.getenv("REDIS_HOST", "redis")
-        port = os.getenv("REDIS_PORT", "6379")
-        pw = os.getenv("REDIS_PASSWORD", "karthikS9")
-        db = os.getenv("REDIS_DB", "0")
-        
-        self._redis_url = os.getenv("REDIS_URL", f"redis://:{pw}@{host}:{port}/{db}")
+
+        self._redis_url = get_settings().redis_url
         self._formatter = _JsonFormatter()
 
     def emit(self, record: logging.LogRecord) -> None:
