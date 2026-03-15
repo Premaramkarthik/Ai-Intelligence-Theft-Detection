@@ -1,21 +1,5 @@
 import { create } from 'zustand';
-
-interface Camera {
-    id: string;
-    name: string;
-    url: string;
-    status: 'online' | 'offline' | 'connecting';
-    lastDetection?: string;
-}
-
-interface SystemStatus {
-    status: 'healthy' | 'degraded';
-    gpu_util: number;
-    gpu_mem: number;
-    gpu_temp: number;
-    cpu_usage: number;
-    ram_usage: number;
-}
+import type { Camera, SystemStatus } from '@/types/view-models';
 
 interface CameraState {
     cameras: Record<string, Camera>;
@@ -24,6 +8,7 @@ interface CameraState {
 
     setSystemStatus: (status: SystemStatus) => void;
     setCameras: (cameras: Record<string, Camera>) => void;
+    mergeCameras: (cameras: Record<string, Camera>) => void;
     updateCamera: (id: string, updates: Partial<Camera>) => void;
     addCamera: (camera: Camera) => void;
     removeCamera: (id: string) => void;
@@ -37,6 +22,22 @@ export const useCameraStore = create<CameraState>((set) => ({
 
     setSystemStatus: (status) => set({ systemStatus: status }),
     setCameras: (cameras) => set({ cameras }),
+    mergeCameras: (cameras) => set((state) => {
+        const merged: Record<string, Camera> = {};
+        Object.entries(cameras).forEach(([id, camera]) => {
+            const existing = state.cameras[id];
+            merged[id] = {
+                ...camera,
+                ...existing,
+                ...camera,
+                name: existing?.name ?? camera.name,
+                store_id: existing?.store_id ?? camera.store_id,
+                organization_id: existing?.organization_id ?? camera.organization_id,
+                lastDetection: existing?.lastDetection ?? camera.lastDetection,
+            };
+        });
+        return { cameras: merged };
+    }),
 
     updateCamera: (id, updates) => set((state) => ({
         cameras: {

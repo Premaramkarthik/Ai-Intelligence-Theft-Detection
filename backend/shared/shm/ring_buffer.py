@@ -45,15 +45,9 @@ class RingBufferWriter:
                 size=num_slots * self.frame_bytes,
             )
         except FileExistsError:
-            # Cleanup stale segment and retry
-            stale = mp_shm.SharedMemory(name=self.shm_name)
-            stale.close()
-            stale.unlink()
-            self._shm = mp_shm.SharedMemory(
-                name=self.shm_name,
-                create=True,
-                size=num_slots * self.frame_bytes,
-            )
+            # On Windows a previous process may still own the segment name.
+            # Reuse the existing block instead of failing startup.
+            self._shm = mp_shm.SharedMemory(name=self.shm_name, create=False)
 
         # Allocate atomic index block (1 × int64)
         try:
@@ -63,14 +57,7 @@ class RingBufferWriter:
                 size=ctypes.sizeof(ctypes.c_int64),
             )
         except FileExistsError:
-            stale = mp_shm.SharedMemory(name=self.idx_name)
-            stale.close()
-            stale.unlink()
-            self._idx_shm = mp_shm.SharedMemory(
-                name=self.idx_name,
-                create=True,
-                size=ctypes.sizeof(ctypes.c_int64),
-            )
+            self._idx_shm = mp_shm.SharedMemory(name=self.idx_name, create=False)
         
         self._idx_array = np.ndarray((1,), dtype=np.int64, buffer=self._idx_shm.buf)
         self._idx_array[0] = 0
@@ -82,14 +69,7 @@ class RingBufferWriter:
                 size=num_slots * ctypes.sizeof(ctypes.c_int64),
             )
         except FileExistsError:
-            stale = mp_shm.SharedMemory(name=self.gen_name)
-            stale.close()
-            stale.unlink()
-            self._gen_shm = mp_shm.SharedMemory(
-                name=self.gen_name,
-                create=True,
-                size=num_slots * ctypes.sizeof(ctypes.c_int64),
-            )
+            self._gen_shm = mp_shm.SharedMemory(name=self.gen_name, create=False)
         self._gen_array = np.ndarray((num_slots,), dtype=np.int64, buffer=self._gen_shm.buf)
         self._gen_array.fill(0)
 
@@ -106,11 +86,16 @@ class RingBufferWriter:
 
     def close(self) -> None:
         self._shm.close()
-        self._shm.unlink()
         self._idx_shm.close()
-        self._idx_shm.unlink()
         self._gen_shm.close()
-        self._gen_shm.unlink()
+        for shm in (self._shm, self._idx_shm, self._gen_shm):
+            try:
+                shm.unlink()
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                # Another process may still be attached on Windows.
+                pass
 
 
 class RingBufferReader:

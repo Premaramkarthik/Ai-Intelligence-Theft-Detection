@@ -2,33 +2,26 @@
 
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { Camera, Globe, Hash, Lock, Monitor, Play, User, X } from 'lucide-react';
+import { Camera, Globe, Monitor, Play, X } from 'lucide-react';
 
-import { authHeaders, buildApiUrl } from '@/lib/api';
+import { authHeaders, buildApiUrl, withApiCredentials } from '@/lib/api';
+import { getAuthFailureMessage, isAuthFailure } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useCameraStore } from '@/stores/useCameraStore';
+import type { ConnectResponse } from '@/types/contracts';
 
 type SourceType = 'webcam' | 'rtsp';
 
-interface ConnectResponse {
-  status: string;
-  message: string;
-  stream_ids: string[];
-}
-
 export default function ConnectionModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const token = useAuthStore((state) => state.token);
+  const logout = useAuthStore((state) => state.logout);
   const addCamera = useCameraStore((state) => state.addCamera);
   const [sourceType, setSourceType] = useState<SourceType>('rtsp');
   const [formData, setFormData] = useState({
     name: 'Main Entrance',
-    device_index: '0',
-    ip: '192.168.1.100',
-    port: '554',
-    username: '',
-    password: '',
-    substream: 'stream1',
+    store_id: 'main-store',
+    rtsp_url: 'rtsp://user:password@192.168.1.100:554/stream1',
   });
 
   const mutation = useMutation({
@@ -37,20 +30,18 @@ export default function ConnectionModal({ isOpen, onClose }: { isOpen: boolean; 
         sourceType === 'webcam'
           ? {
               source_type: 'webcam',
-              device_index: Number.parseInt(data.device_index, 10) || 0,
+              store_id: data.store_id.trim() || 'main-store',
             }
           : {
               source_type: 'rtsp',
+              store_id: data.store_id.trim() || 'main-store',
               rtsp_config: {
-                username: data.username,
-                password: data.password,
-                ip_address: data.ip,
-                port: Number.parseInt(data.port, 10) || 554,
-                substreams: [data.substream],
+                rtsp_url: data.rtsp_url.trim(),
               },
             };
 
       const response = await fetch(buildApiUrl('/api/camera/connect'), {
+        ...withApiCredentials(),
         method: 'POST',
         headers: {
           ...Object.fromEntries(authHeaders({ token }).entries()),
@@ -62,6 +53,10 @@ export default function ConnectionModal({ isOpen, onClose }: { isOpen: boolean; 
         detail?: string;
       };
       if (!response.ok) {
+        if (isAuthFailure(response.status, body.detail)) {
+          logout();
+          throw new Error(getAuthFailureMessage());
+        }
         throw new Error(body.detail ?? 'Connection failed');
       }
       return body;
@@ -72,7 +67,9 @@ export default function ConnectionModal({ isOpen, onClose }: { isOpen: boolean; 
         addCamera({
           id: cameraId,
           name: formData.name,
-          url: sourceType === 'webcam' ? `Webcam ${formData.device_index}` : formData.ip,
+          url: sourceType === 'webcam' ? 'Webcam 0' : formData.rtsp_url,
+          store_id: data.store_id,
+          organization_id: data.organization_id,
           status: 'online',
         });
       }
@@ -129,30 +126,22 @@ export default function ConnectionModal({ isOpen, onClose }: { isOpen: boolean; 
           className="space-y-4 p-6"
         >
           <InputGroup label="Dashboard Label" icon={Play} value={formData.name} onChange={(value) => setFormData({ ...formData, name: value })} placeholder="Security Zone A" />
+          <InputGroup label="Store ID" icon={Monitor} value={formData.store_id} onChange={(value) => setFormData({ ...formData, store_id: value })} placeholder="main-store" />
 
           {sourceType === 'rtsp' ? (
-            <>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="col-span-2">
-                  <InputGroup label="IP Address" icon={Globe} value={formData.ip} onChange={(value) => setFormData({ ...formData, ip: value })} placeholder="10.0.0.5" />
-                </div>
-                <InputGroup label="Port" icon={Hash} value={formData.port} onChange={(value) => setFormData({ ...formData, port: value })} placeholder="554" />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <InputGroup label="Username" icon={User} value={formData.username} onChange={(value) => setFormData({ ...formData, username: value })} placeholder="operator" />
-                <InputGroup label="Password" icon={Lock} type="password" value={formData.password} onChange={(value) => setFormData({ ...formData, password: value })} placeholder="••••••" />
-              </div>
-
-              <InputGroup label="Substream Identifier" icon={Hash} value={formData.substream} onChange={(value) => setFormData({ ...formData, substream: value })} placeholder="stream1" />
-            </>
+            <InputGroup
+              label="RTSP URL"
+              icon={Globe}
+              value={formData.rtsp_url}
+              onChange={(value) => setFormData({ ...formData, rtsp_url: value })}
+              placeholder="rtsp://user:password@192.168.1.100:554/stream1"
+            />
           ) : (
             <div className="space-y-4 rounded-2xl border border-slate-800/50 bg-slate-950/50 p-4">
               <div className="flex items-center gap-3 rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-3 text-emerald-500/80">
                 <Monitor className="h-5 w-5" />
-                <span className="text-[10px] font-bold uppercase tracking-wider">Internal bus ready</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider">Using local webcam 0 automatically</span>
               </div>
-              <InputGroup label="Hardware Device Index" icon={Hash} value={formData.device_index} onChange={(value) => setFormData({ ...formData, device_index: value })} placeholder="0" />
             </div>
           )}
 

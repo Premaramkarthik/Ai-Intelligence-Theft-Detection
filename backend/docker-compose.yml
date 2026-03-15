@@ -48,9 +48,10 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4:latest
+    profiles: ["devtools"]
     environment:
-      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-premaramkarthik99@gmail.com}
-      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
     ports: [ "5050:80" ]
     volumes: [ pgadmin-data:/var/lib/pgadmin ]
     depends_on:
@@ -64,7 +65,10 @@ services:
       context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.signaling
     env_file: .env
-    ports: [ "9000:9000", "9100:9100" ]
+    ports: [ "9000:9000" ]
+    ipc: host # fast Phase 1 fix so snapshot reads the same SHM namespace
+    volumes:
+      - evidence-data:/data/evidence
     depends_on: [ redis ]
     restart: unless-stopped
 
@@ -73,7 +77,6 @@ services:
       context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.mediabridge
     env_file: .env
-    ports: [ "9102:9102" ]
     ipc: host # shares /dev/shm with inference
     depends_on: [ redis ]
     restart: unless-stopped
@@ -93,7 +96,7 @@ services:
               capabilities: [ gpu ]
     volumes:
       - ./models:/app/models:ro
-    ports: [ "9101:9101" ]
+      - evidence-data:/data/evidence
     depends_on: [ redis ]
     restart: unless-stopped
 
@@ -102,7 +105,6 @@ services:
       context: . # root so COPY packages/shared works
       dockerfile: docker/Dockerfile.alerting
     env_file: .env
-    ports: [ "9103:9103" ]
     depends_on: [ redis ]
     restart: unless-stopped
 
@@ -113,7 +115,6 @@ services:
     env_file: .env
     volumes:
       - evidence-data:/data/evidence
-    ports: [ "9104:9104" ]
     depends_on: [ redis, postgres ]
     restart: unless-stopped
 

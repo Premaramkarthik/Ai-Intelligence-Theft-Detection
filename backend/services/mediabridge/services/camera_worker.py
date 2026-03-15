@@ -5,25 +5,29 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 
 import cv2
 import redis.asyncio as aioredis
 
 from shared.logging.logger import get_logger
+from shared.redis import camera_status_key, enqueue_frame, frame_pointer_key
+from shared.tracing import new_trace_id
 from shared.types.models import FramePointer
 from shared.core.settings import get_settings
 from services.mediabridge.services.shm_writer import SHMWriter
 from services.mediabridge.sources.sources import get_source, BaseSource
 from services.mediabridge.utils.metrics import (
-    frames_captured, frames_dropped, frame_latency, cameras_active,
+    camera_state_transitions,
+    cameras_active,
+    frame_latency,
+    frames_captured,
+    frames_dropped,
 )
 
 log = get_logger(__name__)
 
 MAX_CONSECUTIVE_FAILURES = 10
 BACKOFF_CAP_S = 30.0
-FRAME_QUEUE = "frames"
 
 
 class CameraWorker:
@@ -42,6 +46,7 @@ class CameraWorker:
         self._h = cfg.frame_height
         self._w = cfg.frame_width
         self._frame_queue_maxlen = cfg.frame_queue_maxlen
+        self._frame_interval_s = 1.0 / max(cfg.camera_stream_fps, 0.1)
         self._shm = SHMWriter(
             camera_id,
             cfg.shm_slots_per_cam,
@@ -50,7 +55,8 @@ class CameraWorker:
         )
 
     async def _set_status(self, status: str) -> None:
-        await self._redis.set(f"camera_status:{self._camera_id}", status)
+        await self._redis.set(camera_status_key(self._camera_id), status)
+        camera_state_transitions.labels(camera_id=self._camera_id, state=status).inc()
 
     async def _reconnect(self) -> BaseSource | None:
         """Reconnect with exponential backoff."""
@@ -72,6 +78,7 @@ class CameraWorker:
 
     async def run(self) -> None:
         """Capture loop with auto-reconnection."""
+        await self._redis.delete(frame_pointer_key(self._camera_id))
         source = get_source(self._source_path)
         if not source.is_opened():
             log.error("Initial connection failed", extra={"camera_id": self._camera_id})
@@ -81,7 +88,14 @@ class CameraWorker:
 
         cameras_active.inc()
         await self._set_status("online")
-        log.info("Camera worker started", extra={"camera_id": self._camera_id, "source": self._source_path})
+        log.info(
+            "Camera worker started",
+            extra={
+                "camera_id": self._camera_id,
+                "source": self._source_path,
+                "target_fps": round(1.0 / self._frame_interval_s, 2),
+            },
+        )
 
         consecutive_failures = 0
         try:
@@ -99,6 +113,7 @@ class CameraWorker:
                             extra={"camera_id": self._camera_id, "failures": consecutive_failures},
                         )
                         source.release()
+                        await self._redis.delete(frame_pointer_key(self._camera_id))
                         source = await self._reconnect()
                         if source is None:
                             break
@@ -109,10 +124,15 @@ class CameraWorker:
 
                 consecutive_failures = 0
 
+                if frame.ndim == 2:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                elif frame.ndim == 3 and frame.shape[2] == 4:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
                 if frame.shape[0] != self._h or frame.shape[1] != self._w:
                     frame = cv2.resize(frame, (self._w, self._h))
 
-                trace_id = str(uuid.uuid4())[:8]
+                trace_id = new_trace_id()
                 slot_id, generation = self._shm.write(frame)
 
                 ptr = FramePointer(
@@ -122,22 +142,23 @@ class CameraWorker:
                     t_capture=time.time(),
                     trace_id=trace_id,
                 )
-                queue_len = await self._redis.llen(FRAME_QUEUE)
-                if queue_len >= self._frame_queue_maxlen:
-                    await self._redis.lpop(FRAME_QUEUE)
-                    log.warning(
-                        "Dropping oldest queued frame due to backpressure",
-                        extra={"camera_id": self._camera_id, "queue_len": queue_len},
-                    )
                 payload = ptr.to_bytes().decode("utf-8")
-                await self._redis.rpush(FRAME_QUEUE, payload)
-                await self._redis.set(f"frame_ptr:{self._camera_id}", payload)
+                await enqueue_frame(
+                    self._redis,
+                    self._camera_id,
+                    payload,
+                    self._frame_queue_maxlen,
+                )
+                await self._redis.set(frame_pointer_key(self._camera_id), payload)
 
                 latency = (time.perf_counter() - t_start) * 1000
                 frame_latency.labels(camera_id=self._camera_id).set(latency)
                 frames_captured.labels(camera_id=self._camera_id).inc()
 
-                await asyncio.sleep(0.01)
+                elapsed_s = time.perf_counter() - t_start
+                sleep_s = max(0.0, self._frame_interval_s - elapsed_s)
+                if sleep_s:
+                    await asyncio.sleep(sleep_s)
         except Exception as e:
             log.exception("Camera worker crashed", extra={"camera_id": self._camera_id, "error": str(e)})
         finally:

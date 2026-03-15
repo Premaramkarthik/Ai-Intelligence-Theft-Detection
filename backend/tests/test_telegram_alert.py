@@ -57,7 +57,8 @@ async def main():
     bot = Bot(token=token)
 
     # Auto-discover or use provided chat ID
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    chat_ids = os.getenv("TELEGRAM_ADMIN_CHAT_IDS", "")
+    chat_id = chat_ids.split(",")[0].strip() if chat_ids else ""
     if not chat_id:
         chat_id = await auto_discover_chat_id(bot)
         if not chat_id:
@@ -90,7 +91,7 @@ async def main():
 
     print(f"\n🎉 All tests passed! Chat ID: {chat_id}")
     print(f"   Add to .env: TELEGRAM_BOT_TOKEN={token}")
-    print(f"                TELEGRAM_CHAT_ID={chat_id}")
+    print(f"                TELEGRAM_ADMIN_CHAT_IDS={chat_id}")
 
 
 if __name__ == "__main__":

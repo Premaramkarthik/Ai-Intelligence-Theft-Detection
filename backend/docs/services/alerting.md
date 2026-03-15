@@ -26,10 +26,9 @@ The **Alerting Service** acts as the bridge between the internal AI intelligence
 
 | Variable | Description |
 | :--- | :--- |
-| `TELEGRAM_TOKEN` | Your BotFather API token. |
-| `TELEGRAM_CHAT_ID` | The ID of the group/channel where alerts go. |
-| `MQTT_HOST` / `MQTT_PORT` | Connectivity for your MQTT broker (e.g., Mosquitto). |
-| `ALERT_CONFIDENCE` | Minimum threshold (e.g., 0.85) to trigger an external message. |
+| `TELEGRAM_BOT_TOKEN` | Your BotFather API token. |
+| `TELEGRAM_ADMIN_CHAT_IDS` | Comma-separated chat IDs that receive alerts. |
+| `ALERT_CONFIDENCE_THRESHOLD` | Minimum threshold (e.g., 0.85) to trigger an external message. |
 
 ---
 

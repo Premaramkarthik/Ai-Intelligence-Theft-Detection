@@ -30,8 +30,13 @@ async def readiness(request: Request, redis=Depends(get_redis)) -> dict:
         "redis": "ok",
         "postgres": "ok",
         "auth_configured": bool(settings.jwt_secret and settings.admin_username and settings.admin_password),
-        "model_configured": bool(settings.model_engine_path),
+        "model_configured": bool(settings.detector_engine_path and settings.classifier_engine_path),
     }
+
+
+@router.get("/ready")
+async def ready_alias(request: Request, redis=Depends(get_redis)) -> dict:
+    return await readiness(request, redis)
 
 
 @router.get("/health")

@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 
 import psutil
+import redis.asyncio as aioredis
 
 try:
     import pynvml
@@ -15,7 +15,10 @@ except ImportError:
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from services.signaling.api.deps import verify_ws_token
+from services.signaling.utils.metrics import websocket_clients
 from shared.logging.logger import get_logger
+from shared.redis.keys import CAMERA_SOURCES_KEY, frame_pointer_key
+from shared.types.status import GpuStatus, SystemResourceStatus, SystemStatusMessage
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -37,6 +40,7 @@ def _get_gpu_stats() -> dict:
             "used": info.used // 1024**2,
             "free": info.free // 1024**2,
             "utilization": pynvml.nvmlDeviceGetUtilizationRates(handle).gpu,
+            "temperature": pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU),
         })
         pynvml.nvmlShutdown()
     except Exception:
@@ -52,6 +56,7 @@ async def ws_status(websocket: WebSocket) -> None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     await websocket.accept()
+    websocket_clients.labels(channel="status").inc()
     log.info("System Status WS connected")
 
     gpu_cache: dict = {}
@@ -66,19 +71,42 @@ async def ws_status(websocket: WebSocket) -> None:
                 gpu_cache = await asyncio.to_thread(_get_gpu_stats)
                 gpu_cache_ts = now
 
-            payload = {
-                "ts": now,
-                "system": {
-                    "cpu_usage": psutil.cpu_percent(),
-                    "ram_usage": psutil.virtual_memory().percent,
-                },
-                "gpu": gpu_cache,
-            }
+            redis_alive = False
+            active_workers = 0
+            total_cameras = 0
+            redis_client: aioredis.Redis = websocket.app.state.redis
+            try:
+                await redis_client.ping()
+                redis_alive = True
+                cameras = await redis_client.hgetall(CAMERA_SOURCES_KEY)
+                total_cameras = len(cameras)
+                for camera_id in cameras:
+                    if await redis_client.exists(frame_pointer_key(camera_id)):
+                        active_workers += 1
+            except Exception:
+                redis_alive = False
 
-            await websocket.send_text(json.dumps(payload))
+            payload = SystemStatusMessage(
+                status="healthy" if redis_alive and active_workers == total_cameras else "degraded",
+                redis="connected" if redis_alive else "disconnected",
+                cameras={
+                    "total_configured": total_cameras,
+                    "active_streaming": active_workers,
+                },
+                ts=now,
+                gpu=GpuStatus.model_validate(gpu_cache),
+                system=SystemResourceStatus(
+                    cpu_usage=psutil.cpu_percent(),
+                    ram_usage=psutil.virtual_memory().percent,
+                ),
+            )
+
+            await websocket.send_text(payload.model_dump_json())
             await asyncio.sleep(1.0)
 
     except WebSocketDisconnect:
         log.info("System Status WS disconnected")
     except Exception as exc:
         log.error("System Status WS error", extra={"error": str(exc)})
+    finally:
+        websocket_clients.labels(channel="status").dec()

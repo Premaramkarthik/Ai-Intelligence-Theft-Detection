@@ -3,9 +3,10 @@
 import { FormEvent, useState } from 'react';
 import { Shield, User, Lock } from 'lucide-react';
 
-import { buildApiUrl } from '@/lib/api';
+import { buildApiUrl, withApiCredentials } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/stores/useAuthStore';
+import type { TokenResponse } from '@/types/contracts';
 
 export default function AuthPanel() {
   const [username, setUsername] = useState('');
@@ -23,15 +24,18 @@ export default function AuthPanel() {
       body.set('username', username);
       body.set('password', password);
       const response = await fetch(buildApiUrl('/auth/token'), {
+        ...withApiCredentials(),
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
       });
-      const payload = await response.json().catch(() => ({}));
+      const payload = (await response.json().catch(() => ({}))) as Partial<TokenResponse> & {
+        detail?: string;
+      };
       if (!response.ok) {
         throw new Error(payload.detail ?? 'Authentication failed');
       }
-      setToken(payload.access_token);
+      setToken(payload.authenticated ? 'cookie' : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {

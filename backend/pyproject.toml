@@ -32,13 +32,11 @@ dependencies = [
     # ── ML & Computer Vision ───────────────────────────────────────────────────
     "torch",
     "torchvision",
-    "pytorch-lightning",
     "ultralytics",
-    "timm",
-    "transformers",
     "numpy",
     "opencv-python-headless",
     "av",
+    "onnxruntime",
     # ── Messaging & Alerts ─────────────────────────────────────────────────────
     "python-telegram-bot",
     # ── Observability ──────────────────────────────────────────────────────────

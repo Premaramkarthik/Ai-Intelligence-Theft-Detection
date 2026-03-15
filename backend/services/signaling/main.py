@@ -7,14 +7,16 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from prometheus_client import make_asgi_app
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from services.signaling.api.router import api_router
+from services.signaling.webrtc.peer_manager import peer_manager
 from shared.core.settings import get_settings
 from shared.db.session import DatabaseSession
 from shared.logging.logger import get_logger
@@ -25,16 +27,13 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 def _cors_origins() -> list[str]:
-    origins = [origin.strip() for origin in cfg.cors_origins.split(",") if origin.strip()]
-    return origins or ["http://localhost:3000", "http://127.0.0.1:3000"]
+    return cfg.cors_origin_list
 
 
 def _validate_security_settings() -> None:
-    if cfg.app_env != "development":
-        if "*" in _cors_origins():
-            raise RuntimeError("Wildcard CORS is not allowed outside development")
-        if not cfg.jwt_secret or not cfg.admin_username or not cfg.admin_password:
-            raise RuntimeError("JWT/admin credentials must be configured outside development")
+    cfg.validate_auth_settings(require_admin_credentials=True)
+    if cfg.expose_metrics_api and not cfg.metrics_token:
+        raise RuntimeError("METRICS_TOKEN must be configured when EXPOSE_METRICS_API=true")
 
 
 @asynccontextmanager
@@ -54,6 +53,7 @@ async def lifespan(application: FastAPI):
     from shared.shm.ring_buffer import ReaderCache
 
     ReaderCache.clear()
+    await peer_manager.close_all()
     await application.state.db.disconnect()
     await application.state.redis.aclose()
     log.info("Signaling service stopped")
@@ -63,8 +63,8 @@ def create_app() -> FastAPI:
     application = FastAPI(
         title="Pipeline Signaling API",
         version="0.4.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if cfg.enable_api_docs else None,
+        redoc_url="/redoc" if cfg.enable_api_docs else None,
         lifespan=lifespan,
     )
     application.state.limiter = limiter
@@ -78,8 +78,23 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type"],
     )
 
-    metrics_app = make_asgi_app()
-    application.mount("/metrics", metrics_app)
+    @application.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+    if cfg.expose_metrics_api:
+        @application.get("/metrics", include_in_schema=False)
+        async def metrics(request: Request) -> Response:
+            token = request.headers.get("x-metrics-token", "").strip()
+            if token != cfg.metrics_token:
+                raise HTTPException(status_code=404, detail="Not found")
+            return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
     application.include_router(api_router)
     return application
 

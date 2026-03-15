@@ -7,12 +7,13 @@ Import from here, not from the submodule directly:
 from shared.types.models import (
     BBox,
     Detection,
-    TrackedPerson,
+    DetectionEvent,
     FramePointer,
     InteractionState,
     TrackState,
-    DetectionEvent,
+    TrackedPerson,
 )
+from shared.types.status import CameraFleetStatus, GpuStatus, SystemResourceStatus, SystemStatusMessage
 
 __all__ = [
     "BBox",
@@ -22,4 +23,8 @@ __all__ = [
     "InteractionState",
     "TrackState",
     "DetectionEvent",
+    "CameraFleetStatus",
+    "GpuStatus",
+    "SystemResourceStatus",
+    "SystemStatusMessage",
 ]

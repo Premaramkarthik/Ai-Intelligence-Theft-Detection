@@ -6,7 +6,7 @@ The **Signaling Service** provides a FastAPI-powered REST API and WebSocket inte
 
 ## 🚀 Interactive Documentation
 Visit the Swagger UI on your local deployment for a full interactive reference:
-- **URL**: `http://localhost:9000/docs`
+- **URL**: `http://localhost:9001/docs`
 
 ---
 
@@ -25,17 +25,14 @@ Visit the Swagger UI on your local deployment for a full interactive reference:
 - **Description**: Dynamically adds a new camera source (Webcam or RTSP).
 - **Payload (Webcam)**:
   ```json
-  {"type": "webcam", "device_index": 0}
+  {"source_type": "webcam"}
   ```
 - **Payload (RTSP)**:
   ```json
   {
-    "type": "rtsp",
+    "source_type": "rtsp",
     "rtsp_config": {
-      "username": "admin",
-      "password": "password",
-      "ip_address": "192.168.1.100",
-      "substreams": ["stream1"]
+      "rtsp_url": "rtsp://admin:password@192.168.1.100:554/stream1"
     }
   }
   ```
@@ -61,7 +58,7 @@ Visit the Swagger UI on your local deployment for a full interactive reference:
 ## 📡 WebSocket Interface
 
 ### 1. Live Predictions Stream
-- **URL**: `ws://localhost:9000/ws/predictions`
+- **URL**: `ws://localhost:9001/ws/predictions`
 - **Payload**:
   ```json
   {
@@ -73,7 +70,7 @@ Visit the Swagger UI on your local deployment for a full interactive reference:
   ```
 
 ### 2. Live Camera Preview (MJPEG)
-- **URL**: `ws://localhost:9000/ws/camera/{camera_id}`
+- **URL**: `ws://localhost:9001/ws/camera/{camera_id}`
 - **Description**: Dedicated binary stream for browser-native video preview.
 
 ---

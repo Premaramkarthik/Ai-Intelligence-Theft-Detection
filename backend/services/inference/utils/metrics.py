@@ -21,6 +21,59 @@ frames_dropped = Counter(
     "Stale / unreadable frames skipped",
 )
 
+classification_attempts = Counter(
+    "inference_classification_attempts_total",
+    "Classification attempts started",
+)
+
+classification_failures = Counter(
+    "inference_classification_failures_total",
+    "Classification failures",
+)
+
+incidents_emitted = Counter(
+    "inference_incidents_emitted_total",
+    "Incidents emitted by inference",
+)
+
+detector_failures = Counter(
+    "inference_detector_failures_total",
+    "Detector execution failures",
+)
+
+redis_reconnects = Counter(
+    "inference_redis_reconnects_total",
+    "Inference Redis reconnect attempts",
+)
+
+queue_depth = Gauge(
+    "inference_frame_queue_depth",
+    "Observed shared frame queue depth",
+)
+
+camera_queue_depth = Gauge(
+    "inference_camera_queue_depth",
+    "Per-camera inference queue depth",
+    ["camera_id"],
+)
+
+camera_frame_age_seconds = Gauge(
+    "inference_camera_frame_age_seconds",
+    "Observed age of dequeued frames by camera",
+    ["camera_id"],
+)
+
+stale_frame_drops = Counter(
+    "inference_stale_frame_drops_total",
+    "Dropped stale frames by camera",
+    ["camera_id"],
+)
+
+reid_available = Gauge(
+    "inference_reid_available",
+    "ReID availability, 1 when enabled",
+)
+
 gpu_memory_bytes = Gauge(
     "inference_gpu_memory_bytes",
     "Current GPU memory usage in bytes",

@@ -1,11 +1,5 @@
 """
-ObjectDetector — unified YOLO segmentation model for persons + items.
-
-Single forward pass splits results:
-  - class 0 (person) → bboxes, masks, track IDs
-  - class != 0        → item dicts with bbox, cls, label, conf
-
-Supports TensorRT (.engine) for 2-6x inference speedup.
+Object detector wrapper for TensorRT or ONNX detector models.
 """
 from __future__ import annotations
 
@@ -13,16 +7,14 @@ import os
 from dataclasses import dataclass, field
 
 import numpy as np
-from ultralytics import YOLO
 from shared.logging.logger import get_logger
+from ultralytics import YOLO
 
 log = get_logger(__name__)
 
 PERSON_CLS = 0
-MODEL_CANDIDATES = [
-    "models/yolo26n-seg.engine",  # TensorRT (preferred)
-    "models/yolo26n-seg.pt",      # PyTorch fallback
-]
+DETECTOR_ENGINE_FILENAME = "yolo26n.engine"
+DETECTOR_ONNX_FILENAME = "yolo26n.onnx"
 
 
 @dataclass
@@ -34,47 +26,61 @@ class DetectionResult:
 
 
 class ObjectDetector:
-    def __init__(self, model_path: str | None = None, device: str = "cuda") -> None:
+    def __init__(self, model_path: str, device: str = "cuda") -> None:
         self._device = device
-        self._model: YOLO | None = None
+        self._model_path = model_path
+        self._is_onnx = model_path.endswith(".onnx")
+        self._base_model = self._load_model(model_path)
+        self._tracker_models: dict[str, YOLO] = {}
 
-        paths = []
-        if model_path:
-            paths.append(str(model_path))
-        paths.extend(MODEL_CANDIDATES)
+    def _load_model(self, model_path: str) -> YOLO:
+        if os.path.isdir(model_path) or not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Required detector model is missing: {model_path}. "
+                f"Expected `{DETECTOR_ENGINE_FILENAME}` or `{DETECTOR_ONNX_FILENAME}`."
+            )
+        if not model_path.endswith((".engine", ".onnx")):
+            raise ValueError(f"Detector must use a TensorRT engine or ONNX model, got: {model_path}")
 
-        for p in paths:
-            if os.path.exists(p) and not os.path.isdir(p):
-                self._model = YOLO(p)
-                log.info("ObjectDetector loaded", extra={"path": p, "device": device})
-                return
+        model = YOLO(model_path)
+        log.info("ObjectDetector loaded", extra={"path": model_path, "device": self._device})
+        return model
 
-        self._model = YOLO("yolo26n-seg.pt")
-        log.info("ObjectDetector loaded via Ultralytics hub")
+    def _predict_kwargs(self) -> dict:
+        kwargs: dict[str, object] = {}
+        if self._device in {"cpu", "cuda"}:
+            kwargs["device"] = self._device
+        if self._is_onnx and self._device == "cpu":
+            # Use OpenCV DNN for local CPU fallback when TensorRT/CUDA is unavailable.
+            kwargs["dnn"] = True
+            kwargs["agnostic_nms"] = True
+            kwargs["imgsz"] = 640
+            kwargs["conf"] = 0.25
+            kwargs["iou"] = 0.45
+        else:
+            kwargs["agnostic_nms"] = True
+        return kwargs
+
+    def _tracker_model(self, tracker_id: str) -> YOLO:
+        if tracker_id not in self._tracker_models:
+            self._tracker_models[tracker_id] = self._load_model(self._model_path)
+            log.info("Tracker model isolated", extra={"tracker_id": tracker_id})
+        return self._tracker_models[tracker_id]
 
     def warmup(self, imgsz: tuple[int, int] = (640, 640)) -> None:
-        """Run 3 dummy passes to warm up GPU kernels and TensorRT engine."""
-        if self._model is None:
-            return
         dummy = np.zeros((*imgsz, 3), dtype=np.uint8)
         for _ in range(3):
-            self._model.predict(dummy, verbose=False)
+            self._base_model.predict(dummy, verbose=False, **self._predict_kwargs())
         log.info("ObjectDetector warmup complete")
 
-    def detect_and_track(
-        self, frame: np.ndarray, tracker_id: str = "default"
-    ) -> DetectionResult:
-        """Single forward pass: track persons + detect items.
-
-        Args:
-            frame: BGR image (H, W, 3).
-            tracker_id: unique ID per camera to isolate tracker state.
-        """
-        if self._model is None:
-            return DetectionResult()
+    def detect_and_track(self, frame: np.ndarray, tracker_id: str = "default") -> DetectionResult:
         try:
-            results = self._model.track(
-                frame, persist=True, verbose=False, tracker=tracker_id
+            model = self._tracker_model(tracker_id)
+            results = model.track(
+                frame,
+                persist=True,
+                verbose=False,
+                **self._predict_kwargs(),
             )
             res = results[0]
 
@@ -98,18 +104,19 @@ class ObjectDetector:
                     result.person_boxes.append(bbox)
                     if len(masks) > 0 and i < len(masks):
                         result.person_masks.append(masks[i])
-                    result.track_ids.append(
-                        int(ids[i]) if i < len(ids) else i + 1
-                    )
-                else:
-                    result.items.append({
+                    result.track_ids.append(int(ids[i]) if i < len(ids) else i + 1)
+                    continue
+
+                result.items.append(
+                    {
                         "bbox": bbox,
                         "cls": int(cls),
-                        "label": self._model.names[int(cls)],
+                        "label": model.names[int(cls)],
                         "conf": float(confs[i]),
-                    })
+                    }
+                )
 
             return result
         except Exception as exc:
-            log.warning("Detection failed", extra={"error": str(exc)})
+            log.warning("Detection failed", extra={"error": str(exc), "tracker_id": tracker_id})
             return DetectionResult()

@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from services.signaling.api.deps import verify_jwt
+from shared.redis.keys import INCIDENT_STREAM_KEY, incident_channel
+from shared.tracing import new_trace_id
 from shared.types.events import IncidentEvent, FrameReference, Severity, utc_now_iso
 
 router = APIRouter()
@@ -27,7 +29,7 @@ async def trigger_alert(
     redis = request.app.state.redis
     event = IncidentEvent(
         camera_id=data.camera_id,
-        trace_id="manual",
+        trace_id=new_trace_id(),
         timestamp=utc_now_iso(),
         label=data.label,
         confidence=data.confidence,
@@ -36,6 +38,7 @@ async def trigger_alert(
         metadata={"source": "manual_trigger"},
     )
     payload = event.model_dump(mode="json")
-    await redis.xadd("stream:incidents", {"payload": json.dumps(payload)})
-    await redis.publish(f"incidents:{data.camera_id}", json.dumps(payload))
+    serialized = json.dumps(payload)
+    await redis.xadd(INCIDENT_STREAM_KEY, {"payload": serialized})
+    await redis.publish(incident_channel(data.camera_id), serialized)
     return {"status": "success", "message": "Alert triggered", "payload": payload}

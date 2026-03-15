@@ -10,6 +10,8 @@ except ImportError:
 
 from services.signaling.api.deps import get_redis, verify_jwt
 from shared.logging.logger import get_logger
+from shared.redis.keys import CAMERA_SOURCES_KEY, frame_pointer_key
+from shared.types.status import CameraFleetStatus, GpuStatus, SystemResourceStatus, SystemStatusMessage
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -27,10 +29,10 @@ async def get_system_status(_user: str = Depends(verify_jwt), redis: aioredis.Re
         pass
 
     # 2. Camera Stats
-    cameras = await redis.hgetall("camera_sources")
+    cameras = await redis.hgetall(CAMERA_SOURCES_KEY)
     active_workers = 0
     for cam_id in cameras:
-        if await redis.exists(f"frame_ptr:{cam_id}"):
+        if await redis.exists(frame_pointer_key(cam_id)):
             active_workers += 1
 
     # 3. GPU Stats (Simple)
@@ -44,7 +46,8 @@ async def get_system_status(_user: str = Depends(verify_jwt), redis: aioredis.Re
                 "total": info.total // 1024**2,
                 "used": info.used // 1024**2,
                 "free": info.free // 1024**2,
-                "utilization": pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
+                "utilization": pynvml.nvmlDeviceGetUtilizationRates(handle).gpu,
+                "temperature": pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU),
             })
             pynvml.nvmlShutdown()
         except Exception:
@@ -56,14 +59,15 @@ async def get_system_status(_user: str = Depends(verify_jwt), redis: aioredis.Re
         "ram_usage": psutil.virtual_memory().percent
     }
 
-    return {
-        "status": "healthy" if redis_alive and active_workers == len(cameras) else "degraded",
-        "redis": "connected" if redis_alive else "disconnected",
-        "cameras": {
-            "total_configured": len(cameras),
-            "active_streaming": active_workers
-        },
-        "gpu": gpu_stats,
-        "system": system_stats,
-        "uptime": time.time() # Placeholder for real uptime
-    }
+    payload = SystemStatusMessage(
+        status="healthy" if redis_alive and active_workers == len(cameras) else "degraded",
+        redis="connected" if redis_alive else "disconnected",
+        cameras=CameraFleetStatus(
+            total_configured=len(cameras),
+            active_streaming=active_workers,
+        ),
+        gpu=GpuStatus.model_validate(gpu_stats),
+        system=SystemResourceStatus.model_validate(system_stats),
+        uptime=time.time(),
+    )
+    return payload.model_dump(mode="json")

@@ -9,8 +9,8 @@ import os
 import shutil
 import subprocess
 import threading
-import time
 from shared.logging.logger import get_logger
+from shared.validation import validate_source
 
 log = get_logger(__name__)
 
@@ -36,7 +36,13 @@ class OpenCVSource(BaseSource):
 
     def read(self) -> np.ndarray | None:
         ret, frame = self._cap.read()
-        return frame if ret else None
+        if not ret or frame is None:
+            return None
+        if frame.ndim == 2:
+            return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        if frame.ndim == 3 and frame.shape[2] == 4:
+            return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        return frame
 
     def release(self) -> None:
         if self._cap:
@@ -61,7 +67,7 @@ class FFmpegSource(BaseSource):
 
         cmd = ["ffmpeg"]
         if _has_nvdec():
-            cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+            cmd.extend(["-hwaccel", "cuda"])
             log.info("FFmpeg using NVDEC GPU decode")
         else:
             cmd.extend(["-hwaccel", "auto"])
@@ -69,9 +75,9 @@ class FFmpegSource(BaseSource):
         cmd.extend([
             "-rtsp_transport", "tcp",
             "-i", url,
+            "-vf", f"scale={self._w}:{self._h},format=bgr24",
             "-f", "rawvideo",
             "-pix_fmt", "bgr24",
-            "-s", f"{self._w}x{self._h}",
             "-an", "-sn",
             "-loglevel", "error",
             "pipe:1",
@@ -134,46 +140,6 @@ class RTSPSource(FFmpegSource):
     def __init__(self, url: str) -> None:
         super().__init__(url)
         log.info("Initialized RTSP source (FFmpeg)", extra={"url": url})
-
-    @staticmethod
-    def construct_url(config: dict) -> list[str]:
-        """Constructs RTSP URL(s) from config."""
-        username = config.get("username")
-        password = config.get("password")
-        ip = config.get("ip_address")
-        port = config.get("port", 554)
-        substreams = config.get("substreams", [])
-        
-        if not all([username, password, ip]):
-            raise ValueError("Incomplete RTSP configuration")
-            
-        urls = []
-        for substream in substreams:
-            url = f"rtsp://{username}:{password}@{ip}:{port}/{substream}"
-            urls.append(url)
-        return urls
-
-def validate_source(src: str | int, timeout_s: float = 3.0) -> bool:
-    """Check if source is actually readable using OpenCV (fast check)."""
-    if isinstance(src, int):
-        cap = cv2.VideoCapture(src, cv2.CAP_V4L2)
-    else:
-        cap = cv2.VideoCapture(src)
-        
-    try:
-        start = time.time()
-        while time.time() - start < timeout_s:
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    return True
-            time.sleep(0.1)
-        return False
-    except Exception as e:
-        log.error("Validation error", extra={"error": str(e)})
-        return False
-    finally:
-        cap.release()
 
 def get_source(src: str | int) -> BaseSource:
     # If it's a numeric string, cast to int (webcam index)

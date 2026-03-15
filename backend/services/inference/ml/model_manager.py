@@ -1,15 +1,15 @@
 """
-Singleton Manager for GPU Models.
-Handles lazy loading, warm-ups, TensorRT auto-detection, and GPU context sharing.
+Singleton manager for the fixed detector and behavior-classifier engines.
 """
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+from services.inference.ml.engines.behavior_classifier import BehaviorClassifier
 from shared.logging.logger import get_logger
 from shared.core.settings import get_settings
 from services.inference.ml.engines.object_detector import ObjectDetector
-from services.inference.ml.engines.shoplifting_model import ShopliftingModel
 
 log = get_logger(__name__)
 
@@ -28,7 +28,7 @@ class ModelManager:
             return
         self._cfg = get_settings()
         self._detector: ObjectDetector | None = None
-        self._shoplifting_model: ShopliftingModel | None = None
+        self._behavior_classifier: BehaviorClassifier | None = None
         self._redis = None
         self._lock = asyncio.Lock()
         self._initialized = True
@@ -43,30 +43,49 @@ class ModelManager:
 
     def _detect_device(self) -> str:
         try:
-            import cv2
-            if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-                return self._cfg.model_backend
+            import torch
+            if torch.cuda.is_available():
+                return "cuda"
         except Exception:
             pass
-        try:
-            import pynvml
-            pynvml.nvmlInit()
-            if pynvml.nvmlDeviceGetCount() > 0:
-                pynvml.nvmlShutdown()
-                return self._cfg.model_backend
-        except Exception:
-            pass
-        log.warning("No GPU detected, falling back to CPU")
         return "cpu"
+
+    @staticmethod
+    def _fallback_onnx_path(model_path: str) -> str:
+        path = Path(model_path)
+        return str(path.with_suffix(".onnx"))
+
+    def _resolve_detector_path(self, device: str) -> str:
+        path = self._cfg.detector_engine_path
+        if device == "cuda":
+            return path
+        fallback = self._fallback_onnx_path(path)
+        if not Path(fallback).exists():
+            raise RuntimeError(
+                "CUDA is unavailable and detector ONNX fallback is missing: "
+                f"{fallback}"
+            )
+        return fallback
+
+    def _resolve_classifier_path(self, device: str) -> str:
+        path = self._cfg.classifier_engine_path
+        if device == "cuda":
+            return path
+        fallback = self._fallback_onnx_path(path)
+        if not Path(fallback).exists():
+            raise RuntimeError(
+                "CUDA is unavailable and classifier ONNX fallback is missing: "
+                f"{fallback}"
+            )
+        return fallback
 
     async def preload_all(self) -> None:
         device = self._detect_device()
         log.info(f"Targeting inference device: {device}")
         await asyncio.gather(
             self.get_detector(device=device),
-            self.get_shoplifting_model(device=device),
+            self.get_behavior_classifier(device=device),
         )
-        # Warmup detector after loading
         if self._detector:
             await asyncio.to_thread(self._detector.warmup)
         log.info("All models loaded and warmed up")
@@ -75,25 +94,24 @@ class ModelManager:
         async with self._lock:
             if self._detector is None:
                 target = device or self._detect_device()
-                log.info(f"Loading ObjectDetector on {target}...")
-                self._detector = ObjectDetector(device=target)
+                model_path = self._resolve_detector_path(target)
+                log.info("Loading ObjectDetector", extra={"device": target, "path": model_path})
+                self._detector = ObjectDetector(model_path, device=target)
             return self._detector
 
-    async def get_shoplifting_model(self, device: str | None = None) -> ShopliftingModel | None:
+    async def get_behavior_classifier(self, device: str | None = None) -> BehaviorClassifier:
         async with self._lock:
-            if self._shoplifting_model is None:
-                if not self._cfg.model_engine_path:
-                    log.warning("Shoplifting model path not configured")
-                    return None
+            if self._behavior_classifier is None:
                 target = device or self._detect_device()
-                log.info(f"Loading ShopliftingModel on {target}...")
-                self._shoplifting_model = ShopliftingModel(
-                    self._cfg.model_engine_path, target, self._cfg.temporal_window
+                model_path = self._resolve_classifier_path(target)
+                log.info("Loading BehaviorClassifier", extra={"device": target, "path": model_path})
+                self._behavior_classifier = BehaviorClassifier(
+                    model_path, target, self._cfg.temporal_window
                 )
-            return self._shoplifting_model
+            return self._behavior_classifier
 
     async def cleanup(self) -> None:
         async with self._lock:
             self._detector = None
-            self._shoplifting_model = None
+            self._behavior_classifier = None
             log.info("ModelManager cleared GPU models")

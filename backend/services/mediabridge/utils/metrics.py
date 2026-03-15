@@ -25,3 +25,19 @@ frame_latency = Gauge(
     "Time between capture and SHM write in ms",
     ["camera_id"],
 )
+
+camera_state_transitions = Counter(
+    "mediabridge_camera_state_transitions_total",
+    "Camera online/offline/reconnecting transitions",
+    ["camera_id", "state"],
+)
+
+redis_reconnects = Counter(
+    "mediabridge_redis_reconnects_total",
+    "Redis reconnect attempts for MediaBridge",
+)
+
+frame_queue_depth = Gauge(
+    "mediabridge_frame_queue_depth",
+    "Observed global frame queue depth",
+)

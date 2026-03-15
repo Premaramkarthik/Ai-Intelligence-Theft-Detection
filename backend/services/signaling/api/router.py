@@ -1,7 +1,7 @@
 """Central API router — aggregates all route modules."""
 from fastapi import APIRouter
 
-from services.signaling.api.routes import auth, camera, config, events, health, cameras, alerts, status
+from services.signaling.api.routes import alerts, auth, camera, cameras, config, events, health, status, webrtc
 from services.signaling.ws import camera_stream, logs, predictions, system_status
 
 api_router = APIRouter()
@@ -12,6 +12,7 @@ api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
 api_router.include_router(config.router, prefix="/api", tags=["config"])
 api_router.include_router(system_status.router, tags=["ws"])
 api_router.include_router(camera.router, prefix="/api", tags=["camera"])
+api_router.include_router(webrtc.router, prefix="/api", tags=["webrtc"])
 api_router.include_router(cameras.router, prefix="/api/cameras", tags=["cameras"])
 api_router.include_router(events.router, prefix="/api", tags=["events"])
 api_router.include_router(alerts.router, prefix="/api/alerts", tags=["alerts"])

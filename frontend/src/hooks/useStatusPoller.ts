@@ -2,9 +2,11 @@
 
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { authHeaders, buildApiUrl } from '@/lib/api';
+import { authHeaders, buildApiUrl, withApiCredentials } from '@/lib/api';
+import { toSystemStatus } from '@/lib/systemStatus';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useCameraStore } from '@/stores/useCameraStore';
+import type { SystemStatusMessage } from '@/types/contracts';
 
 export function useStatusPoller() {
     const token = useAuthStore((state) => state.token);
@@ -14,24 +16,18 @@ export function useStatusPoller() {
         queryKey: ['system-status', token],
         queryFn: async () => {
             const resp = await fetch(buildApiUrl('/api/status'), {
+                ...withApiCredentials(),
                 headers: authHeaders({ token }),
             });
             if (!resp.ok) throw new Error('Failed to fetch status');
-            return resp.json();
+            return resp.json() as Promise<SystemStatusMessage>;
         },
         enabled: false,
     });
 
     useEffect(() => {
-        if (data && data.system) {
-            setSystemStatus({
-                status: data.status ?? 'degraded',
-                gpu_util: data.gpu?.utilization ?? 0,
-                gpu_mem: data.gpu?.used ?? 0,
-                gpu_temp: data.gpu?.temperature ?? 0,
-                cpu_usage: data.system?.cpu_usage ?? 0,
-                ram_usage: data.system?.ram_usage ?? 0,
-            });
+        if (data) {
+            setSystemStatus(toSystemStatus(data));
         }
     }, [data, setSystemStatus]);
 

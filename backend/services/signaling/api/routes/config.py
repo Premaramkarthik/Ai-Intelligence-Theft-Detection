@@ -1,13 +1,13 @@
 """PUT/GET /api/config/{camera_id}"""
 from __future__ import annotations
 
-import json
-
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException
 
 from services.signaling.api.deps import get_redis, verify_jwt
 from services.signaling.schemas.camera import ROIConfigRequest, ROIConfigResponse
+from shared.core.config import CameraConfig, camera_config_mapping, parse_camera_config
+from shared.redis.keys import camera_config_key
 
 router = APIRouter()
 
@@ -19,14 +19,18 @@ async def set_config(
     _user: str = Depends(verify_jwt),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> dict:
-    data = {
-        "roi": json.dumps(body.roi or {}),
-        "confidence_threshold": str(body.confidence_threshold),
-        "iou_threshold": str(body.iou_threshold),
-        "hand_dist_px": str(body.hand_dist_px),
-        "enabled": str(body.enabled).lower(),
-    }
-    await redis.hset(f"config:{camera_id}", mapping=data)
+    config = CameraConfig(
+        camera_id=camera_id,
+        organization_id=body.organization_id,
+        store_id=body.store_id,
+        roi=body.roi or {},
+        confidence_threshold=body.confidence_threshold,
+        iou_threshold=body.iou_threshold,
+        hand_dist_px=body.hand_dist_px,
+        interaction_frames=body.interaction_frames,
+        enabled=body.enabled,
+    )
+    await redis.hset(camera_config_key(camera_id), mapping=camera_config_mapping(config))
     return {"status": "ok", "camera_id": camera_id}
 
 
@@ -36,14 +40,18 @@ async def get_config(
     _user: str = Depends(verify_jwt),
     redis: aioredis.Redis = Depends(get_redis),
 ) -> ROIConfigResponse:
-    raw = await redis.hgetall(f"config:{camera_id}")
+    raw = await redis.hgetall(camera_config_key(camera_id))
     if not raw:
         raise HTTPException(status_code=404, detail="Camera config not found")
+    config = parse_camera_config(camera_id, raw)
     return ROIConfigResponse(
         camera_id=camera_id,
-        roi=json.loads(raw.get("roi", "{}")),
-        confidence_threshold=float(raw.get("confidence_threshold", 0.45)),
-        iou_threshold=float(raw.get("iou_threshold", 0.15)),
-        hand_dist_px=int(raw.get("hand_dist_px", 80)),
-        enabled=raw.get("enabled", "true") == "true",
+        organization_id=config.organization_id,
+        store_id=config.store_id,
+        roi=config.roi,
+        confidence_threshold=config.confidence_threshold,
+        iou_threshold=config.iou_threshold,
+        hand_dist_px=config.hand_dist_px,
+        interaction_frames=config.interaction_frames,
+        enabled=config.enabled,
     )

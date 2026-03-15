@@ -19,6 +19,7 @@ class MessageType(StrEnum):
     FRAME_TELEMETRY = "telemetry.frame"
     INCIDENT_EVENT = "incident.event"
     CAMERA_STREAM = "camera.stream"
+    CAMERA_METADATA = "camera.metadata"
     STATUS = "system.status"
 
 
@@ -28,6 +29,13 @@ class Severity(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+class ReviewStatus(StrEnum):
+    UNREVIEWED = "unreviewed"
+    CONFIRMED = "confirmed"
+    FALSE_POSITIVE = "false_positive"
+    NEEDS_REVIEW = "needs_review"
 
 
 class FrameReference(BaseModel):
@@ -78,6 +86,8 @@ class IncidentEvent(BaseModel):
     event_id: str = Field(default_factory=lambda: str(uuid4()))
     event_type: str = "shoplifting.detected"
     camera_id: str
+    organization_id: str = "default-org"
+    store_id: str = "main-store"
     trace_id: str
     timestamp: str
     label: str
@@ -85,6 +95,12 @@ class IncidentEvent(BaseModel):
     severity: Severity
     detections: list[DetectionPayload] = Field(default_factory=list)
     frame_ref: FrameReference
+    review_status: ReviewStatus = Field(default=ReviewStatus.UNREVIEWED)
+    review_note: str | None = None
+    evidence_uri: str | None = None
+    thumbnail_uri: str | None = None
+    model_version: str | None = None
+    config_version: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -100,16 +116,38 @@ class CameraStreamMessage(BaseModel):
     incident: IncidentPayload | None = None
 
 
+class CameraMetadataMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: int = Field(default=SCHEMA_VERSION)
+    message_type: MessageType = Field(default=MessageType.CAMERA_METADATA)
+    camera_id: str
+    trace_id: str | None = None
+    timestamp: str | None = None
+    detections: list[DetectionPayload] = Field(default_factory=list)
+    incident: IncidentPayload | None = None
+    review_status: ReviewStatus = Field(default=ReviewStatus.UNREVIEWED)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class HistoryEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: str
     camera_id: str
+    organization_id: str = "default-org"
+    store_id: str = "main-store"
     trace_id: str
     timestamp: str
     label: str
     confidence: float
     severity: Severity
     event_type: str
+    review_status: ReviewStatus = Field(default=ReviewStatus.UNREVIEWED)
+    review_note: str | None = None
+    evidence_uri: str | None = None
+    thumbnail_uri: str | None = None
+    model_version: str | None = None
+    config_version: str | None = None
     detections: list[DetectionPayload] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -31,11 +31,20 @@ export default function DashboardShell({ children }: { children: React.ReactNode
     return <AuthPanel />;
   }
 
-  const statusLabel = systemStatus?.status === 'healthy' ? 'Backend Ready' : 'Backend Degraded';
+  const statusLabel =
+    systemStatus?.status === 'healthy'
+      ? 'Backend Ready'
+      : systemStatus?.status === 'disconnected'
+        ? 'Backend Disconnected'
+        : systemStatus?.connection === 'reconnecting'
+          ? 'Backend Reconnecting'
+          : 'Backend Degraded';
   const statusClass =
     systemStatus?.status === 'healthy'
       ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'
-      : 'border-amber-500/20 bg-amber-500/10 text-amber-300';
+      : systemStatus?.status === 'disconnected'
+        ? 'border-red-500/20 bg-red-500/10 text-red-400'
+        : 'border-amber-500/20 bg-amber-500/10 text-amber-300';
 
   return (
     <div className="flex min-h-screen bg-slate-950">

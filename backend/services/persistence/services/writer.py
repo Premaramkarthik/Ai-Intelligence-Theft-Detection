@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 
 from services.persistence.models.events import INSERT_QUERY
-from services.persistence.utils.metrics import db_write_latency
+from services.persistence.utils.metrics import db_write_latency, db_writes_failed, db_writes_succeeded
 from shared.db.session import DatabaseSession
 from shared.logging.logger import get_logger
 from shared.types.events import IncidentEvent
@@ -27,6 +27,14 @@ class DBWriter:
     async def initialize_db(self) -> None:
         await self._db.initialize_db()
 
+    async def ensure_connection(self) -> None:
+        try:
+            pool = self._db.get_pool()
+            await pool.fetchval("SELECT 1")
+        except Exception:
+            await self._db.disconnect()
+            await self._db.connect()
+
     def get_pool(self):
         return self._db.get_pool()
 
@@ -38,6 +46,8 @@ class DBWriter:
             await pool.execute(
                 INSERT_QUERY,
                 event.event_id,
+                event.organization_id,
+                event.store_id,
                 event.camera_id,
                 event.trace_id,
                 event.event_type,
@@ -50,9 +60,23 @@ class DBWriter:
                 json.dumps(event.metadata),
                 event.schema_version,
                 json.dumps(event.model_dump(mode="json")),
+                event.evidence_uri,
+                event.thumbnail_uri,
+                event.review_status.value,
+                event.review_note,
+                event.model_version,
+                event.config_version,
             )
             db_write_latency.observe(time.perf_counter() - t0)
-            log.info("Incident saved", extra={"event_id": event.event_id, "label": event.label})
+            db_writes_succeeded.inc()
+            log.info(
+                "Incident saved",
+                extra={"event_id": event.event_id, "label": event.label, "trace_id": event.trace_id},
+            )
         except Exception as exc:
-            log.error("DB save failed", extra={"error": str(exc), "event_id": event.event_id})
+            db_writes_failed.inc()
+            log.error(
+                "DB save failed",
+                extra={"error": str(exc), "event_id": event.event_id, "trace_id": event.trace_id},
+            )
             raise

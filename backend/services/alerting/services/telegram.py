@@ -50,12 +50,12 @@ class TelegramService:
         self._failure_count = 0
         self._last_failure_time = 0.0
 
-        token = self._cfg.telegram_bot_token or self._cfg.telegram_token
+        token = self._cfg.telegram_bot_token
         if token:
             self._bot = Bot(token=token)
             log.info("Telegram Bot initialized")
 
-        raw_ids = self._cfg.telegram_admin_chat_ids or self._cfg.telegram_chat_id
+        raw_ids = self._cfg.telegram_admin_chat_ids
         if raw_ids:
             self._chat_ids = [cid.strip() for cid in raw_ids.split(",") if cid.strip()]
             self._initialized = True

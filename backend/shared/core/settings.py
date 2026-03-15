@@ -1,18 +1,20 @@
-import os
 from functools import lru_cache
+from typing import Literal
 from urllib.parse import quote
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
-    app_env: str = os.getenv("APP_ENV", "development")
+    app_env: str = "development"
 
     # Redis
-    redis_host: str = os.getenv("REDIS_HOST", "localhost")
-    redis_port: int = int(os.getenv("REDIS_PORT", "6379"))
-    redis_password: str = os.getenv("REDIS_PASSWORD", "")
-    redis_db: int = int(os.getenv("REDIS_DB", "0"))
-    redis_url_env: str = os.getenv("REDIS_URL", "")
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_password: str = ""
+    redis_db: int = 0
+    redis_url_env: str = ""
 
     @property
     def redis_url(self) -> str:
@@ -24,89 +26,116 @@ class Settings(BaseSettings):
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     # PostgreSQL
-    postgres_host: str = os.getenv("POSTGRES_HOST", "localhost")
-    postgres_port: int = int(os.getenv("POSTGRES_PORT", "5432"))
-    postgres_db: str = os.getenv("POSTGRES_DB", "pipeline_events")
-    postgres_user: str = os.getenv("POSTGRES_USER", "pipeline_user")
-    postgres_password: str = os.getenv("POSTGRES_PASSWORD", "")
-    postgres_pool_size: int = int(os.getenv("POSTGRES_POOL_SIZE", "10"))
+    postgres_host: str = "localhost"
+    postgres_port: int = 5432
+    postgres_db: str = "pipeline_events"
+    postgres_user: str = "pipeline_user"
+    postgres_password: str = ""
+    postgres_pool_size: int = 10
 
     @property
     def db_url(self) -> str:
         return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
 
     # Telegram
-    telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    telegram_admin_chat_ids: str = os.getenv("TELEGRAM_ADMIN_CHAT_IDS", "")
+    telegram_bot_token: str = ""
+    telegram_admin_chat_ids: str = ""
 
     # JWT
-    jwt_secret: str = os.getenv("JWT_SECRET", "")
-    jwt_algorithm: str = os.getenv("JWT_ALGORITHM", "HS256")
-    jwt_expire_minutes: int = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_expire_minutes: int = 60
+    auth_cookie_name: str = "pipeline_access_token"
+    auth_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
+    auth_cookie_secure: bool = False
+    enable_api_docs: bool = False
 
-    # Signaling
-    signaling_host: str = os.getenv("SIGNALING_HOST", "0.0.0.0")
-    signaling_port: int = int(os.getenv("SIGNALING_PORT", "9000"))
-    cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    expose_metrics_api: bool = False
+    metrics_bind_host: str = "0.0.0.0"
+    metrics_token: str = ""
 
     # MediaBridge
-    camera_sources: str = os.getenv("CAMERA_SOURCES", "")  # comma-separated webcam IDs or RTSP URLs
-    shm_slots_per_cam: int = int(os.getenv("SHM_SLOTS_PER_CAM", "32"))
-    default_input_type: str = os.getenv("DEFAULT_INPUT_TYPE", "rtsp")
-    frame_width: int = int(os.getenv("FRAME_WIDTH", "1280"))
-    frame_height: int = int(os.getenv("FRAME_HEIGHT", "720"))
-    frame_queue_maxlen: int = int(os.getenv("FRAME_QUEUE_MAXLEN", "256"))
+    shm_slots_per_cam: int = 32
+    frame_width: int = 1280
+    frame_height: int = 720
+    frame_queue_maxlen: int = 256
+    legacy_global_frame_queue: bool = False
+    frame_stale_after_s: float = 3.0
+    evidence_dir: str = "/data/evidence"
+    default_organization_id: str = "default-org"
+    default_store_id: str = "main-store"
+    model_version: str = "yolo26n.engine+cnn_transformer.engine"
 
-    # Model
-    model_name: str = os.getenv("MODEL_NAME", "efficient_x3d")
-    model_engine_path: str = os.getenv("MODEL_ENGINE_PATH", "")
-    model_backend: str = os.getenv("MODEL_BACKEND", "tensorrt")
-    temporal_window: int = int(os.getenv("TEMPORAL_WINDOW", "16"))
-    default_confidence_threshold: float = float(os.getenv("DEFAULT_CONFIDENCE_THRESHOLD", "0.7"))
-    staleness_limit_ms: int = int(os.getenv("STALENESS_LIMIT_MS", "150"))
-    heartbeat_interval_ms: int = int(os.getenv("HEARTBEAT_INTERVAL_MS", "500"))
-
-    # Person Detector
-    person_conf_threshold: float = float(os.getenv("PERSON_CONF_THRESHOLD", "0.5"))
-    person_input_size: int = int(os.getenv("PERSON_INPUT_SIZE", "640"))
-
-    # Item Detection
-    item_detect_every_n_frames: int = int(os.getenv("ITEM_DETECT_EVERY_N_FRAMES", "5"))
-    item_watch_classes: str = os.getenv("ITEM_WATCH_CLASSES", "bottle,backpack,handbag")
-    item_iou_threshold: float = float(os.getenv("ITEM_IOU_THRESHOLD", "0.15"))
-    hand_dist_px: int = int(os.getenv("HAND_DIST_PX", "80"))
-    min_displacement_px: int = int(os.getenv("MIN_DISPLACEMENT_PX", "30"))
-    interaction_frames: int = int(os.getenv("INTERACTION_FRAMES", "5"))
+    # Inference models
+    detector_engine_path: str = "models/yolo/yolo26n.engine"
+    classifier_engine_path: str = "models/shoplifting/cnn_transformer.engine"
+    temporal_window: int = 16
+    default_confidence_threshold: float = 0.7
+    hand_dist_px: int = 80
+    interaction_frames: int = 5
 
     # Alerting
-    telegram_token: str = os.getenv("TELEGRAM_TOKEN", "")
-    telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
-    mqtt_host: str = os.getenv("MQTT_HOST", "mqtt")
-    mqtt_port: int = int(os.getenv("MQTT_PORT", "1883"))
-    alert_confidence_threshold: float = float(os.getenv("ALERT_CONF_THRESHOLD", "0.8"))
+    alert_confidence_threshold: float = 0.8
 
-    # Signaling
-    admin_username: str = os.getenv("ADMIN_USERNAME", "")
-    admin_password: str = os.getenv("ADMIN_PASSWORD", "")
-    camera_stream_fps: float = float(os.getenv("CAMERA_STREAM_FPS", "15"))
+    admin_username: str = ""
+    admin_password: str = ""
+    camera_stream_fps: float = 15.0
+    preview_transport: Literal["mjpeg", "webrtc"] = "webrtc"
+    webrtc_enabled: bool = True
+    webrtc_stun_urls: str = "stun:stun.l.google.com:19302"
+    webrtc_turn_url: str = ""
+    webrtc_turn_username: str = ""
+    webrtc_turn_password: str = ""
+    max_preview_viewers_per_camera: int = 8
+    preview_frame_rate: float = 10.0
+    webrtc_gather_timeout_s: float = 3.0
 
-    # Persistence
-    persistence_batch_window_ms: int = int(os.getenv("PERSISTENCE_BATCH_WINDOW_MS", "500"))
-    evidence_storage_path: str = os.getenv("EVIDENCE_STORAGE_PATH", "/data/evidence")
-    evidence_retention_days: int = int(os.getenv("EVIDENCE_RETENTION_DAYS", "30"))
-
-    # Shared / ConfigManager
-    config_poll_interval_s: float = float(os.getenv("CONFIG_POLL_INTERVAL_S", "5"))
-
-    # Logging
-    log_level: str = os.getenv("LOG_LEVEL", "INFO")
-    log_file_path: str = os.getenv("LOG_FILE_PATH", "/var/log/pipeline/pipeline.log")
+    config_poll_interval_s: float = 5.0
+    allow_private_camera_hosts: bool = True
+    reject_loopback_camera_hosts: bool = True
+    max_source_url_length: int = 2048
+    reid_enabled: bool = False
+    reid_backend: Literal["disabled", "pgvector"] = "disabled"
 
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
-        protected_namespaces=("settings_",)
+        protected_namespaces=("settings_",),
     )
+
+    @field_validator("app_env", mode="before")
+    @classmethod
+    def _normalize_app_env(cls, value: str) -> str:
+        return str(value or "development").strip().lower()
+
+    @field_validator("auth_cookie_name")
+    @classmethod
+    def _validate_cookie_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("AUTH_COOKIE_NAME must not be empty")
+        return value
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        return origins or ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    @property
+    def secure_cookies(self) -> bool:
+        return self.auth_cookie_secure or self.app_env not in {"development", "test"}
+
+    def validate_auth_settings(self, *, require_admin_credentials: bool = False) -> None:
+        if len(self.jwt_secret) < 32:
+            raise RuntimeError("JWT_SECRET must be configured and at least 32 characters long")
+        if require_admin_credentials and (not self.admin_username or not self.admin_password):
+            raise RuntimeError("ADMIN_USERNAME and ADMIN_PASSWORD must be configured")
+        if "*" in self.cors_origin_list:
+            raise RuntimeError("Wildcard CORS is not allowed when credentials are enabled")
+        if self.auth_cookie_samesite == "none" and not self.secure_cookies:
+            raise RuntimeError("SameSite=None cookies require AUTH_COOKIE_SECURE=true")
+
 
 @lru_cache
 def get_settings() -> Settings:

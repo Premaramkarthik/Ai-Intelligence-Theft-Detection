@@ -42,22 +42,44 @@ set "PYTHONPATH=%BACKEND_DIR%"
 set "PYTHON_EXE=%VENV_SCRIPTS%\python.exe"
 
 echo   ^>^> Signaling (API)...
-start "pipeline-signaling" /min cmd /d /c ""cd /d "%BACKEND_DIR%" ^&^& "%PYTHON_EXE%" -m uvicorn services.signaling.main:app --host 0.0.0.0 --port 9001 1^>^> "%LOGS_DIR%\signaling.log" 2^>^&1""
+call :start_service "pipeline-signaling" "-m uvicorn services.signaling.main:app --host 0.0.0.0 --port 9001" "%LOGS_DIR%\signaling.log"
+if errorlevel 1 exit /b 1
 
 echo   ^>^> MediaBridge (Capture)...
-start "pipeline-mediabridge" /min cmd /d /c ""cd /d "%BACKEND_DIR%" ^&^& "%PYTHON_EXE%" -m services.mediabridge.main 1^>^> "%LOGS_DIR%\mediabridge.log" 2^>^&1""
+call :start_service "pipeline-mediabridge" "-m services.mediabridge.main" "%LOGS_DIR%\mediabridge.log"
+if errorlevel 1 exit /b 1
 
 echo   ^>^> Inference (AI)...
-start "pipeline-inference" /min cmd /d /c ""cd /d "%BACKEND_DIR%" ^&^& "%PYTHON_EXE%" -m services.inference.main 1^>^> "%LOGS_DIR%\inference.log" 2^>^&1""
+call :start_service "pipeline-inference" "-m services.inference.main" "%LOGS_DIR%\inference.log"
+if errorlevel 1 exit /b 1
 
 echo   ^>^> Alerting...
-start "pipeline-alerting" /min cmd /d /c ""cd /d "%BACKEND_DIR%" ^&^& "%PYTHON_EXE%" -m services.alerting.main 1^>^> "%LOGS_DIR%\alerting.log" 2^>^&1""
+call :start_service "pipeline-alerting" "-m services.alerting.main" "%LOGS_DIR%\alerting.log"
+if errorlevel 1 exit /b 1
 
 echo   ^>^> Persistence...
-start "pipeline-persistence" /min cmd /d /c ""cd /d "%BACKEND_DIR%" ^&^& "%PYTHON_EXE%" -m services.persistence.main 1^>^> "%LOGS_DIR%\persistence.log" 2^>^&1""
+call :start_service "pipeline-persistence" "-m services.persistence.main" "%LOGS_DIR%\persistence.log"
+if errorlevel 1 exit /b 1
 
 echo All services started.
 echo Check logs folder for output: "%LOGS_DIR%"
 echo Run "%SCRIPT_DIR%cleanup.cmd" to stop the services.
 
+exit /b 0
+
+:start_service
+set "SERVICE_TITLE=%~1"
+set "SERVICE_ARGS=%~2"
+set "SERVICE_LOG=%~3"
+set "SERVICE_ERR_LOG=%~dpn3.err.log"
+set "SERVICE_OUT_LOG=%~dpn3.out.log"
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$env:PYTHONPATH='%BACKEND_DIR%';" ^
+    "$p = Start-Process -WindowStyle Minimized -FilePath '%PYTHON_EXE%' -ArgumentList '%SERVICE_ARGS%' -WorkingDirectory '%BACKEND_DIR%' -RedirectStandardOutput '%SERVICE_OUT_LOG%' -RedirectStandardError '%SERVICE_ERR_LOG%' -PassThru;" ^
+    "if (-not $p) { exit 1 }"
+if errorlevel 1 (
+    echo Error: failed to launch %SERVICE_TITLE%.
+    exit /b 1
+)
 exit /b 0

@@ -1,98 +1,150 @@
-import numpy as np
-import redis.asyncio as redis
-from shared.logging.logger import get_logger
+from __future__ import annotations
 
-logger = get_logger(__name__)
+import asyncpg
+import numpy as np
+from PIL import Image
+from shared.core.settings import get_settings
+from shared.logging.logger import get_logger
 
 import cv2
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
-from PIL import Image
+
+logger = get_logger(__name__)
+
 
 class ReIDService:
-    """Service for cross-camera person re-identification using feature embeddings."""
-    
-    def __init__(self, redis_client: redis.Redis):
-        self.redis = redis_client
-        self.threshold = 0.7 
+    """Cross-camera person re-identification using pgvector when explicitly enabled."""
+
+    def __init__(self, _unused_client=None):
+        self._settings = get_settings()
+        self.threshold = 0.7
         self.embedding_ttl = 3600
-        self.redis_key_prefix = "reid:embeddings:"
-        
-        # Load a lightweight feature extractor
+        self.available = False
+        self.model = None
+        self.device = torch.device("cpu")
+        self.transform = None
+        self._pool: asyncpg.Pool | None = None
+
+        if not self._settings.reid_enabled or self._settings.reid_backend != "pgvector":
+            logger.info(
+                "ReIDService disabled",
+                extra={"enabled": self._settings.reid_enabled, "backend": self._settings.reid_backend},
+            )
+            return
+
         try:
-            # Using MobileNetV3 Small as a fast feature extractor (576 output features)
-            backbone = models.mobilenet_v3_small(weights=models.MobileNetV3_Small_Weights.DEFAULT)
-            # Remove the classifier head to get embeddings
+            weights_enum = getattr(models, "MobileNetV3_Small_Weights", None)
+            if weights_enum is not None:
+                backbone = models.mobilenet_v3_small(weights=weights_enum.DEFAULT)
+            else:
+                backbone = models.mobilenet_v3_small(pretrained=True)
+
             self.model = torch.nn.Sequential(*(list(backbone.children())[:-1]), nn.Flatten())
             self.model.eval()
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             self.model.to(self.device)
-            
-            self.transform = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-            logger.info("ReIDService: Feature extractor loaded", extra={"device": str(self.device)})
-        except Exception as e:
-            logger.error("ReIDService: Failed to load model, using fallback", extra={"error": str(e)})
-            self.model = None
+            self.transform = transforms.Compose(
+                [
+                    transforms.Resize((224, 224)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ]
+            )
+            self.available = True
+            logger.info("ReIDService ready", extra={"device": str(self.device), "backend": "pgvector"})
+        except Exception as exc:
+            logger.warning("ReIDService disabled", extra={"error": str(exc)})
 
-    async def get_global_id(self, appearance_embedding: np.ndarray) -> str | None:
-        """Compare current embedding with stored global embeddings in Redis."""
-        try:
-            # MVP: Key scanning. Production: RediSearch HNSW.
-            keys = await self.redis.keys(f"{self.redis_key_prefix}*")
-            if not keys:
+    async def _ensure_pool(self) -> asyncpg.Pool | None:
+        if not self.available:
+            return None
+        if self._pool is None:
+            try:
+                self._pool = await asyncpg.create_pool(dsn=self._settings.db_url, min_size=1, max_size=2)
+            except Exception as exc:
+                self.available = False
+                logger.warning("ReIDService disabled", extra={"error": str(exc), "backend": "pgvector"})
                 return None
+        return self._pool
 
-            best_match_id = None
-            max_sim = -1.0
+    @staticmethod
+    def _vector_literal(embedding: np.ndarray) -> str:
+        return "[" + ",".join(f"{float(value):.6f}" for value in embedding.tolist()) + "]"
 
-            for key in keys:
-                stored_bytes = await self.redis.get(key)
-                if not stored_bytes:
-                    continue
-                
-                stored_emb = np.frombuffer(stored_bytes, dtype=np.float32)
-                # Cosine similarity (already normalized vectors)
-                sim = np.dot(appearance_embedding, stored_emb)
-                
-                if sim > self.threshold and sim > max_sim:
-                    max_sim = sim
-                    # key format: 'reid:embeddings:global_uuid'
-                    best_match_id = key.decode().split(":")[-1]
-
-            return best_match_id
-            
-        except Exception as e:
-            logger.error("Re-ID matching failed", extra={"error": str(e)})
+    async def get_global_id(
+        self,
+        appearance_embedding: np.ndarray,
+        *,
+        organization_id: str = "default-org",
+        store_id: str = "main-store",
+    ) -> str | None:
+        pool = await self._ensure_pool()
+        if pool is None:
+            return None
+        try:
+            row = await pool.fetchrow(
+                """
+                SELECT global_id, (embedding <=> $3::vector) AS distance
+                FROM reid_identities
+                WHERE organization_id = $1 AND store_id = $2
+                ORDER BY distance ASC
+                LIMIT 1
+                """,
+                organization_id,
+                store_id,
+                self._vector_literal(appearance_embedding),
+            )
+            if not row:
+                return None
+            similarity = 1.0 - float(row["distance"])
+            return str(row["global_id"]) if similarity >= self.threshold else None
+        except Exception as exc:
+            logger.error("Re-ID matching failed", extra={"error": str(exc)})
             return None
 
-    async def register_track(self, global_id: str, embedding: np.ndarray):
-        """Register a new global track embedding in Redis."""
-        key = f"{self.redis_key_prefix}{global_id}"
-        await self.redis.set(key, embedding.tobytes(), ex=self.embedding_ttl)
+    async def register_track(
+        self,
+        global_id: str,
+        embedding: np.ndarray,
+        *,
+        organization_id: str = "default-org",
+        store_id: str = "main-store",
+    ) -> None:
+        pool = await self._ensure_pool()
+        if pool is None:
+            return
+        try:
+            await pool.execute(
+                """
+                INSERT INTO reid_identities (global_id, organization_id, store_id, embedding, updated_at)
+                VALUES ($1, $2, $3, $4::vector, NOW())
+                ON CONFLICT (global_id) DO UPDATE
+                SET embedding = EXCLUDED.embedding,
+                    organization_id = EXCLUDED.organization_id,
+                    store_id = EXCLUDED.store_id,
+                    updated_at = NOW()
+                """,
+                global_id,
+                organization_id,
+                store_id,
+                self._vector_literal(embedding),
+            )
+        except Exception as exc:
+            logger.error("Re-ID registration failed", extra={"error": str(exc)})
 
-    def extract_features(self, person_crop: np.ndarray) -> np.ndarray:
-        """Extract normalized feature vector from person crop."""
-        if self.model is None:
-            # Fallback to random for stability if model fails to load
-            vec = np.random.rand(576).astype(np.float32)
-            return vec / np.linalg.norm(vec)
+    def extract_features(self, person_crop: np.ndarray) -> np.ndarray | None:
+        if not self.available or self.model is None or self.transform is None:
+            return None
 
         try:
-            # Convert OpenCV BGR to RGB PIL Image
             img = Image.fromarray(cv2.cvtColor(person_crop, cv2.COLOR_BGR2RGB))
             img_t = self.transform(img).unsqueeze(0).to(self.device)
-            
             with torch.no_grad():
                 features = self.model(img_t)
                 features = features.cpu().numpy().flatten()
-                
-            # L2 Normalize
             return features / (np.linalg.norm(features) + 1e-6)
-        except Exception as e:
-            logger.error("Feature extraction failed", extra={"error": str(e)})
-            return np.zeros(576, dtype=np.float32)
+        except Exception as exc:
+            logger.error("Feature extraction failed", extra={"error": str(exc)})
+            return None

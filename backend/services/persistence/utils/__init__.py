@@ -1,4 +1,19 @@
-"""services.persistence.utils — Prometheus metrics for the Persistence service."""
-from services.persistence.utils.metrics import db_write_latency, METRICS_PORT
+"""services.persistence.utils - Prometheus metrics for the Persistence service."""
 
-__all__ = ["db_write_latency", "METRICS_PORT"]
+from services.persistence.utils.metrics import (
+    METRICS_PORT,
+    db_write_latency,
+    db_writes_failed,
+    db_writes_succeeded,
+    persistence_ready,
+    redis_reconnects,
+)
+
+__all__ = [
+    "db_write_latency",
+    "db_writes_succeeded",
+    "db_writes_failed",
+    "redis_reconnects",
+    "persistence_ready",
+    "METRICS_PORT",
+]

@@ -17,13 +17,11 @@ asyncio-mqtt
 aiofiles
 torch
 torchvision
-pytorch-lightning
 ultralytics
-timm
-transformers
 numpy
 opencv-python-headless
 av
+onnxruntime
 aiogram
 structlog
 prometheus-client

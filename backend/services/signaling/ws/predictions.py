@@ -5,7 +5,9 @@ import redis.asyncio as aioredis
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from services.signaling.api.deps import verify_ws_token
+from services.signaling.utils.metrics import websocket_clients
 from shared.logging.logger import get_logger
+from shared.redis.keys import INCIDENT_CHANNEL_PATTERN, TELEMETRY_CHANNEL_PATTERN
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -20,9 +22,10 @@ async def ws_predictions(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
+    websocket_clients.labels(channel="predictions").inc()
     redis: aioredis.Redis = websocket.app.state.redis
     pubsub = redis.pubsub()
-    await pubsub.psubscribe("telemetry:*", "incidents:*")
+    await pubsub.psubscribe(TELEMETRY_CHANNEL_PATTERN, INCIDENT_CHANNEL_PATTERN)
     try:
         async for message in pubsub.listen():
             if message["type"] == "pmessage":
@@ -31,5 +34,6 @@ async def ws_predictions(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         log.info("Predictions WS client disconnected")
     finally:
-        await pubsub.punsubscribe("telemetry:*", "incidents:*")
+        websocket_clients.labels(channel="predictions").dec()
+        await pubsub.punsubscribe(TELEMETRY_CHANNEL_PATTERN, INCIDENT_CHANNEL_PATTERN)
         await pubsub.aclose()
