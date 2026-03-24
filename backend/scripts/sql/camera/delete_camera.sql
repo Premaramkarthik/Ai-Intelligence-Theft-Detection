@@ -1,0 +1,3 @@
+DELETE FROM cameras
+WHERE id = $1
+RETURNING id;
