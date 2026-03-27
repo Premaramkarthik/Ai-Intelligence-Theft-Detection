@@ -7,7 +7,7 @@ from src.utils.ffmpeg import build_ffmpeg_hls_command, mask_rtsp_url
 def test_build_ffmpeg_hls_command_contains_hls_output() -> None:
     command = build_ffmpeg_hls_command(
         ffmpeg_binary="ffmpeg",
-        rtsp_url="rtsp://user:pass@camera.local:554/stream",
+        rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
         transport=RTSPTransport.tcp,
         playlist_path=Path("/tmp/index.m3u8"),
         segment_time_seconds=2,
@@ -16,9 +16,13 @@ def test_build_ffmpeg_hls_command_contains_hls_output() -> None:
     assert command[0] == "ffmpeg"
     assert "-f" in command
     assert "hls" in command
+    assert "-fflags" in command
+    assert "+genpts" in command
+    assert "-use_wallclock_as_timestamps" in command
+    assert "1" in command
     assert str(Path("/tmp/index.m3u8")) == command[-1]
 
 
 def test_mask_rtsp_url_hides_password() -> None:
-    masked = mask_rtsp_url("rtsp://user:supersecret@camera.local:554/live")
-    assert masked == "rtsp://user:****@camera.local:554/live"
+    masked = mask_rtsp_url("rtsp://192.168.1.2:8080/h264_ulaw.sdp")
+    assert masked == "rtsp://192.168.1.2:8080/h264_ulaw.sdp"

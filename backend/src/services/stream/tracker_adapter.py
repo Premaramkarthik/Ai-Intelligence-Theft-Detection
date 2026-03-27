@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from src.core.logger.logger import get_logger
+from src.services.deep_sort_realtime.deepsort_tracker import DeepSort
 
 
 class DeepSortTrackerBridge:
@@ -17,15 +18,9 @@ class DeepSortTrackerBridge:
         if not enabled:
             return
 
-        repo_root = Path(__file__).resolve().parents[4]
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
-
-        try:
-            from deep_sort_realtime.deepsort_tracker import DeepSort
-        except ImportError as exc:
-            self._logger.warning("Deep SORT bridge could not be enabled: %s", exc)
-            return
+        vendored_package_root = Path(__file__).resolve().parents[1]
+        if str(vendored_package_root) not in sys.path:
+            sys.path.insert(0, str(vendored_package_root))
 
         kwargs: dict[str, Any] = {"embedder": None if embedder in {None, "none"} else embedder}
         self._tracker = DeepSort(**kwargs)

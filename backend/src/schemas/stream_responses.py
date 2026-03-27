@@ -24,6 +24,17 @@ class WorkerStateResponse(BaseModel):
     process_id: int | None = None
     restart_count: int = 0
     reconnect_attempts: int = 0
+    sampled_frames: int = 0
+    dropped_frames: int = 0
+    current_fps: float = 0.0
+    queue_latency_ms: float = 0.0
+    decode_time_ms: float = 0.0
+
+
+class StreamAccessUrls(BaseModel):
+    webrtc_url: str
+    hls_url: str
+    rtsp_pull_url: str
 
 
 class StreamInfoResponse(BaseModel):
@@ -32,11 +43,13 @@ class StreamInfoResponse(BaseModel):
     camera_id: str
     camera_name: str
     stream_id: str
+    stream_name: str
     stream_identifier: str
     status: StreamStatus
     protocol: StreamProtocol
     playback_url: str | None = None
     relative_playback_url: str | None = None
+    access_urls: StreamAccessUrls
     websocket_url: str
     fallback: StreamFallbackInfo | None = None
     started_at: datetime | None = None
@@ -55,7 +68,7 @@ class StreamEventPayload(BaseModel):
     stream_id: str
     event: str
     status: StreamStatus
-    protocol: StreamProtocol = StreamProtocol.hls
+    protocol: StreamProtocol = StreamProtocol.webrtc
     message: str
     playback_url: str | None = None
     playlist_path: str | None = None

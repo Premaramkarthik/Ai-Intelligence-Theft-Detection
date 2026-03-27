@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: RTSP Camera Backend
+    folder: Realtime Video
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

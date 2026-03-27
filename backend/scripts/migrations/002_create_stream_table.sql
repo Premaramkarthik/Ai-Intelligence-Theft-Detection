@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS stream_state (
         status IN ('stopped', 'starting', 'running', 'stopping', 'reconnecting', 'error', 'crashed')
     ),
     desired_state TEXT NOT NULL DEFAULT 'stopped' CHECK (desired_state IN ('running', 'stopped')),
-    protocol TEXT NOT NULL DEFAULT 'hls' CHECK (protocol IN ('hls')),
+    protocol TEXT NOT NULL DEFAULT 'webrtc' CHECK (protocol IN ('webrtc', 'hls')),
     playback_path TEXT,
     playlist_path TEXT,
     worker_pid INTEGER,

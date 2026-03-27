@@ -1,0 +1,38 @@
+groups:
+  - name: rtsp_camera_backend_alerts
+    rules:
+      - alert: HighSystemCpuUsage
+        expr: system_cpu_usage_percent > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High system CPU usage detected
+          description: System CPU usage has remained above 85% for 5 minutes.
+
+      - alert: BackendProcessMemoryLeakSuspected
+        expr: increase(process_memory_usage_bytes[30m]) > 536870912
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backend memory usage is increasing rapidly
+          description: Backend RSS increased by more than 512 MiB over 30 minutes.
+
+      - alert: HighFrameDropRate
+        expr: sum(rate(frames_dropped_total[5m])) > 5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Frame drop rate is elevated
+          description: The realtime pipeline is dropping more than 5 sampled frames per second.
+
+      - alert: HighFrameProcessingLatencyP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(frame_processing_latency_ms_bucket[5m]))) > 100
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: P95 frame processing latency is too high
+          description: The 95th percentile frame processing latency exceeded 100 ms.

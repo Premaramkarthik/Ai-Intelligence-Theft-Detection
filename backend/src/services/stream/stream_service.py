@@ -1,22 +1,25 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from src.core.config import Settings
-from src.core.exceptions.stream.stream_exceptions import StreamNotRunningException
 from src.models.camera import (
+    CameraRecord,
     StreamDesiredState,
     StreamProtocol,
     StreamStatus,
 )
 from src.schemas.common import HealthComponent, WebSocketEnvelope
 from src.schemas.stream_requests import StreamStartRequest, StreamStopRequest
-from src.schemas.stream_responses import StreamEventPayload, StreamInfoResponse
+from src.schemas.stream_responses import (
+    StreamEventPayload,
+    StreamInfoResponse,
+)
 from src.services.camera.camera_service import CameraService
 from src.services.presentation.stream_contract_service import StreamContractService
-from src.services.stream.stream_manager import StreamManager
+from src.services.realtime_video.contracts import MediaMtxStreamEndpoints
+from src.services.realtime_video.mediamtx import normalize_stream_name
+from src.services.realtime_video.mediamtx_service import MediaMtxService
+from src.services.realtime_video.stream_manager import MediaMtxStreamManager
 from src.services.stream.stream_repository import StreamRepository
-from src.utils.ffmpeg import build_hls_output_paths, build_rtsp_url_from_camera
 
 
 class StreamService:
@@ -25,74 +28,114 @@ class StreamService:
         settings: Settings,
         camera_service: CameraService,
         stream_repository: StreamRepository,
-        stream_manager: StreamManager,
+        mediamtx_service: MediaMtxService,
+        stream_manager: MediaMtxStreamManager,
         contract_service: StreamContractService,
     ) -> None:
+        """Create the stream control service for MediaMTX-backed playback and extraction."""
+
         self._settings = settings
         self._camera_service = camera_service
         self._stream_repository = stream_repository
+        self._mediamtx_service = mediamtx_service
         self._stream_manager = stream_manager
         self._contract_service = contract_service
 
     async def start_stream(self, camera_id: str, request: StreamStartRequest) -> StreamInfoResponse:
+        """Start frame extraction for a camera and return MediaMTX playback endpoints."""
+
         camera = await self._camera_service.get_camera_record(camera_id)
-        rtsp_url = build_rtsp_url_from_camera(camera)
-        output_dir, playlist_path = build_hls_output_paths(
-            self._settings.media_root,
-            self._settings.hls_directory_name,
-            camera_id,
+        cameras = await self._camera_service.list_all_camera_records()
+        await self._mediamtx_service.sync_config(cameras)
+        await self._mediamtx_service.ensure_ready(cameras, camera)
+        stream_name = self._stream_name(camera)
+        stream_endpoints = self._stream_manager.stream_endpoints(stream_name)
+        if request.force_restart:
+            await self._stream_manager.stop_stream(camera.id)
+        playback_url = self._playback_url_for_protocol(
+            request.requested_protocol,
+            stream_endpoints.whep_url,
+            stream_endpoints.hls_url,
         )
-        output_dir.mkdir(parents=True, exist_ok=True)
-        relative_playback_url = self._relative_playback_url(camera_id)
         await self._stream_repository.upsert_requested_state(
             camera_id=camera.id,
             stream_id=f"stream_{camera.id}",
-            status=StreamStatus.starting.value,
+            status=StreamStatus.running.value,
             desired_state=StreamDesiredState.running.value,
-            protocol=StreamProtocol.hls.value,
-            playback_path=relative_playback_url,
-            playlist_path=str(playlist_path),
-            metadata={"reason": request.reason} if request.reason else {},
+            protocol=self._enum_value(request.requested_protocol),
+            playback_path=playback_url,
+            playlist_path=stream_endpoints.hls_url,
+            metadata=self._stream_metadata(
+                stream_name=stream_name,
+                stream_endpoints=stream_endpoints,
+                reason=request.reason,
+            ),
         )
-        worker_snapshot = await self._stream_manager.start_worker(
-            camera=camera,
-            rtsp_url=rtsp_url,
-            request=request,
-            playback_path=relative_playback_url,
-            playlist_path=str(playlist_path),
+        await self._stream_manager.start_stream(
+            camera_id=camera.id,
+            stream_name=stream_name,
+            sample_fps=request.sample_fps or self._settings.realtime_frame_sample_fps,
         )
+        worker_snapshot = self._stream_manager.get_snapshot(camera.id)
         stream_record = await self._stream_repository.fetch_by_camera_id(camera.id)
-        return self._contract_service.build_contract(camera, stream_record, worker_snapshot)
+        return self._contract_service.build_contract(
+            camera,
+            stream_record,
+            worker_snapshot,
+            stream_endpoints,
+        )
 
     async def stop_stream(
         self,
         camera_id: str,
         request: StreamStopRequest | None = None,
     ) -> StreamInfoResponse:
+        """Stop frame extraction for a camera and preserve MediaMTX access metadata."""
+
         camera = await self._camera_service.get_camera_record(camera_id)
-        try:
-            worker_snapshot = await self._stream_manager.stop_worker(camera_id)
-        except StreamNotRunningException:
-            worker_snapshot = self._stream_manager.get_snapshot(camera_id)
+        stream_name = self._stream_name(camera)
+        stream_endpoints = self._stream_manager.stream_endpoints(stream_name)
+        await self._stream_manager.stop_stream(camera_id)
+        worker_snapshot = self._stream_manager.get_snapshot(camera_id)
 
         stream_record = await self._stream_repository.update_requested_state(
             camera_id=camera_id,
-            status=StreamStatus.stopping.value,
+            status=StreamStatus.stopped.value,
             desired_state=StreamDesiredState.stopped.value,
-            metadata={"reason": request.reason} if request and request.reason else {},
+            metadata=self._stream_metadata(
+                stream_name=stream_name,
+                stream_endpoints=stream_endpoints,
+                reason=request.reason if request else None,
+            ),
         )
-        return self._contract_service.build_contract(camera, stream_record, worker_snapshot)
+        return self._contract_service.build_contract(
+            camera,
+            stream_record,
+            worker_snapshot,
+            stream_endpoints,
+        )
 
     async def get_stream_status(self, camera_id: str) -> StreamInfoResponse:
+        """Return the current stream status and MediaMTX playback contract."""
+
         camera = await self._camera_service.get_camera_record(camera_id)
         stream_record = await self._stream_repository.fetch_by_camera_id(camera_id)
         worker_snapshot = self._stream_manager.get_snapshot(camera_id)
-        return self._contract_service.build_contract(camera, stream_record, worker_snapshot)
+        return self._contract_service.build_contract(
+            camera,
+            stream_record,
+            worker_snapshot,
+            self._stream_manager.stream_endpoints(self._stream_name(camera)),
+        )
 
     async def get_stream_info(self, camera_id: str) -> StreamInfoResponse:
+        """Return the frontend-ready playback contract for a camera stream."""
+
         return await self.get_stream_status(camera_id)
 
     async def list_stream_contracts(self, camera_id: str | None = None) -> list[StreamInfoResponse]:
+        """Return stream contracts for one camera or for the full camera inventory."""
+
         if camera_id:
             return [await self.get_stream_status(camera_id)]
 
@@ -106,22 +149,27 @@ class StreamService:
                 camera,
                 stream_records.get(camera.id),
                 self._stream_manager.get_snapshot(camera.id),
+                self._stream_manager.stream_endpoints(self._stream_name(camera)),
             )
             for camera in cameras
         ]
 
     async def apply_stream_event(self, event: StreamEventPayload) -> StreamInfoResponse:
+        """Apply a stream lifecycle event and rebuild the current frontend contract."""
+
         stream_record = await self._stream_repository.apply_event(event)
-        self._stream_manager.note_event(
-            camera_id=event.camera_id,
-            reconnect_attempts=event.reconnect_attempts,
-            restart_count=event.restart_count,
-        )
         camera = await self._camera_service.get_camera_record(event.camera_id)
         worker_snapshot = self._stream_manager.get_snapshot(event.camera_id)
-        return self._contract_service.build_contract(camera, stream_record, worker_snapshot)
+        return self._contract_service.build_contract(
+            camera,
+            stream_record,
+            worker_snapshot,
+            self._stream_manager.stream_endpoints(self._stream_name(camera)),
+        )
 
     async def build_websocket_event(self, event: StreamEventPayload) -> WebSocketEnvelope:
+        """Translate a stream lifecycle event into the frontend WebSocket envelope."""
+
         contract = await self.apply_stream_event(event)
         return WebSocketEnvelope(
             type="stream.updated",
@@ -132,19 +180,25 @@ class StreamService:
         )
 
     async def get_stream_health(self, camera_id: str) -> HealthComponent:
+        """Report worker and contract health for a MediaMTX-backed camera stream."""
+
         camera = await self._camera_service.get_camera_record(camera_id)
         stream_record = await self._stream_repository.fetch_by_camera_id(camera_id)
-        playlist_path = self._playlist_path(camera.id)
-        playlist_exists = playlist_path.exists()
         worker_snapshot = self._stream_manager.get_snapshot(camera_id)
 
-        if stream_record and stream_record.status == StreamStatus.running and playlist_exists:
+        if (
+            stream_record
+            and stream_record.status == StreamStatus.running
+            and worker_snapshot.is_process_alive
+        ):
             return HealthComponent(
                 status="ok",
-                message="Stream is healthy and HLS output is present.",
+                message="Stream is healthy and the realtime frame worker is active.",
                 details={
-                    "playlist_path": str(playlist_path),
-                    "worker_pid": worker_snapshot.process_id,
+                    "stream_name": self._stream_name(camera),
+                    "webrtc_url": self._stream_manager.stream_endpoints(
+                        self._stream_name(camera),
+                    ).whep_url,
                 },
             )
 
@@ -158,21 +212,58 @@ class StreamService:
                     if stream_record
                     else StreamStatus.stopped.value
                 ),
-                "playlist_exists": playlist_exists,
                 "worker_alive": worker_snapshot.is_process_alive,
             },
         )
 
-    def _relative_playback_url(self, camera_id: str) -> str:
-        return (
-            f"{self._settings.media_mount_path}/"
-            f"{self._settings.hls_directory_name}/{camera_id}/index.m3u8"
-        )
+    @staticmethod
+    def _enum_value(value: StreamProtocol) -> str:
+        """Return a stable string representation for enum-backed protocol fields."""
 
-    def _playlist_path(self, camera_id: str) -> Path:
-        _output_dir, playlist_path = build_hls_output_paths(
-            self._settings.media_root,
-            self._settings.hls_directory_name,
-            camera_id,
-        )
-        return playlist_path
+        return value.value if isinstance(value, StreamProtocol) else str(value)
+
+    @staticmethod
+    def _playback_url_for_protocol(
+        protocol: StreamProtocol,
+        webrtc_url: str,
+        hls_url: str,
+    ) -> str:
+        """Pick the primary playback URL that matches the requested frontend protocol."""
+
+        if StreamService._protocol_value(protocol) == StreamProtocol.hls.value:
+            return hls_url
+        return webrtc_url
+
+    @staticmethod
+    def _stream_metadata(
+        *,
+        stream_name: str,
+        stream_endpoints: MediaMtxStreamEndpoints,
+        reason: str | None,
+    ) -> dict[str, str]:
+        """Persist the MediaMTX routing details alongside stream lifecycle state."""
+
+        metadata = {
+            "stream_name": stream_name,
+            "webrtc_url": stream_endpoints.whep_url,
+            "hls_url": stream_endpoints.hls_url,
+            "rtsp_pull_url": stream_endpoints.rtsp_pull_url,
+        }
+        if reason:
+            metadata["reason"] = reason
+        return metadata
+
+    @staticmethod
+    def _stream_name(camera: CameraRecord) -> str:
+        """Return the MediaMTX path name configured for a camera."""
+
+        metadata_name = camera.metadata.get("mediamtx_stream_name")
+        if isinstance(metadata_name, str) and metadata_name.strip():
+            return normalize_stream_name(metadata_name)
+        return normalize_stream_name(camera.id)
+
+    @staticmethod
+    def _protocol_value(protocol: StreamProtocol | str) -> str:
+        """Normalize protocol values that may arrive as enums or plain strings."""
+
+        return protocol.value if isinstance(protocol, StreamProtocol) else protocol

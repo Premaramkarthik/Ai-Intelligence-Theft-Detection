@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from math import ceil
 from uuid import uuid4
 
@@ -7,12 +8,14 @@ from src.core.exceptions.camera.camera_exceptions import (
     CameraNotFoundException,
     CameraValidationException,
 )
+from src.core.logger.logger import get_logger
 from src.models.camera import CameraRecord, ValidationStatus
 from src.schemas.camera_requests import CameraListQuery, CreateCameraRequest, UpdateCameraRequest
 from src.schemas.camera_responses import CameraResponse, CameraValidationResponse
 from src.schemas.common import PaginatedItems, PaginationMeta
 from src.services.camera.camera_repository import CameraRepository
 from src.services.camera.camera_validator import CameraValidator
+from src.services.realtime_video.mediamtx_service import MediaMtxService
 from src.utils.ffmpeg import build_rtsp_url_from_camera, mask_rtsp_url
 
 
@@ -21,11 +24,18 @@ class CameraService:
         self,
         repository: CameraRepository,
         validator: CameraValidator,
+        mediamtx_service: MediaMtxService | None = None,
     ) -> None:
+        """Create the camera service with optional MediaMTX config synchronization."""
+
         self._repository = repository
         self._validator = validator
+        self._mediamtx_service = mediamtx_service
+        self._logger = get_logger(__name__)
 
     async def create_camera(self, payload: CreateCameraRequest) -> CameraResponse:
+        """Create a camera record and refresh the generated MediaMTX config."""
+
         camera = await self._repository.insert(
             camera_id=f"cam_{uuid4().hex[:12]}",
             name=payload.name,
@@ -36,17 +46,18 @@ class CameraService:
             password=payload.password.get_secret_value() if payload.password else None,
             path=payload.path,
             direct_rtsp_url=payload.direct_rtsp_url,
-            transport=payload.transport.value,
-            status=payload.status.value,
+            transport=self._enum_value(payload.transport),
+            status=self._enum_value(payload.status),
             metadata=payload.metadata,
             tags=payload.tags,
         )
+        await self._sync_mediamtx_config()
         return self._to_response(camera)
 
     async def list_cameras(self, query: CameraListQuery) -> PaginatedItems[CameraResponse]:
         offset = (query.page - 1) * query.page_size
         cameras, total_items = await self._repository.list(
-            status=query.status.value if query.status else None,
+            status=self._enum_value(query.status) if query.status else None,
             search=query.search,
             limit=query.page_size,
             offset=offset,
@@ -92,6 +103,8 @@ class CameraService:
         return camera
 
     async def update_camera(self, camera_id: str, payload: UpdateCameraRequest) -> CameraResponse:
+        """Update a camera record and refresh the generated MediaMTX config."""
+
         existing = await self.get_camera_record(camera_id)
         updates = payload.model_dump(exclude_unset=True)
         if "password" in updates:
@@ -106,8 +119,12 @@ class CameraService:
             "password": updates.get("password", existing.password),
             "path": updates.get("path", existing.path),
             "direct_rtsp_url": updates.get("direct_rtsp_url", existing.direct_rtsp_url),
-            "transport": updates.get("transport", existing.transport.value),
-            "status": updates.get("status", existing.status.value),
+            "transport": self._enum_value(
+                updates.get("transport", existing.transport),
+            ),
+            "status": self._enum_value(
+                updates.get("status", existing.status),
+            ),
             "metadata": updates.get("metadata", existing.metadata),
             "tags": updates.get("tags", existing.tags),
         }
@@ -134,12 +151,16 @@ class CameraService:
         )
         if updated is None:
             raise CameraNotFoundException(camera_id)
+        await self._sync_mediamtx_config()
         return self._to_response(updated)
 
     async def delete_camera(self, camera_id: str) -> None:
+        """Delete a camera record and refresh the generated MediaMTX config."""
+
         deleted = await self._repository.delete(camera_id)
         if not deleted:
             raise CameraNotFoundException(camera_id)
+        await self._sync_mediamtx_config()
 
     async def validate_camera(
         self,
@@ -198,3 +219,21 @@ class CameraService:
             created_at=camera.created_at,
             updated_at=camera.updated_at,
         )
+
+    @staticmethod
+    def _enum_value(value: str | Enum) -> str:
+        return value.value if isinstance(value, Enum) else value
+
+    async def _sync_mediamtx_config(self) -> None:
+        """Regenerate the MediaMTX config file from the current camera inventory."""
+
+        if self._mediamtx_service is None:
+            return
+        try:
+            cameras = await self.list_all_camera_records()
+            await self._mediamtx_service.sync_config(cameras)
+        except Exception as exc:  # pylint: disable=broad-except
+            self._logger.warning(
+                "Failed to regenerate MediaMTX config after camera change: %s",
+                exc,
+            )

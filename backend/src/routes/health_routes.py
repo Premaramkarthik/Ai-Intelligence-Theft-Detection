@@ -20,6 +20,7 @@ async def health(request: Request) -> dict[str, Any]:
     container = request.app.state.container
     db_ok = await container.database.ping()
     kafka = container.kafka_consumer.health_snapshot()
+    mediamtx = container.mediamtx_service.health_snapshot()
     uptime_seconds = round(time() - container.started_at_epoch, 2)
     payload = HealthResponse(
         service=container.settings.app_name,
@@ -44,6 +45,20 @@ async def health(request: Request) -> dict[str, Any]:
                 status="ok",
                 message="Worker registry is available.",
                 details={"active_workers": container.stream_manager.active_worker_count()},
+            ),
+            "mediamtx": HealthComponent(
+                status="ok" if mediamtx.healthy else "degraded",
+                message=(
+                    "MediaMTX is ready."
+                    if mediamtx.healthy
+                    else "MediaMTX is not ready."
+                ),
+                details={
+                    "managed": mediamtx.managed,
+                    "externally_managed": mediamtx.externally_managed,
+                    "config_path": mediamtx.config_path,
+                    "last_error": mediamtx.last_error,
+                },
             ),
         },
     )

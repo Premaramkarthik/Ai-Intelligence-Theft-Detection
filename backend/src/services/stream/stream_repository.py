@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from src.core.db import Database
@@ -70,9 +71,9 @@ class StreamRepository:
             self.APPLY_STREAM_EVENT_SQL,
             event.camera_id,
             event.stream_id,
-            event.status.value,
-            event.desired_state.value,
-            event.protocol.value,
+            self._enum_value(event.status),
+            self._enum_value(event.desired_state),
+            self._enum_value(event.protocol),
             event.playback_url,
             event.playlist_path,
             event.process_id,
@@ -106,3 +107,7 @@ class StreamRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    @staticmethod
+    def _enum_value(value: str | Enum) -> str:
+        return value.value if isinstance(value, Enum) else value

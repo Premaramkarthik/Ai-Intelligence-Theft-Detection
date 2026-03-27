@@ -32,7 +32,7 @@ class StreamEventConsumer:
     async def start(self) -> None:
         if not self._settings.kafka_enabled:
             return
-        self._consumer = AIOKafkaConsumer(
+        consumer = AIOKafkaConsumer(
             self._settings.kafka_topic_camera_status,
             self._settings.kafka_topic_camera_events,
             self._settings.kafka_topic_camera_ai_results,
@@ -43,15 +43,18 @@ class StreamEventConsumer:
             enable_auto_commit=True,
             value_deserializer=lambda value: json.loads(value.decode("utf-8")),
         )
+        self._consumer = consumer
         try:
-            await self._consumer.start()
+            await consumer.start()
         except (KafkaError, OSError, ConnectionError) as exc:
             self._healthy = False
             self._last_error = str(exc)
             self._logger.warning("Kafka consumer could not start: %s", exc)
+            await self._safe_stop_consumer(consumer)
             self._consumer = None
             return
         self._healthy = True
+        self._last_error = None
         self._consumer_task = asyncio.create_task(self._consume_loop())
 
     async def stop(self) -> None:
@@ -61,6 +64,7 @@ class StreamEventConsumer:
                 await self._consumer_task
             except asyncio.CancelledError:
                 pass
+            self._consumer_task = None
         if self._consumer is not None:
             await self._consumer.stop()
             self._consumer = None
@@ -83,3 +87,9 @@ class StreamEventConsumer:
                 self._healthy = False
                 self._last_error = str(exc)
                 self._logger.exception("Failed to process Kafka event: %s", exc)
+
+    async def _safe_stop_consumer(self, consumer: AIOKafkaConsumer) -> None:
+        try:
+            await consumer.stop()
+        except (KafkaError, OSError, ConnectionError) as exc:
+            self._logger.debug("Kafka consumer cleanup failed after startup error: %s", exc)

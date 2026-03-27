@@ -32,21 +32,31 @@ async def run() -> None:
     settings = Settings()
     database_url = settings.database_url
     connection = await asyncpg.connect(database_url)
+    LOGGER.info("Connected to database for migrations: %s", database_url)
     try:
         await ensure_migration_table(connection)
+        LOGGER.info("Ensured schema_migrations table exists.")
         already_applied = await applied_migrations(connection)
         migration_files = sorted(
             file_path
             for file_path in MIGRATION_DIR.glob("[0-9][0-9][0-9]_*.sql")
             if file_path.is_file()
         )
-
+        LOGGER.info(
+            "Found %d migration files, %d already applied.",
+            len(migration_files),
+            len(already_applied),
+        )
         for migration_path in migration_files:
             if migration_path.name in already_applied:
                 continue
             sql = migration_path.read_text(encoding="utf-8")
             async with connection.transaction():
                 await connection.execute(sql)
+                LOGGER.info(
+                    "Applied migration SQL from file: %s",
+                    migration_path.name,
+                )
                 await connection.execute(
                     "INSERT INTO schema_migrations (filename) VALUES ($1)",
                     migration_path.name,

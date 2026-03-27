@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 from src.core.config import Settings
 from src.models.camera import CameraRecord, StreamProtocol, StreamRecord, StreamStatus
 from src.schemas.stream_responses import (
+    StreamAccessUrls,
     StreamFallbackInfo,
     StreamInfoResponse,
     WorkerStateResponse,
 )
-from src.services.stream.stream_manager import WorkerSnapshot
+from src.services.realtime_video.contracts import MediaMtxStreamEndpoints
+from src.services.realtime_video.stream_manager import WorkerSnapshot
 
 
 class StreamContractService:
@@ -21,17 +23,11 @@ class StreamContractService:
         camera: CameraRecord,
         stream_record: StreamRecord | None,
         worker_snapshot: WorkerSnapshot,
+        stream_endpoints: MediaMtxStreamEndpoints,
     ) -> StreamInfoResponse:
-        relative_playback_url = self._relative_playback_url(camera.id)
-        playback_url = (
-            self._absolute_http_url(stream_record.playback_path)
-            if stream_record and stream_record.playback_path
-            else self._absolute_http_url(relative_playback_url)
-        )
-
         if stream_record is None:
             status = StreamStatus.stopped
-            protocol = StreamProtocol.hls
+            protocol = StreamProtocol.webrtc
             stream_id = f"stream_{camera.id}"
             last_error_code = None
             last_error_message = None
@@ -48,15 +44,23 @@ class StreamContractService:
             last_event_at = stream_record.last_event_at
             started_at = stream_record.worker_started_at
 
+        playback_url = self._resolve_playback_url(protocol, stream_endpoints)
+
         return StreamInfoResponse(
             camera_id=camera.id,
             camera_name=camera.name,
             stream_id=stream_id,
+            stream_name=stream_endpoints.stream_name,
             stream_identifier=f"{camera.id}:{stream_id}",
             status=status,
             protocol=protocol,
             playback_url=playback_url,
-            relative_playback_url=relative_playback_url,
+            relative_playback_url=None,
+            access_urls=StreamAccessUrls(
+                webrtc_url=stream_endpoints.whep_url,
+                hls_url=stream_endpoints.hls_url,
+                rtsp_pull_url=stream_endpoints.rtsp_pull_url,
+            ),
             websocket_url=self._websocket_public_url(),
             fallback=self._build_fallback(status),
             started_at=started_at,
@@ -71,6 +75,11 @@ class StreamContractService:
                 process_id=worker_snapshot.process_id,
                 restart_count=worker_snapshot.restart_count,
                 reconnect_attempts=worker_snapshot.reconnect_attempts,
+                sampled_frames=worker_snapshot.sampled_frames,
+                dropped_frames=worker_snapshot.dropped_frames,
+                current_fps=worker_snapshot.current_fps,
+                queue_latency_ms=worker_snapshot.queue_latency_ms,
+                decode_time_ms=worker_snapshot.decode_time_ms,
             ),
         )
 
@@ -81,7 +90,7 @@ class StreamContractService:
             return StreamFallbackInfo(
                 kind="warming_up",
                 message=(
-                    "HLS playlist is being prepared. "
+                    "MediaMTX is warming up the camera path. "
                     "Subscribe to WebSocket updates and retry shortly."
                 ),
                 retry_after_seconds=2,
@@ -90,7 +99,7 @@ class StreamContractService:
             return StreamFallbackInfo(
                 kind="retry",
                 message=(
-                    "The worker is reconnecting to the camera. "
+                    "The realtime worker is reconnecting to MediaMTX. "
                     "Keep the WebSocket open for status updates."
                 ),
                 retry_after_seconds=3,
@@ -101,17 +110,22 @@ class StreamContractService:
             retry_after_seconds=None,
         )
 
-    def _relative_playback_url(self, camera_id: str) -> str:
-        return (
-            f"{self._settings.media_mount_path}/"
-            f"{self._settings.hls_directory_name}/{camera_id}/index.m3u8"
-        )
+    def _resolve_playback_url(
+        self,
+        protocol: StreamProtocol,
+        stream_endpoints: MediaMtxStreamEndpoints,
+    ) -> str:
+        """Return the primary playback URL that frontend players should open first."""
 
-    def _absolute_http_url(self, relative_path: str) -> str:
-        return urljoin(
-            f"{self._settings.public_api_base_url.rstrip('/')}/",
-            relative_path.lstrip("/"),
-        )
+        if self._protocol_value(protocol) == StreamProtocol.hls.value:
+            return stream_endpoints.hls_url
+        return stream_endpoints.whep_url
+
+    @staticmethod
+    def _protocol_value(protocol: StreamProtocol | str) -> str:
+        """Normalize protocol values that may arrive as enums or plain strings."""
+
+        return protocol.value if isinstance(protocol, StreamProtocol) else protocol
 
     def _websocket_public_url(self) -> str:
         if self._settings.public_ws_base_url:

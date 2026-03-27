@@ -34,6 +34,7 @@ class StreamDesiredState(str, Enum):
 
 
 class StreamProtocol(str, Enum):
+    webrtc = "webrtc"
     hls = "hls"
 
 

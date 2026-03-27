@@ -52,7 +52,6 @@ class StreamManager:
         self._monitor_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
-        self._settings.hls_root.mkdir(parents=True, exist_ok=True)
         self._monitor_task = asyncio.create_task(self._monitor_loop())
 
     async def stop(self) -> None:

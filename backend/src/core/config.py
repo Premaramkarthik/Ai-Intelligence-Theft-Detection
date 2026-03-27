@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     public_ws_base_url: str | None = None
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
-    database_url: str
+    database_url: str # = "postgresql://postgres:postgres@localhost:5432/rtsp_camera"
     db_pool_min_size: int = 2
     db_pool_max_size: int = 10
 
@@ -40,9 +40,20 @@ class Settings(BaseSettings):
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
     ffmpeg_rtsp_transport: str = "tcp"
-    media_root: Path = BACKEND_ROOT / "runtime" / "media"
-    media_mount_path: str = "/media"
-    hls_directory_name: str = "hls"
+    mediamtx_binary: str = "mediamtx"
+    mediamtx_manage_process: bool = True
+    mediamtx_generated_config_path: Path = BACKEND_ROOT / "runtime" / "mediamtx.generated.yml"
+    mediamtx_start_timeout_seconds: float = 8.0
+    mediamtx_rtsp_base_url: str = "rtsp://localhost:8554"
+    mediamtx_hls_base_url: str = "http://localhost:8888"
+    mediamtx_webrtc_base_url: str = "http://localhost:8889"
+    realtime_frame_sample_fps: float = 5.0
+    realtime_frame_queue_size: int = 512
+    realtime_max_reconnect_attempts: int = 8
+    metrics_enabled: bool = True
+    metrics_host: str = "0.0.0.0"
+    metrics_port: int = 9109
+    metrics_collection_interval_seconds: float = 5.0
     hls_segment_time_seconds: int = 2
     hls_playlist_size: int = 6
     stream_start_timeout_seconds: int = 12
@@ -79,9 +90,11 @@ class Settings(BaseSettings):
             return False
         raise ValueError("debug must be a boolean-like value.")
 
-    @field_validator("media_root", mode="before")
+    @field_validator("mediamtx_generated_config_path", mode="before")
     @classmethod
-    def resolve_media_root(cls, value: str | Path) -> Path:
+    def resolve_mediamtx_generated_config_path(cls, value: str | Path) -> Path:
+        """Resolve the generated MediaMTX config path relative to the backend root."""
+
         path = Path(value)
         if path.is_absolute():
             return path
@@ -94,10 +107,6 @@ class Settings(BaseSettings):
     @property
     def migration_dir(self) -> Path:
         return BACKEND_ROOT / "scripts" / "migrations"
-
-    @property
-    def hls_root(self) -> Path:
-        return self.media_root / self.hls_directory_name
 
 
 @lru_cache(maxsize=1)

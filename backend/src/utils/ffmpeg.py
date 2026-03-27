@@ -59,17 +59,6 @@ def mask_rtsp_url(url: str) -> str:
         return f"{prefix}://{user}:****@{host_path}"
     return f"{prefix}://****@{host_path}"
 
-
-def build_hls_output_paths(
-    media_root: Path,
-    hls_directory_name: str,
-    camera_id: str,
-) -> tuple[Path, Path]:
-    output_dir = media_root / hls_directory_name / camera_id
-    playlist_path = output_dir / "index.m3u8"
-    return output_dir, playlist_path
-
-
 def build_ffmpeg_hls_command(
     ffmpeg_binary: str,
     rtsp_url: str,
@@ -86,6 +75,10 @@ def build_ffmpeg_hls_command(
         "-loglevel",
         "warning",
         "-nostats",
+        "-fflags",
+        "+genpts",
+        "-use_wallclock_as_timestamps",
+        "1",
         "-rtsp_transport",
         transport_value,
         "-i",

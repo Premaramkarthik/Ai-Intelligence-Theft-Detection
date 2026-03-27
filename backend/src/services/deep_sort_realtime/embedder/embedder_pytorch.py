@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import pkg_resources
 import torch
-from deep_sort_realtime.embedder.mobilenetv2_bottle import MobileNetV2_bottle
+from src.services.deep_sort_realtime.embedder.mobilenetv2_bottle import MobileNetV2_bottle
 from torchvision.transforms import transforms
 
 logger = logging.getLogger(__name__)
