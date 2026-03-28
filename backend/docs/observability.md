@@ -42,15 +42,7 @@ Use:
 - [prometheus.yml.tmpl](/home/karthik/Downloads/pipeline_opencv/backend/observability/prometheus/prometheus.yml.tmpl)
 - [alerts.yml](/home/karthik/Downloads/pipeline_opencv/backend/observability/prometheus/alerts.yml)
 
-The local setup now uses a cross-platform Prometheus target template. By default it scrapes `host.docker.internal:9109`, which works on Docker Desktop for Windows and macOS, and Docker Compose adds a `host-gateway` mapping on Linux. The `5s` scrape interval is a reasonable default for live worker and queue visibility without excessive overhead.
-
-If your environment needs a different host target, set:
-
-```bash
-export PROMETHEUS_SCRAPE_TARGET=YOUR_HOST_OR_IP:9109
-```
-
-before `docker compose up`.
+The local setup uses host networking for Prometheus and Grafana so Prometheus can scrape the backend metrics listener directly at `127.0.0.1:9109`. The `5s` scrape interval is a reasonable default for live worker and queue visibility without excessive overhead.
 
 ## Grafana Setup
 
@@ -62,8 +54,7 @@ Provisioning files:
 
 Manual Grafana flow:
 
-1. Add a Prometheus data source pointed at `http://prometheus:9090`.
-1. Add a Prometheus data source pointed at `http://prometheus:9090`.
+1. Add a Prometheus data source pointed at `http://127.0.0.1:9090`.
 2. Import `observability/grafana/dashboards/realtime_video_pipeline.json`.
 3. Save the dashboard in a shared folder.
 

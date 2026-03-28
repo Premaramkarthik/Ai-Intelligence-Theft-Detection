@@ -63,37 +63,30 @@ services:
 
   prometheus:
     image: prom/prometheus:latest
+    network_mode: host
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        sed "s|__PROMETHEUS_SCRAPE_TARGET__|${PROMETHEUS_SCRAPE_TARGET:-host.docker.internal:9109}|g" \
+        sed "s|__PROMETHEUS_SCRAPE_TARGET__|127.0.0.1:9109|g" \
           /etc/prometheus/prometheus.yml.tmpl > /tmp/prometheus.yml
         exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus
-    ports:
-      - "9090:9090"
     volumes:
       - ./observability/prometheus/prometheus.yml.tmpl:/etc/prometheus/prometheus.yml.tmpl:ro
       - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    networks:
-      - backend_net
 
   grafana:
     image: grafana/grafana:latest
-    ports:
-      - "3001:3000"
+    network_mode: host
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SERVER_HTTP_PORT: 3001
     volumes:
       - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
-    networks:
-      - backend_net
 
 networks:
   backend_net:
