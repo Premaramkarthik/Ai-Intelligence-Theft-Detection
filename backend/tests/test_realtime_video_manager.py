@@ -11,13 +11,21 @@ from src.services.realtime_video.stream_manager import MediaMtxStreamManager
 class FakeWorker:
     """Minimal worker double used to test manager orchestration."""
 
-    def __init__(self, config, frame_queue, event_publisher, metrics_recorder) -> None:
+    def __init__(
+        self,
+        config,
+        frame_queue,
+        event_publisher,
+        metrics_recorder,
+        connection_alert_publisher,
+    ) -> None:
         """Capture the worker dependencies created by the manager."""
 
         self.config = config
         self.frame_queue = frame_queue
         self.event_publisher = event_publisher
         self.metrics_recorder = metrics_recorder
+        self.connection_alert_publisher = connection_alert_publisher
         self._stop_event = asyncio.Event()
 
     async def run(self) -> None:

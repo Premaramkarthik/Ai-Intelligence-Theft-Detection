@@ -40,7 +40,7 @@ async def test_worker_publish_sample_to_loop_records_queue_metrics() -> None:
         StreamWorkerConfig(
             camera_id="cam_1",
             stream_name="cam_1",
-            mediamtx_rtsp_url="rtsp://localhost:8554/cam_1",
+            mediamtx_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
         ),
         FrameQueue(maxsize=2),
         AsyncMock(),
@@ -71,7 +71,7 @@ async def test_worker_publish_sample_to_loop_tracks_drops() -> None:
         StreamWorkerConfig(
             camera_id="cam_1",
             stream_name="cam_1",
-            mediamtx_rtsp_url="rtsp://localhost:8554/cam_1",
+            mediamtx_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
         ),
         queue,
         AsyncMock(),
@@ -85,3 +85,29 @@ async def test_worker_publish_sample_to_loop_tracks_drops() -> None:
     worker._publish_sample_to_loop(sample)  # pylint: disable=protected-access
 
     assert worker.metrics().dropped_frames == 1
+
+
+async def test_worker_emits_connection_alert_once_per_decode_session() -> None:
+    """Emit a single connection alert after the first successfully queued frame."""
+
+    alert_publisher = AsyncMock()
+    worker = PyAvFrameWorker(
+        StreamWorkerConfig(
+            camera_id="cam_1",
+            stream_name="cam_1",
+            mediamtx_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
+        ),
+        FrameQueue(maxsize=4),
+        AsyncMock(),
+        connection_alert_publisher=alert_publisher,
+    )
+
+    worker._publish_sample_to_loop(  # pylint: disable=protected-access
+        FrameSample(camera_id="cam_1", stream_name="cam_1", sequence_number=1),
+    )
+    worker._publish_sample_to_loop(  # pylint: disable=protected-access
+        FrameSample(camera_id="cam_1", stream_name="cam_1", sequence_number=2),
+    )
+    await asyncio.sleep(0)
+
+    alert_publisher.publish_camera_connected.assert_awaited_once_with("cam_1")

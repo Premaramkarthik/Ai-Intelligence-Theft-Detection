@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     mediamtx_manage_process: bool = True
     mediamtx_generated_config_path: Path = BACKEND_ROOT / "runtime" / "mediamtx.generated.yml"
     mediamtx_start_timeout_seconds: float = 8.0
+    mediamtx_api_base_url: str = "http://localhost:9997"
+    mediamtx_api_timeout_seconds: float = 5.0
+    mediamtx_api_ready_timeout_seconds: float = 3.0
+    mediamtx_api_username: str = "backend-control"
+    mediamtx_api_password: SecretStr | None = None
+    mediamtx_api_password_file: Path = BACKEND_ROOT / "runtime" / "mediamtx.api.password"
     mediamtx_rtsp_base_url: str = "rtsp://localhost:8554"
     mediamtx_hls_base_url: str = "http://localhost:8888"
     mediamtx_webrtc_base_url: str = "http://localhost:8889"
@@ -94,6 +100,16 @@ class Settings(BaseSettings):
     @classmethod
     def resolve_mediamtx_generated_config_path(cls, value: str | Path) -> Path:
         """Resolve the generated MediaMTX config path relative to the backend root."""
+
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return BACKEND_ROOT / path
+
+    @field_validator("mediamtx_api_password_file", mode="before")
+    @classmethod
+    def resolve_mediamtx_api_password_file(cls, value: str | Path) -> Path:
+        """Resolve the MediaMTX Control API password file relative to the backend root."""
 
         path = Path(value)
         if path.is_absolute():

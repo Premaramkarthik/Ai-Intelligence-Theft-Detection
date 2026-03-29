@@ -11,6 +11,10 @@ from typing import Any
 
 from src.core.logger.logger import get_logger
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.services.realtime_video.connection_alerts import (
+    NullStreamConnectionAlertPublisher,
+    StreamConnectionAlertPublisher,
+)
 from src.services.realtime_video.contracts import (
     FrameSample,
     StreamWorkerConfig,
@@ -66,6 +70,7 @@ class PyAvFrameWorker:
         frame_queue: FrameQueue,
         event_publisher: FrameEventPublisher | None = None,
         metrics_recorder: MetricsRecorder | None = None,
+        connection_alert_publisher: StreamConnectionAlertPublisher | None = None,
     ) -> None:
         """Create a worker for a single logical stream."""
 
@@ -73,6 +78,9 @@ class PyAvFrameWorker:
         self._frame_queue = frame_queue
         self._event_publisher = event_publisher or NullFrameEventPublisher()
         self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
+        self._connection_alert_publisher = (
+            connection_alert_publisher or NullStreamConnectionAlertPublisher()
+        )
         self._logger = get_logger(__name__)
         self._stop_event = threading.Event()
         self._metrics = StreamWorkerMetrics()
@@ -80,6 +88,7 @@ class PyAvFrameWorker:
         self._sequence_number = 0
         self._sampling_gate = FrameSamplingGate(config.sample_fps)
         self._last_sample_monotonic_ns: int | None = None
+        self._session_connection_alert_sent = False
 
     async def run(self) -> None:
         """Run the worker until it is stopped, reconnecting with exponential backoff."""
@@ -125,6 +134,7 @@ class PyAvFrameWorker:
         """Run one blocking PyAV decode session inside a background thread."""
 
         av_module = _import_av()
+        self._session_connection_alert_sent = False
         container = self._open_container(av_module)
         try:
             stream = container.streams.video[0]
@@ -135,9 +145,7 @@ class PyAvFrameWorker:
                     return
                 decode_started_ns = monotonic_ns()
                 decoded_frames = packet.decode()
-                decode_elapsed_ms = (
-                    monotonic_ns() - decode_started_ns
-                ) / 1_000_000
+                decode_elapsed_ms = (monotonic_ns() - decode_started_ns) / 1_000_000
                 per_frame_decode_ms = decode_elapsed_ms / max(1, len(decoded_frames))
                 for frame in decoded_frames:
                     if self._stop_event.is_set():
@@ -184,15 +192,26 @@ class PyAvFrameWorker:
         """Publish a sampled frame to the async queue without blocking the decode thread."""
 
         published = self._frame_queue.publish_nowait(sample)
-        queue_latency_ms = (
-            monotonic_ns() - sample.sampled_monotonic_ns
-        ) / 1_000_000
+        queue_latency_ms = (monotonic_ns() - sample.sampled_monotonic_ns) / 1_000_000
         if not published:
             self._record_drop(queue_latency_ms)
             return
         self._record_queue_latency(queue_latency_ms)
+        self._emit_connection_alert_once()
         asyncio.create_task(self._publish_event_safely(sample))
         self._record_last_frame(sample)
+
+    def _emit_connection_alert_once(self) -> None:
+        """Emit a single connection alert for the active decode session."""
+
+        if self._session_connection_alert_sent:
+            return
+        self._session_connection_alert_sent = True
+        self._logger.info(
+            "Realtime frame worker for %s connected and is producing frames.",
+            self._config.camera_id,
+        )
+        asyncio.create_task(self._publish_connection_alert_safely())
 
     async def _publish_event_safely(self, sample: FrameSample) -> None:
         """Publish frame metadata without allowing publisher failures to kill the worker."""
@@ -203,6 +222,21 @@ class PyAvFrameWorker:
             self._record_last_error(str(exc))
             self._logger.warning(
                 "Frame event publishing failed for %s: %s",
+                self._config.camera_id,
+                exc,
+            )
+
+    async def _publish_connection_alert_safely(self) -> None:
+        """Publish a connection alert without allowing alert failures to kill the worker."""
+
+        try:
+            await self._connection_alert_publisher.publish_camera_connected(
+                self._config.camera_id,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            self._record_last_error(str(exc))
+            self._logger.warning(
+                "Connection alert publishing failed for %s: %s",
                 self._config.camera_id,
                 exc,
             )

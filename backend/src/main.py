@@ -22,6 +22,9 @@ from src.services.camera.camera_service import CameraService
 from src.services.camera.camera_validator import CameraValidator
 from src.services.presentation.stream_contract_service import StreamContractService
 from src.services.presentation.websocket_manager import WebSocketManager
+from src.services.realtime_video.alert_publisher import (
+    WebSocketStreamConnectionAlertPublisher,
+)
 from src.services.realtime_video.mediamtx_service import MediaMtxService
 from src.services.realtime_video.queue import FrameQueue
 from src.services.realtime_video.stream_manager import MediaMtxStreamManager
@@ -85,7 +88,12 @@ def create_application() -> FastAPI:
             mediamtx_service,
         )
         cameras = await camera_service.list_all_camera_records()
-        await mediamtx_service.sync_config(cameras)
+        await mediamtx_service.sync_config(
+            cameras,
+            strict_runtime_sync=False,
+        )
+        websocket_manager = WebSocketManager()
+        stream_contract_service = StreamContractService(settings)
         stream_manager = MediaMtxStreamManager(
             frame_queue,
             rtsp_base_url=settings.mediamtx_rtsp_base_url,
@@ -94,8 +102,15 @@ def create_application() -> FastAPI:
             max_reconnect_attempts=settings.realtime_max_reconnect_attempts,
             metrics_recorder=metrics_recorder,
         )
-        websocket_manager = WebSocketManager()
-        stream_contract_service = StreamContractService(settings)
+        stream_manager.set_connection_alert_publisher(
+            WebSocketStreamConnectionAlertPublisher(
+                camera_service,
+                stream_repository,
+                stream_manager,
+                stream_contract_service,
+                websocket_manager,
+            ),
+        )
         stream_service = StreamService(
             settings,
             camera_service,

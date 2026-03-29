@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from src.core.logger.logger import get_logger
 from src.models.camera import StreamDesiredState
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.services.realtime_video.connection_alerts import (
+    NullStreamConnectionAlertPublisher,
+    StreamConnectionAlertPublisher,
+)
 from src.services.realtime_video.contracts import (
     MediaMtxStreamEndpoints,
     StreamWorkerConfig,
@@ -20,7 +24,13 @@ from src.services.realtime_video.mediamtx import build_stream_endpoints
 from src.services.realtime_video.queue import FrameQueue
 
 WorkerFactory = Callable[
-    [StreamWorkerConfig, FrameQueue, FrameEventPublisher | None, MetricsRecorder],
+    [
+        StreamWorkerConfig,
+        FrameQueue,
+        FrameEventPublisher | None,
+        MetricsRecorder,
+        StreamConnectionAlertPublisher | None,
+    ],
     PyAvFrameWorker,
 ]
 
@@ -56,6 +66,7 @@ class MediaMtxStreamManager:
         whep_base_url: str = "http://localhost:8889",
         max_reconnect_attempts: int = 8,
         metrics_recorder: MetricsRecorder | None = None,
+        connection_alert_publisher: StreamConnectionAlertPublisher | None = None,
     ) -> None:
         """Create a stream manager with a shared queue and worker factory."""
 
@@ -63,6 +74,9 @@ class MediaMtxStreamManager:
         self._event_publisher = event_publisher
         self._worker_factory = worker_factory or PyAvFrameWorker
         self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
+        self._connection_alert_publisher = (
+            connection_alert_publisher or NullStreamConnectionAlertPublisher()
+        )
         self._rtsp_base_url = rtsp_base_url
         self._hls_base_url = hls_base_url
         self._whep_base_url = whep_base_url
@@ -95,6 +109,7 @@ class MediaMtxStreamManager:
             self._frame_queue,
             self._event_publisher,
             self._metrics_recorder,
+            self._connection_alert_publisher,
         )
         self._workers[camera_id] = worker
         self._tasks[camera_id] = asyncio.create_task(worker.run())
@@ -178,6 +193,14 @@ class MediaMtxStreamManager:
         """Return the number of currently active realtime workers."""
 
         return len(self.active_cameras())
+
+    def set_connection_alert_publisher(
+        self,
+        publisher: StreamConnectionAlertPublisher,
+    ) -> None:
+        """Attach the alert publisher used by newly created realtime workers."""
+
+        self._connection_alert_publisher = publisher
 
 
 def _safe_metrics(worker: PyAvFrameWorker) -> StreamWorkerMetrics:

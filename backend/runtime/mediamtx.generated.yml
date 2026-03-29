@@ -6,6 +6,33 @@ readTimeout: 10s
 writeTimeout: 10s
 writeQueueSize: 1024
 
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+        path:
+      - action: read
+        path:
+      - action: playback
+        path:
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+  - user: "backend-control"
+    pass: "wbSWh95SKq6JEHUC_nZvselGaYoOhjYl"
+    ips: []
+    permissions:
+      - action: api
+      - action: metrics
+      - action: pprof
+
 api: true
 apiAddress: :9997
 metrics: true
@@ -47,9 +74,4 @@ pathDefaults:
   overridePublisher: false
 
 paths:
-  cam_46cbe8bbfe55:
-    source: "rtsp://192.168.1.2:8080/h264_ulaw.sdp"
-  cam_50b5bd1d79ef:
-    source: "rtsp://192.168.1.2:8080/h264_ulaw.sdp"
-  cam_b0e96a44ce45:
-    source: "rtsp://192.168.1.2:8080/h264_ulaw.sdp"
+  {}
