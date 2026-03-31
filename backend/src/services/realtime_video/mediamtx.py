@@ -56,6 +56,12 @@ def normalize_stream_name(raw_name: str) -> str:
     return normalized or "camera_stream"
 
 
+def build_tracking_stream_name(stream_name: str, suffix: str = "tracked") -> str:
+    """Build the annotated MediaMTX path derived from the raw stream path."""
+
+    return normalize_stream_name(f"{stream_name}_{suffix}")
+
+
 def parse_rtsp_endpoint(rtsp_url: str) -> tuple[str, int]:
     """Extract the hostname and port from a MediaMTX RTSP URL."""
 

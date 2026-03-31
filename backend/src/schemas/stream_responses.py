@@ -37,6 +37,31 @@ class StreamAccessUrls(BaseModel):
     rtsp_pull_url: str
 
 
+class TrackingTrackResponse(BaseModel):
+    track_id: str
+    persistent_id: str | None = None
+    class_name: str | None = None
+    confidence: float
+    similarity: float | None = None
+    left: int
+    top: int
+    width: int
+    height: int
+
+
+class TrackingStateResponse(BaseModel):
+    enabled: bool = False
+    stream_name: str | None = None
+    access_urls: StreamAccessUrls | None = None
+    is_registered: bool = False
+    is_process_alive: bool = False
+    reconnect_attempts: int = 0
+    active_tracks: int = 0
+    identity_backend: str = "milvus"
+    last_error_message: str | None = None
+    tracks: list[TrackingTrackResponse] = Field(default_factory=list)
+
+
 class StreamInfoResponse(BaseModel):
     model_config = ConfigDict(use_enum_values=True)
 
@@ -57,6 +82,7 @@ class StreamInfoResponse(BaseModel):
     last_event_at: datetime | None = None
     last_error_code: str | None = None
     last_error_message: str | None = None
+    tracking: TrackingStateResponse | None = None
     worker: WorkerStateResponse
 
 

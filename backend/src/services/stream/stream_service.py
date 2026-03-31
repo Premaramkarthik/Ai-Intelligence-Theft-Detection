@@ -20,6 +20,7 @@ from src.services.realtime_video.mediamtx import normalize_stream_name
 from src.services.realtime_video.mediamtx_service import MediaMtxService
 from src.services.realtime_video.stream_manager import MediaMtxStreamManager
 from src.services.stream.stream_repository import StreamRepository
+from src.services.tracking.manager import TrackingStreamManager
 
 
 class StreamService:
@@ -30,6 +31,7 @@ class StreamService:
         stream_repository: StreamRepository,
         mediamtx_service: MediaMtxService,
         stream_manager: MediaMtxStreamManager,
+        tracking_manager: TrackingStreamManager,
         contract_service: StreamContractService,
     ) -> None:
         """Create the stream control service for MediaMTX-backed playback and extraction."""
@@ -39,6 +41,7 @@ class StreamService:
         self._stream_repository = stream_repository
         self._mediamtx_service = mediamtx_service
         self._stream_manager = stream_manager
+        self._tracking_manager = tracking_manager
         self._contract_service = contract_service
 
     async def start_stream(self, camera_id: str, request: StreamStartRequest) -> StreamInfoResponse:
@@ -52,6 +55,7 @@ class StreamService:
         stream_endpoints = self._stream_manager.stream_endpoints(stream_name)
         if request.force_restart:
             await self._stream_manager.stop_stream(camera.id)
+            await self._tracking_manager.stop_stream(camera.id)
         playback_url = self._playback_url_for_protocol(
             request.requested_protocol,
             stream_endpoints.whep_url,
@@ -76,13 +80,25 @@ class StreamService:
             stream_name=stream_name,
             sample_fps=request.sample_fps or self._settings.realtime_frame_sample_fps,
         )
+        tracking_requested = (
+            self._settings.tracking_enabled_by_default
+            if request.enable_tracking_events is None
+            else request.enable_tracking_events
+        )
+        if tracking_requested:
+            await self._tracking_manager.start_stream(camera.id, stream_name)
+        else:
+            await self._tracking_manager.stop_stream(camera.id)
         worker_snapshot = self._stream_manager.get_snapshot(camera.id)
+        tracking_snapshot = self._tracking_manager.get_snapshot(camera.id, stream_name)
         stream_record = await self._stream_repository.fetch_by_camera_id(camera.id)
         return self._contract_service.build_contract(
             camera,
             stream_record,
             worker_snapshot,
             stream_endpoints,
+            tracking_snapshot,
+            self._tracking_manager.stream_endpoints(stream_name),
         )
 
     async def stop_stream(
@@ -96,7 +112,9 @@ class StreamService:
         stream_name = self._stream_name(camera)
         stream_endpoints = self._stream_manager.stream_endpoints(stream_name)
         await self._stream_manager.stop_stream(camera_id)
+        await self._tracking_manager.stop_stream(camera_id)
         worker_snapshot = self._stream_manager.get_snapshot(camera_id)
+        tracking_snapshot = self._tracking_manager.get_snapshot(camera.id, stream_name)
 
         stream_record = await self._stream_repository.update_requested_state(
             camera_id=camera_id,
@@ -113,6 +131,8 @@ class StreamService:
             stream_record,
             worker_snapshot,
             stream_endpoints,
+            tracking_snapshot,
+            self._tracking_manager.stream_endpoints(stream_name),
         )
 
     async def get_stream_status(self, camera_id: str) -> StreamInfoResponse:
@@ -121,11 +141,14 @@ class StreamService:
         camera = await self._camera_service.get_camera_record(camera_id)
         stream_record = await self._stream_repository.fetch_by_camera_id(camera_id)
         worker_snapshot = self._stream_manager.get_snapshot(camera_id)
+        stream_name = self._stream_name(camera)
         return self._contract_service.build_contract(
             camera,
             stream_record,
             worker_snapshot,
-            self._stream_manager.stream_endpoints(self._stream_name(camera)),
+            self._stream_manager.stream_endpoints(stream_name),
+            self._tracking_manager.get_snapshot(camera_id, stream_name),
+            self._tracking_manager.stream_endpoints(stream_name),
         )
 
     async def get_stream_info(self, camera_id: str) -> StreamInfoResponse:
@@ -150,6 +173,8 @@ class StreamService:
                 stream_records.get(camera.id),
                 self._stream_manager.get_snapshot(camera.id),
                 self._stream_manager.stream_endpoints(self._stream_name(camera)),
+                self._tracking_manager.get_snapshot(camera.id, self._stream_name(camera)),
+                self._tracking_manager.stream_endpoints(self._stream_name(camera)),
             )
             for camera in cameras
         ]
@@ -165,6 +190,8 @@ class StreamService:
             stream_record,
             worker_snapshot,
             self._stream_manager.stream_endpoints(self._stream_name(camera)),
+            self._tracking_manager.get_snapshot(event.camera_id, self._stream_name(camera)),
+            self._tracking_manager.stream_endpoints(self._stream_name(camera)),
         )
 
     async def build_websocket_event(self, event: StreamEventPayload) -> WebSocketEnvelope:

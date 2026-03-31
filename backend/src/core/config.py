@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     kafka_topic_camera_status: str = "camera.status"
     kafka_topic_camera_events: str = "camera.events"
     kafka_topic_camera_ai_results: str = "camera.ai_results"
+    kafka_topic_camera_tracking_updates: str = "camera.tracking.updates"
 
     ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
@@ -73,6 +74,32 @@ class Settings(BaseSettings):
     validation_timeout_seconds: int = 8
     enable_tracker_bridge: bool = False
     tracker_embedder: str | None = None
+    tracking_enabled_by_default: bool = True
+    tracking_sample_fps: float = 5.0
+    tracking_output_fps: float = 5.0
+    tracking_detector_model_path: Path = BACKEND_ROOT / "model_repository" / "yolo" / "yolo26n.onnx"
+    tracking_detector_input_size: int = 640
+    tracking_detector_confidence_threshold: float = 0.35
+    tracking_detector_iou_threshold: float = 0.45
+    tracking_embedder_name: str = "mobilenet"
+    tracking_embedder_weights_path: Path = (
+        BACKEND_ROOT
+        / "src"
+        / "services"
+        / "deep_sort_realtime"
+        / "embedder"
+        / "weights"
+        / "mobilenetv2_bottleneck_wts.pt"
+    )
+    tracking_identity_store_uri: str = str(BACKEND_ROOT / "runtime" / "milvus_tracking.db")
+    tracking_identity_store_token: SecretStr | None = None
+    tracking_identity_collection_name: str = "person_tracking_identities"
+    tracking_identity_dimension: int = 1280
+    tracking_identity_similarity_threshold: float = 0.75
+    tracking_identity_search_limit: int = 5
+    tracking_identity_sync_interval_seconds: float = 1.0
+    tracking_publish_update_interval_seconds: float = 0.5
+    tracking_stream_suffix: str = "tracked"
 
     log_level: str = "INFO"
     json_logs: bool = False
@@ -110,6 +137,20 @@ class Settings(BaseSettings):
     @classmethod
     def resolve_mediamtx_api_password_file(cls, value: str | Path) -> Path:
         """Resolve the MediaMTX Control API password file relative to the backend root."""
+
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return BACKEND_ROOT / path
+
+    @field_validator(
+        "tracking_detector_model_path",
+        "tracking_embedder_weights_path",
+        mode="before",
+    )
+    @classmethod
+    def resolve_tracking_paths(cls, value: str | Path) -> Path:
+        """Resolve tracking asset paths relative to the backend root."""
 
         path = Path(value)
         if path.is_absolute():

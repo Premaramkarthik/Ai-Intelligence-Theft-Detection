@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from src.models.camera import RTSPTransport
-from src.utils.ffmpeg import build_ffmpeg_hls_command, mask_rtsp_url
+from src.utils.ffmpeg import (
+    build_ffmpeg_hls_command,
+    build_ffmpeg_rtsp_publish_command,
+    mask_rtsp_url,
+)
 
 
 def test_build_ffmpeg_hls_command_contains_hls_output() -> None:
@@ -26,3 +30,21 @@ def test_build_ffmpeg_hls_command_contains_hls_output() -> None:
 def test_mask_rtsp_url_hides_password() -> None:
     masked = mask_rtsp_url("rtsp://192.168.1.2:8080/h264_ulaw.sdp")
     assert masked == "rtsp://192.168.1.2:8080/h264_ulaw.sdp"
+
+
+def test_build_ffmpeg_rtsp_publish_command_contains_rawvideo_input() -> None:
+    command = build_ffmpeg_rtsp_publish_command(
+        "ffmpeg",
+        "rtsp://localhost:8554/front_gate_tracked",
+        width=1280,
+        height=720,
+        fps=5.0,
+        transport=RTSPTransport.tcp,
+    )
+
+    assert command[0] == "ffmpeg"
+    assert "-f" in command
+    assert "rawvideo" in command
+    assert "bgr24" in command
+    assert "libx264" in command
+    assert command[-1] == "rtsp://localhost:8554/front_gate_tracked"

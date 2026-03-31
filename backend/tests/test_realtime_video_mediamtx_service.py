@@ -61,6 +61,7 @@ async def test_health_snapshot_reflects_configuration() -> None:
     settings = Settings(
         database_url="postgresql://postgres:postgres@localhost:5432/test_db",
         mediamtx_generated_config_path="runtime/mediamtx.generated.yml",
+        mediamtx_manage_process=True,
         mediamtx_api_password=SecretStr("control-secret"),
         _env_file=None,
     )

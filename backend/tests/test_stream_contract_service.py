@@ -12,8 +12,12 @@ from src.models.camera import (
     ValidationStatus,
 )
 from src.services.presentation.stream_contract_service import StreamContractService
-from src.services.realtime_video.mediamtx import build_stream_endpoints
+from src.services.realtime_video.mediamtx import (
+    build_stream_endpoints,
+    build_tracking_stream_name,
+)
 from src.services.realtime_video.stream_manager import WorkerSnapshot
+from src.services.tracking.manager import TrackingSnapshot
 
 
 def test_stream_contract_service_builds_frontend_ready_urls() -> None:
@@ -74,7 +78,29 @@ def test_stream_contract_service_builds_frontend_ready_urls() -> None:
         hls_base_url="http://localhost:8888",
         whep_base_url="http://localhost:8889",
     )
-    contract = service.build_contract(camera, stream_record, worker_snapshot, endpoints)
+    tracking_endpoints = build_stream_endpoints(
+        build_tracking_stream_name("cam_123"),
+        rtsp_base_url="rtsp://localhost:8554",
+        hls_base_url="http://localhost:8888",
+        whep_base_url="http://localhost:8889",
+    )
+    tracking_snapshot = TrackingSnapshot(
+        enabled=True,
+        stream_name=tracking_endpoints.stream_name,
+        is_registered=True,
+        is_process_alive=True,
+        reconnect_attempts=1,
+        active_tracks=1,
+        tracks=[],
+    )
+    contract = service.build_contract(
+        camera,
+        stream_record,
+        worker_snapshot,
+        endpoints,
+        tracking_snapshot,
+        tracking_endpoints,
+    )
 
     assert contract.playback_url == "http://localhost:8888/cam_123/index.m3u8"
     assert contract.relative_playback_url is None
@@ -83,3 +109,10 @@ def test_stream_contract_service_builds_frontend_ready_urls() -> None:
     assert contract.access_urls.hls_url == "http://localhost:8888/cam_123/index.m3u8"
     assert contract.websocket_url == "ws://localhost:8000/streams/ws/updates"
     assert contract.fallback is None
+    assert contract.tracking is not None
+    assert contract.tracking.enabled is True
+    assert contract.tracking.stream_name == "cam_123_tracked"
+    assert (
+        contract.tracking.access_urls.webrtc_url
+        == "http://localhost:8889/cam_123_tracked/whep"
+    )

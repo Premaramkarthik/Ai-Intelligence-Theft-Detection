@@ -8,10 +8,13 @@ from src.schemas.stream_responses import (
     StreamAccessUrls,
     StreamFallbackInfo,
     StreamInfoResponse,
+    TrackingStateResponse,
+    TrackingTrackResponse,
     WorkerStateResponse,
 )
 from src.services.realtime_video.contracts import MediaMtxStreamEndpoints
 from src.services.realtime_video.stream_manager import WorkerSnapshot
+from src.services.tracking.manager import TrackingSnapshot
 
 
 class StreamContractService:
@@ -24,6 +27,8 @@ class StreamContractService:
         stream_record: StreamRecord | None,
         worker_snapshot: WorkerSnapshot,
         stream_endpoints: MediaMtxStreamEndpoints,
+        tracking_snapshot: TrackingSnapshot | None = None,
+        tracking_endpoints: MediaMtxStreamEndpoints | None = None,
     ) -> StreamInfoResponse:
         if stream_record is None:
             status = StreamStatus.stopped
@@ -68,6 +73,10 @@ class StreamContractService:
             last_event_at=last_event_at,
             last_error_code=last_error_code,
             last_error_message=last_error_message,
+            tracking=self._build_tracking_state(
+                tracking_snapshot,
+                tracking_endpoints,
+            ),
             worker=WorkerStateResponse(
                 desired_state=worker_snapshot.desired_state,
                 is_registered=worker_snapshot.is_registered,
@@ -81,6 +90,43 @@ class StreamContractService:
                 queue_latency_ms=worker_snapshot.queue_latency_ms,
                 decode_time_ms=worker_snapshot.decode_time_ms,
             ),
+        )
+
+    def _build_tracking_state(
+        self,
+        tracking_snapshot: TrackingSnapshot | None,
+        tracking_endpoints: MediaMtxStreamEndpoints | None,
+    ) -> TrackingStateResponse | None:
+        if tracking_snapshot is None or tracking_endpoints is None:
+            return None
+
+        return TrackingStateResponse(
+            enabled=tracking_snapshot.enabled,
+            stream_name=tracking_snapshot.stream_name,
+            access_urls=StreamAccessUrls(
+                webrtc_url=tracking_endpoints.whep_url,
+                hls_url=tracking_endpoints.hls_url,
+                rtsp_pull_url=tracking_endpoints.rtsp_pull_url,
+            ),
+            is_registered=tracking_snapshot.is_registered,
+            is_process_alive=tracking_snapshot.is_process_alive,
+            reconnect_attempts=tracking_snapshot.reconnect_attempts,
+            active_tracks=tracking_snapshot.active_tracks,
+            last_error_message=tracking_snapshot.last_error,
+            tracks=[
+                TrackingTrackResponse(
+                    track_id=track.track_id,
+                    persistent_id=track.persistent_id,
+                    class_name=track.class_name,
+                    confidence=track.confidence,
+                    similarity=track.similarity,
+                    left=track.left,
+                    top=track.top,
+                    width=track.width,
+                    height=track.height,
+                )
+                for track in tracking_snapshot.tracks
+            ],
         )
 
     def _build_fallback(self, status: StreamStatus) -> StreamFallbackInfo | None:

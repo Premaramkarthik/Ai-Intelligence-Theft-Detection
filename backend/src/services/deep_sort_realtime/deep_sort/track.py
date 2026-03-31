@@ -108,6 +108,9 @@ class Track:
         self.det_conf = det_conf
         self.instance_mask = instance_mask
         self.others = others
+        self.persistent_id = None
+        self.persistent_similarity = None
+        self.identity_last_synced_at_monotonic_ns = None
 
     def to_tlwh(self, orig=False, orig_strict=False):
         """Get current position in bounding box format `(top left x, top left y,
@@ -213,6 +216,17 @@ class Track:
         Get latest appearance feature
         '''
         return self.latest_feature
+
+    def set_persistent_identity(
+        self,
+        identity_id,
+        similarity=None,
+        synced_at_monotonic_ns=None,
+    ):
+        """Attach a persistent cross-camera identity to this local track."""
+        self.persistent_id = identity_id
+        self.persistent_similarity = similarity
+        self.identity_last_synced_at_monotonic_ns = synced_at_monotonic_ns
 
     def predict(self, kf):
         """Propagate the state distribution to the current time step using a

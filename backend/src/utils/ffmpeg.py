@@ -98,3 +98,49 @@ def build_ffmpeg_hls_command(
         segment_pattern,
         str(playlist_path),
     ]
+
+
+def build_ffmpeg_rtsp_publish_command(
+    ffmpeg_binary: str,
+    publish_rtsp_url: str,
+    *,
+    width: int,
+    height: int,
+    fps: float,
+    transport: RTSPTransport | str = RTSPTransport.tcp,
+) -> list[str]:
+    transport_value = transport.value if isinstance(transport, RTSPTransport) else transport
+    rounded_fps = max(1.0, fps)
+    return [
+        ffmpeg_binary,
+        "-hide_banner",
+        "-loglevel",
+        "warning",
+        "-nostats",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",
+        "-s",
+        f"{width}x{height}",
+        "-r",
+        f"{rounded_fps:.3f}",
+        "-i",
+        "-",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-tune",
+        "zerolatency",
+        "-pix_fmt",
+        "yuv420p",
+        "-g",
+        str(max(1, int(round(rounded_fps)))),
+        "-f",
+        "rtsp",
+        "-rtsp_transport",
+        transport_value,
+        publish_rtsp_url,
+    ]

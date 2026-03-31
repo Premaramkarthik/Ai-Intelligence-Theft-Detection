@@ -1,21 +1,21 @@
 import logging
 import os
+from pathlib import Path
 
 import cv2
 import numpy as np
-import pkg_resources
 import torch
 from src.services.deep_sort_realtime.embedder.mobilenetv2_bottle import MobileNetV2_bottle
 from torchvision.transforms import transforms
 
 logger = logging.getLogger(__name__)
 
-MOBILENETV2_BOTTLENECK_WTS = pkg_resources.resource_filename(
-    "deep_sort_realtime", "embedder/weights/mobilenetv2_bottleneck_wts.pt"
-)
+_WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
 
-TORCHREID_OSNET_AIN_X1_0_MS_D_C_WTS = pkg_resources.resource_filename(
-    "deep_sort_realtime", "embedder/weights/osnet_ain_ms_d_c_wtsonly.pth"
+MOBILENETV2_BOTTLENECK_WTS = str(_WEIGHTS_DIR / "mobilenetv2_bottleneck_wts.pt")
+
+TORCHREID_OSNET_AIN_X1_0_MS_D_C_WTS = str(
+    _WEIGHTS_DIR / "osnet_ain_ms_d_c_wtsonly.pth"
 )
 
 INPUT_WIDTH = 224
