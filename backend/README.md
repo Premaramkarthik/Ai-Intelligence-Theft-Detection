@@ -38,26 +38,61 @@ The backend is split into four practical planes:
 
 ### High-Level Flow
 
-```text
-RTSP Camera
--> MediaMTX
--> raw WebRTC/HLS playback for frontend
--> raw RTSP pull URL for backend workers
+```mermaid
+flowchart LR
+    Camera["RTSP Camera"]
+    MediaMTX["MediaMTX"]
+    Frontend["Frontend Player"]
+    API["FastAPI Backend"]
+    DB["PostgreSQL"]
+    WS["WebSocket"]
+    Kafka["Kafka"]
+    PyAV["PyAV Frame Worker"]
+    Tracking["Tracking Worker"]
+    ByteTrack["Roboflow ByteTrack"]
+    ReID["Mobilenet Re-ID"]
+    Milvus["Milvus"]
+    Tracked["Tracked MediaMTX Path"]
+    Metrics["Prometheus / Grafana"]
 
-Raw RTSP pull URL
--> PyAV frame worker
--> sampled frames + metrics
+    Camera --> MediaMTX
+    Frontend -->|REST| API
+    Frontend -->|WS| WS
+    WS --> API
+    API --> DB
+    API --> Kafka
+    Kafka --> API
+    MediaMTX -->|Raw WHEP / HLS| Frontend
+    MediaMTX -->|Raw RTSP Pull| PyAV
+    MediaMTX -->|Raw RTSP Pull| Tracking
+    PyAV --> Metrics
+    Tracking --> ByteTrack
+    ByteTrack --> ReID
+    ReID --> Milvus
+    Tracking -->|Annotated RTSP Publish| Tracked
+    Tracked -->|Tracked WHEP / HLS| Frontend
+    API --> Metrics
+    Tracking --> Metrics
+```
 
-Raw RTSP pull URL
--> tracking worker
--> YOLO26 person detection
--> Roboflow Trackers ByteTrack
--> mobilenet appearance embedding
--> Milvus identity match / refresh
--> annotated frame render
--> FFmpeg RTSP publish
--> MediaMTX tracked path <stream_name>_tracked
--> tracked WebRTC/HLS playback
+### Active Stream Lifecycle
+
+```mermaid
+flowchart TD
+    Start["POST /streams/{camera_id}/start"] --> LoadCamera["Load camera from PostgreSQL"]
+    LoadCamera --> SyncConfig["Render and sync MediaMTX config"]
+    SyncConfig --> EnsurePath["Verify MediaMTX path is ready"]
+    EnsurePath --> PersistStart["Persist stream requested state"]
+    PersistStart --> StartWorker["Start PyAV realtime worker"]
+    StartWorker --> TrackingDecision{"Tracking enabled?"}
+    TrackingDecision -- Yes --> StartTracking["Start tracking worker"]
+    TrackingDecision -- No --> SkipTracking["Skip tracking worker"]
+    StartTracking --> RawContract["Return raw playback contract"]
+    SkipTracking --> RawContract
+    RawContract --> RawPlayback["Frontend opens raw playback_url or access_urls.webrtc_url"]
+    StartTracking --> TrackedPlayback["Frontend can also open tracking.access_urls.webrtc_url"]
+    StartWorker --> WSUpdates["WebSocket emits stream.updated / stream.connected"]
+    StartTracking --> TrackingUpdates["WebSocket and Kafka emit tracking.updated"]
 ```
 
 ## Main Components
