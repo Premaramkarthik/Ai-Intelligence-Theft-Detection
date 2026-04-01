@@ -100,12 +100,6 @@ class StreamManager:
                 heartbeat_interval_seconds=self._settings.worker_heartbeat_interval_seconds,
                 reconnect_base_delay_seconds=self._settings.reconnect_base_delay_seconds,
                 reconnect_max_delay_seconds=self._settings.reconnect_max_delay_seconds,
-                enable_tracker_bridge=(
-                    request.enable_tracking_events
-                    if request.enable_tracking_events is not None
-                    else self._settings.enable_tracker_bridge
-                ),
-                tracker_embedder=self._settings.tracker_embedder,
                 log_level=self._settings.log_level,
                 json_logs=self._settings.json_logs,
             )

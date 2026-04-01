@@ -118,6 +118,11 @@ class TrackingWorkerConfig:
     sample_fps: float = 5.0
     output_fps: float = 5.0
     embedder_name: str = "mobilenet"
+    tracker_lost_track_buffer: int = 30
+    tracker_activation_threshold: float = 0.7
+    tracker_minimum_consecutive_frames: int = 2
+    tracker_minimum_iou_threshold: float = 0.1
+    tracker_high_conf_det_threshold: float = 0.6
     identity_sync_interval_seconds: float = 1.0
     publish_update_interval_seconds: float = 0.5
     rtsp_transport: str = "tcp"

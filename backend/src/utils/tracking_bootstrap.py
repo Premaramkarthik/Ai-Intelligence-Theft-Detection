@@ -59,6 +59,13 @@ async def create_tracking_runtime_services(
         tracking_suffix=settings.tracking_stream_suffix,
         embedder_name=settings.tracking_embedder_name,
         embedder_weights_path=settings.tracking_embedder_weights_path,
+        tracker_lost_track_buffer=settings.tracking_tracker_lost_track_buffer,
+        tracker_activation_threshold=settings.tracking_tracker_activation_threshold,
+        tracker_minimum_consecutive_frames=(
+            settings.tracking_tracker_minimum_consecutive_frames
+        ),
+        tracker_minimum_iou_threshold=settings.tracking_tracker_minimum_iou_threshold,
+        tracker_high_conf_det_threshold=settings.tracking_tracker_high_conf_det_threshold,
         identity_sync_interval_seconds=settings.tracking_identity_sync_interval_seconds,
         publish_update_interval_seconds=settings.tracking_publish_update_interval_seconds,
         update_publisher=FanoutTrackingUpdatePublisher(

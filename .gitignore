@@ -361,3 +361,4 @@ vite.config.ts.timestamp-*
 .vite/
 
 model_repository
+backend/runtime/milvus

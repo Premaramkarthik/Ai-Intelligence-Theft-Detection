@@ -71,6 +71,11 @@ class TrackingStreamManager:
         tracking_suffix: str = "tracked",
         embedder_name: str = "mobilenet",
         embedder_weights_path: Path | None = None,
+        tracker_lost_track_buffer: int = 30,
+        tracker_activation_threshold: float = 0.7,
+        tracker_minimum_consecutive_frames: int = 2,
+        tracker_minimum_iou_threshold: float = 0.1,
+        tracker_high_conf_det_threshold: float = 0.6,
         identity_sync_interval_seconds: float = 1.0,
         publish_update_interval_seconds: float = 0.5,
         update_publisher: TrackingUpdatePublisher | None = None,
@@ -88,6 +93,11 @@ class TrackingStreamManager:
         self._tracking_suffix = tracking_suffix
         self._embedder_name = embedder_name
         self._embedder_weights_path = embedder_weights_path
+        self._tracker_lost_track_buffer = tracker_lost_track_buffer
+        self._tracker_activation_threshold = tracker_activation_threshold
+        self._tracker_minimum_consecutive_frames = tracker_minimum_consecutive_frames
+        self._tracker_minimum_iou_threshold = tracker_minimum_iou_threshold
+        self._tracker_high_conf_det_threshold = tracker_high_conf_det_threshold
         self._identity_sync_interval_seconds = identity_sync_interval_seconds
         self._publish_update_interval_seconds = publish_update_interval_seconds
         self._update_publisher = update_publisher or NullTrackingUpdatePublisher()
@@ -124,6 +134,11 @@ class TrackingStreamManager:
                 sample_fps=self._sample_fps,
                 output_fps=self._output_fps,
                 embedder_name=self._embedder_name,
+                tracker_lost_track_buffer=self._tracker_lost_track_buffer,
+                tracker_activation_threshold=self._tracker_activation_threshold,
+                tracker_minimum_consecutive_frames=self._tracker_minimum_consecutive_frames,
+                tracker_minimum_iou_threshold=self._tracker_minimum_iou_threshold,
+                tracker_high_conf_det_threshold=self._tracker_high_conf_det_threshold,
                 identity_sync_interval_seconds=self._identity_sync_interval_seconds,
                 publish_update_interval_seconds=self._publish_update_interval_seconds,
                 max_reconnect_attempts=self._max_reconnect_attempts,

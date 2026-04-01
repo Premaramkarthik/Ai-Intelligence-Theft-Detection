@@ -14,7 +14,6 @@ from aiokafka import AIOKafkaProducer
 from src.core.logger.logger import configure_logging
 from src.models.camera import StreamDesiredState, StreamProtocol, StreamStatus
 from src.schemas.stream_responses import StreamEventPayload
-from src.services.stream.tracker_adapter import DeepSortTrackerBridge
 from src.utils.ffmpeg import build_ffmpeg_hls_command
 from src.utils.retry import sleep_with_retry_logging
 
@@ -40,8 +39,6 @@ class WorkerRuntimeConfig:
     heartbeat_interval_seconds: int
     reconnect_base_delay_seconds: float
     reconnect_max_delay_seconds: float
-    enable_tracker_bridge: bool
-    tracker_embedder: str | None
     log_level: str = "INFO"
     json_logs: bool = False
     restart_count: int = 0
@@ -61,7 +58,6 @@ def run_camera_worker_process(config: WorkerRuntimeConfig, stop_event: Any) -> N
 async def _run_worker(config: WorkerRuntimeConfig, stop_event: Any) -> None:
     logger = logging.getLogger(__name__)
     producer: AIOKafkaProducer | None = None
-    tracker = DeepSortTrackerBridge(config.enable_tracker_bridge, config.tracker_embedder)
     state = WorkerState()
 
     try:
@@ -149,7 +145,6 @@ async def _run_worker(config: WorkerRuntimeConfig, stop_event: Any) -> None:
                 process_id=process.pid,
                 reconnect_attempts=state.reconnect_attempts,
             )
-            await _publish_ai_event(producer, config, tracker)
             state.reconnect_attempts = 0
 
             while not stop_event.is_set():
@@ -309,27 +304,6 @@ async def _publish_lifecycle_event(
         error_message=error_message,
     )
     await _publish_payload(producer, topic, payload)
-
-
-async def _publish_ai_event(
-    producer: AIOKafkaProducer | None,
-    config: WorkerRuntimeConfig,
-    tracker: DeepSortTrackerBridge,
-) -> None:
-    payload = StreamEventPayload(
-        camera_id=config.camera_id,
-        camera_name=config.camera_name,
-        stream_id=config.stream_id,
-        event="tracker_idle",
-        status=StreamStatus.running,
-        protocol=StreamProtocol.hls,
-        message="Tracker bridge is initialized and ready for detection feeds.",
-        playback_url=config.playback_path,
-        playlist_path=config.playlist_path,
-        tracking_enabled=tracker.available,
-        tracks=tracker.idle_tracks(),
-    )
-    await _publish_payload(producer, config.topic_camera_ai_results, payload)
 
 
 async def _publish_payload(

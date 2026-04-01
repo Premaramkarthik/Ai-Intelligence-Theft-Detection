@@ -72,8 +72,6 @@ class Settings(BaseSettings):
     reconnect_max_delay_seconds: float = 15.0
 
     validation_timeout_seconds: int = 8
-    enable_tracker_bridge: bool = False
-    tracker_embedder: str | None = None
     tracking_enabled_by_default: bool = True
     tracking_sample_fps: float = 5.0
     tracking_output_fps: float = 5.0
@@ -86,11 +84,16 @@ class Settings(BaseSettings):
         BACKEND_ROOT
         / "src"
         / "services"
-        / "deep_sort_realtime"
-        / "embedder"
+        / "tracking"
+        / "reid"
         / "weights"
         / "mobilenetv2_bottleneck_wts.pt"
     )
+    tracking_tracker_lost_track_buffer: int = 30
+    tracking_tracker_activation_threshold: float = 0.7
+    tracking_tracker_minimum_consecutive_frames: int = 2
+    tracking_tracker_minimum_iou_threshold: float = 0.1
+    tracking_tracker_high_conf_det_threshold: float = 0.6
     tracking_identity_store_uri: str = str(BACKEND_ROOT / "runtime" / "milvus_tracking.db")
     tracking_identity_store_token: SecretStr | None = None
     tracking_identity_collection_name: str = "person_tracking_identities"

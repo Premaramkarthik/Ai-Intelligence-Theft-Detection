@@ -1,4 +1,4 @@
-"""Tracking worker that annotates a second MediaMTX stream with Deep SORT IDs."""
+"""Tracking worker that annotates a second MediaMTX stream with tracked person IDs."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import asyncio
 import importlib
 import subprocess
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from time import monotonic_ns
 from typing import Any
@@ -15,7 +15,6 @@ import cv2
 import numpy as np
 
 from src.core.logger.logger import get_logger
-from src.services.deep_sort_realtime.deepsort_tracker import DeepSort
 from src.services.realtime_video.contracts import (
     TrackingTrackSnapshot,
     TrackingWorkerConfig,
@@ -28,11 +27,25 @@ from src.services.realtime_video.frame_worker import (
 )
 from src.services.tracking.detectors.yolo26_detector import Yolo26PersonDetector
 from src.services.tracking.identity.milvus_store import MilvusIdentityStore
+from src.services.tracking.reid.embedder import TrackingReIdEmbedder
+from src.services.tracking.trackers.bytetrack import (
+    RoboflowByteTrackPersonTracker,
+    TrackedPerson,
+)
 from src.services.tracking.updates import (
     NullTrackingUpdatePublisher,
     TrackingUpdatePublisher,
 )
 from src.utils.ffmpeg import build_ffmpeg_rtsp_publish_command
+from src.utils.image import clamp_ltwh_to_frame, crop_ltwh
+
+
+@dataclass(slots=True)
+class _PersistentTrackIdentity:
+    persistent_id: str
+    similarity: float | None
+    last_synced_ns: int
+    last_seen_ns: int
 
 
 class RealtimeTrackingWorker:
@@ -57,12 +70,37 @@ class RealtimeTrackingWorker:
         self._metrics_lock = threading.Lock()
         self._sampling_gate = FrameSamplingGate(config.sample_fps)
         self._publish_gate = FrameSamplingGate(config.output_fps)
-        self._tracker = DeepSort(
-            embedder=config.embedder_name,
-            embedder_wts=str(embedder_weights_path) if embedder_weights_path else None,
+        self._tracker = RoboflowByteTrackPersonTracker(
+            frame_rate=config.sample_fps,
+            lost_track_buffer=config.tracker_lost_track_buffer,
+            track_activation_threshold=config.tracker_activation_threshold,
+            minimum_consecutive_frames=config.tracker_minimum_consecutive_frames,
+            minimum_iou_threshold=config.tracker_minimum_iou_threshold,
+            high_conf_det_threshold=config.tracker_high_conf_det_threshold,
+        )
+        self._reid_embedder = TrackingReIdEmbedder(
+            config.embedder_name,
+            weights_path=embedder_weights_path,
         )
         self._publisher: _AnnotatedStreamPublisher | None = None
         self._last_update_published_ns: int | None = None
+        self._persistent_identities: dict[str, _PersistentTrackIdentity] = {}
+        self._identity_sync_interval_ns = 1_000_000_000
+        if config.identity_sync_interval_seconds > 0:
+            self._identity_sync_interval_ns = int(
+                config.identity_sync_interval_seconds * 1_000_000_000,
+            )
+        self._local_identity_ttl_ns = int(
+            max(
+                10.0,
+                (
+                    config.tracker_lost_track_buffer
+                    / max(config.sample_fps, 0.1)
+                )
+                * 2.0,
+            )
+            * 1_000_000_000,
+        )
 
     async def run(self) -> None:
         """Run the tracking worker until it is stopped."""
@@ -107,6 +145,9 @@ class RealtimeTrackingWorker:
             return replace(self._metrics)
 
     def _process_tracking_session(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._tracker.reset()
+        self._persistent_identities.clear()
+        self._last_update_published_ns = None
         av_module = _import_av()
         container = av_module.open(
             self._config.source_rtsp_url,
@@ -144,82 +185,124 @@ class RealtimeTrackingWorker:
 
     def _track_frame(self, frame: np.ndarray) -> list[TrackingTrackSnapshot]:
         detections = self._detector.detect(frame)
-        raw_detections = [
-            ([det.left, det.top, det.width, det.height], det.confidence, det.class_name)
-            for det in detections
-        ]
-        tracks = self._tracker.update_tracks(raw_detections, frame=frame)
+        tracks = self._tracker.update(detections)
+        prepared_tracks = _prepare_tracks_for_embedding(frame, tracks)
+        embeddings = self._reid_embedder.embed(
+            [
+                prepared_track.crop
+                for prepared_track in prepared_tracks
+                if prepared_track.crop is not None
+            ],
+        )
+        embedding_index = 0
         visible_tracks: list[TrackingTrackSnapshot] = []
-        for track in tracks:
-            if not track.is_confirmed() or track.time_since_update != 0:
-                continue
-            left, top, width, height = [int(round(value)) for value in track.to_ltwh(orig=True)]
-            confidence = float(track.get_det_conf() or 0.0)
+        for prepared_track in prepared_tracks:
+            persistent_id = None
             similarity = None
-            feature = track.get_feature()
-            if feature is not None:
-                similarity = self._assign_identity(track, feature)
+            if prepared_track.crop is not None:
+                identity = self._upsert_identity(
+                    prepared_track.track.track_id,
+                    embeddings[embedding_index],
+                )
+                embedding_index += 1
+                persistent_id = identity.persistent_id
+                similarity = identity.similarity
+            else:
+                identity = self._touch_identity(prepared_track.track.track_id)
+                if identity is not None:
+                    persistent_id = identity.persistent_id
+                    similarity = identity.similarity
             self._draw_track(
                 frame,
-                left=left,
-                top=top,
-                width=width,
-                height=height,
-                local_track_id=str(track.track_id),
-                persistent_id=getattr(track, "persistent_id", None),
-                confidence=confidence,
+                left=prepared_track.left,
+                top=prepared_track.top,
+                width=prepared_track.width,
+                height=prepared_track.height,
+                local_track_id=prepared_track.track.track_id,
+                persistent_id=persistent_id,
+                confidence=prepared_track.track.confidence,
             )
             visible_tracks.append(
                 TrackingTrackSnapshot(
-                    track_id=str(track.track_id),
-                    persistent_id=getattr(track, "persistent_id", None),
-                    class_name=track.get_det_class(),
-                    confidence=confidence,
+                    track_id=prepared_track.track.track_id,
+                    persistent_id=persistent_id,
+                    class_name=prepared_track.track.class_name,
+                    confidence=prepared_track.track.confidence,
                     similarity=similarity,
-                    left=left,
-                    top=top,
-                    width=width,
-                    height=height,
+                    left=prepared_track.left,
+                    top=prepared_track.top,
+                    width=prepared_track.width,
+                    height=prepared_track.height,
                 ),
             )
+        self._prune_stale_identities()
         self._record_processed_frame(visible_tracks)
         return visible_tracks
 
-    def _assign_identity(self, track: Any, feature: np.ndarray) -> float | None:
-        persistent_id = getattr(track, "persistent_id", None)
-        last_synced_ns = getattr(track, "identity_last_synced_at_monotonic_ns", None)
+    def _upsert_identity(
+        self,
+        local_track_id: str,
+        feature: np.ndarray,
+    ) -> _PersistentTrackIdentity:
         now_ns = monotonic_ns()
-        if persistent_id is None:
+        existing = self._persistent_identities.get(local_track_id)
+        if existing is None:
             match = self._identity_store.resolve_identity(
                 camera_id=self._config.camera_id,
                 stream_name=self._config.source_stream_name,
-                local_track_id=str(track.track_id),
+                local_track_id=local_track_id,
                 embedding=feature,
             )
-            track.set_persistent_identity(
-                match.identity_id,
+            identity = _PersistentTrackIdentity(
+                persistent_id=match.identity_id,
                 similarity=match.similarity,
-                synced_at_monotonic_ns=now_ns,
+                last_synced_ns=now_ns,
+                last_seen_ns=now_ns,
             )
-            return match.similarity
+            self._persistent_identities[local_track_id] = identity
+            return identity
 
-        sync_interval_ns = 1_000_000_000
-        if self._config.identity_sync_interval_seconds > 0:
-            sync_interval_ns = int(self._config.identity_sync_interval_seconds * 1_000_000_000)
-        if last_synced_ns is None or now_ns - last_synced_ns >= sync_interval_ns:
+        if (
+            self._identity_sync_interval_ns > 0
+            and now_ns - existing.last_synced_ns >= self._identity_sync_interval_ns
+        ):
             self._identity_store.refresh_identity(
-                identity_id=persistent_id,
+                identity_id=existing.persistent_id,
                 camera_id=self._config.camera_id,
                 stream_name=self._config.source_stream_name,
-                local_track_id=str(track.track_id),
+                local_track_id=local_track_id,
                 embedding=feature,
             )
-            track.set_persistent_identity(
-                persistent_id,
-                similarity=getattr(track, "persistent_similarity", None),
-                synced_at_monotonic_ns=now_ns,
+            existing = replace(
+                existing,
+                last_synced_ns=now_ns,
+                last_seen_ns=now_ns,
             )
-        return getattr(track, "persistent_similarity", None)
+        else:
+            existing = replace(existing, last_seen_ns=now_ns)
+        self._persistent_identities[local_track_id] = existing
+        return existing
+
+    def _touch_identity(
+        self,
+        local_track_id: str,
+    ) -> _PersistentTrackIdentity | None:
+        existing = self._persistent_identities.get(local_track_id)
+        if existing is None:
+            return None
+        touched = replace(existing, last_seen_ns=monotonic_ns())
+        self._persistent_identities[local_track_id] = touched
+        return touched
+
+    def _prune_stale_identities(self) -> None:
+        now_ns = monotonic_ns()
+        stale_track_ids = [
+            local_track_id
+            for local_track_id, identity in self._persistent_identities.items()
+            if now_ns - identity.last_seen_ns >= self._local_identity_ttl_ns
+        ]
+        for local_track_id in stale_track_ids:
+            self._persistent_identities.pop(local_track_id, None)
 
     def _ensure_publisher(self, frame: np.ndarray) -> None:
         frame_height, frame_width = frame.shape[:2]
@@ -391,3 +474,41 @@ def _color_for_identity(identity: str) -> tuple[int, int, int]:
         64 + ((seed // 7) % 160),
         64 + ((seed // 17) % 160),
     )
+
+
+@dataclass(slots=True, frozen=True)
+class _PreparedTrackedPerson:
+    track: TrackedPerson
+    left: int
+    top: int
+    width: int
+    height: int
+    crop: np.ndarray | None
+
+
+def _prepare_tracks_for_embedding(
+    frame: np.ndarray,
+    tracks: list[TrackedPerson],
+) -> list[_PreparedTrackedPerson]:
+    prepared_tracks: list[_PreparedTrackedPerson] = []
+    for track in tracks:
+        left, top, width, height = clamp_ltwh_to_frame(
+            frame.shape[:2],
+            track.left,
+            track.top,
+            track.width,
+            track.height,
+        )
+        if width <= 0 or height <= 0:
+            continue
+        prepared_tracks.append(
+            _PreparedTrackedPerson(
+                track=track,
+                left=left,
+                top=top,
+                width=width,
+                height=height,
+                crop=crop_ltwh(frame, left, top, width, height),
+            ),
+        )
+    return prepared_tracks
