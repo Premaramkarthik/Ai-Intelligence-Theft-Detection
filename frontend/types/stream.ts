@@ -140,6 +140,19 @@ export interface TrackingStateResponse {
   tracks: TrackingTrackResponse[];
 }
 
+export interface InferenceEvent {
+  camera_id: string;
+  track_id: string;
+  persistent_id: string | null;
+  label: string;
+  confidence: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  model: string;
+  timestamp: string;
+}
 
 export interface StreamInfoResponse {
   camera_id: string;

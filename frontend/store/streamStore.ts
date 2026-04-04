@@ -44,6 +44,8 @@ interface StreamStoreState {
     cameraId: string,
     snapshot: PlaybackSnapshot,
   ) => void;
+  applyInferenceEnvelope: (envelope: WebSocketEnvelope) => void;
+  pruneInferenceEvents: (ttlMs: number) => void;
   clearCameraStream: (cameraId: string) => void;
 }
 
@@ -330,6 +332,16 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
           },
         },
       };
+    }),
+  applyInferenceEnvelope: (envelope) =>
+    set((state) => {
+      void envelope;
+      return state;
+    }),
+  pruneInferenceEvents: (ttlMs) =>
+    set((state) => {
+      void ttlMs;
+      return state;
     }),
   clearCameraStream: (cameraId) =>
     set((state) => ({

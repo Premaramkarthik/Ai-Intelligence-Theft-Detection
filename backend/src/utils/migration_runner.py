@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 import asyncpg
 
@@ -27,6 +28,41 @@ async def applied_migrations(connection: asyncpg.Connection) -> set[str]:
     return {row["filename"] for row in rows}
 
 
+async def apply_pending_migrations(
+    connection: asyncpg.Connection,
+    *,
+    migration_dir: Path = MIGRATION_DIR,
+) -> int:
+    """Apply SQL migrations that are not yet recorded in schema_migrations."""
+
+    await ensure_migration_table(connection)
+    already_applied = await applied_migrations(connection)
+    migration_files = sorted(
+        file_path
+        for file_path in migration_dir.glob("[0-9][0-9][0-9]_*.sql")
+        if file_path.is_file()
+    )
+    LOGGER.info(
+        "Found %d migration files, %d already applied.",
+        len(migration_files),
+        len(already_applied),
+    )
+    applied_count = 0
+    for migration_path in migration_files:
+        if migration_path.name in already_applied:
+            continue
+        sql = migration_path.read_text(encoding="utf-8")
+        async with connection.transaction():
+            await connection.execute(sql)
+            await connection.execute(
+                "INSERT INTO schema_migrations (filename) VALUES ($1)",
+                migration_path.name,
+            )
+        applied_count += 1
+        LOGGER.info("Applied migration: %s", migration_path.name)
+    return applied_count
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     settings = Settings()
@@ -34,34 +70,8 @@ async def run() -> None:
     connection = await asyncpg.connect(database_url)
     LOGGER.info("Connected to database for migrations: %s", database_url)
     try:
-        await ensure_migration_table(connection)
-        LOGGER.info("Ensured schema_migrations table exists.")
-        already_applied = await applied_migrations(connection)
-        migration_files = sorted(
-            file_path
-            for file_path in MIGRATION_DIR.glob("[0-9][0-9][0-9]_*.sql")
-            if file_path.is_file()
-        )
-        LOGGER.info(
-            "Found %d migration files, %d already applied.",
-            len(migration_files),
-            len(already_applied),
-        )
-        for migration_path in migration_files:
-            if migration_path.name in already_applied:
-                continue
-            sql = migration_path.read_text(encoding="utf-8")
-            async with connection.transaction():
-                await connection.execute(sql)
-                LOGGER.info(
-                    "Applied migration SQL from file: %s",
-                    migration_path.name,
-                )
-                await connection.execute(
-                    "INSERT INTO schema_migrations (filename) VALUES ($1)",
-                    migration_path.name,
-                )
-            LOGGER.info("Applied migration: %s", migration_path.name)
+        applied_count = await apply_pending_migrations(connection)
+        LOGGER.info("Migration bootstrap complete. Applied %d migration(s).", applied_count)
     finally:
         await connection.close()
 

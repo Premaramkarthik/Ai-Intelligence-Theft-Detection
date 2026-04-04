@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { TrackingCanvasOverlay } from "@/components/InferenceCanvasOverlay";
 import { PlayerOverlay } from "@/components/PlayerOverlay";

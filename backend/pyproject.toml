@@ -1,79 +1,26 @@
 [project]
-name = "rtsp-camera-backend"
-version = "1.0.0"
-description = "Frontend-friendly RTSP camera backend with FastAPI, asyncpg, Kafka, and worker-based ingestion."
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "aiokafka>=0.11.0",
-    "av>=12.3.0",
-    "asyncpg>=0.30.0",
-    "fastapi>=0.115.12",
+    "aiokafka>=0.13.0",
+    "asyncpg>=0.31.0",
+    "av>=14.2.0",
+    "fastapi>=0.115.14",
     "inference>=1.2.0",
-    "opencv-python>=4.13.0.92",
-    "pymilvus[milvus-lite]>=2.6.11",
-    "pre-commit>=4.5.1",
-    "protobuf>=5.27.2,<7.0.0",
-    "pydantic-settings>=2.8.1",
-    "psutil>=7.0.0",
-    "scipy>=1.15.3",
-    "setuptools<82",
-    "tenacity>=9.1.4",
-    "trackers>=2.3.0",
-    "tritonclient[grpc]>=2.48.0",
-    "uvicorn[standard]>=0.34.0",
+    "numpy>=2.2.6",
+    "opencv-python>=4.10.0.84",
     "prometheus-client>=0.24.1",
+    "psutil>=7.2.2",
+    "pydantic>=2.11.10",
+    "pydantic-settings>=2.7.1",
+    "pymilvus>=2.6.11",
+    "supervision>=0.27.0.post2",
+    "tenacity>=9.1.4",
+    "torch>=2.11.0",
+    "torchvision>=0.26.0",
+    "trackers>=2.3.0",
+    "uvicorn[standard]>=0.43.0",
 ]
-
-[project.optional-dependencies]
-dev = [
-    "httpx>=0.28.1",
-    "pylint>=3.3.6",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.26.0",
-    "ruff>=0.11.2",
-]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-pythonpath = ["."]
-
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-src = ["src", "tests"]
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "N", "ASYNC"]
-ignore = ["N818"]
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-
-[tool.pylint.main]
-fail-under = 10
-ignore-paths = ["^tests/fixtures/.*$"]
-persistent = false
-
-[tool.pylint.messages_control]
-disable = [
-    "duplicate-code",
-    "import-outside-toplevel",
-    "invalid-name",
-    "missing-class-docstring",
-    "missing-function-docstring",
-    "missing-module-docstring",
-    "redefined-outer-name",
-    "too-many-arguments",
-    "too-few-public-methods",
-    "too-many-instance-attributes",
-    "too-many-locals",
-    "too-many-positional-arguments",
-]
-
-[tool.pylint.format]
-max-line-length = 100
-
-[tool.pylint.design]
-max-args = 10

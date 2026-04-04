@@ -40,6 +40,7 @@ from src.services.stream.stream_repository import StreamRepository
 from src.services.stream.stream_service import StreamService
 from src.services.tracking.manager import TrackingStreamManager
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
+from src.utils.migration_runner import apply_pending_migrations
 from src.utils.tracking_bootstrap import create_tracking_runtime_services
 
 
@@ -73,6 +74,9 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
     async def lifespan(application: FastAPI):  # pylint: disable=too-many-locals,too-many-statements
         database = Database(settings)
         await database.connect()
+        if settings.run_migrations_on_startup:
+            async with database.pool.acquire() as connection:
+                await apply_pending_migrations(connection)
 
         camera_repository = CameraRepository(database)
         stream_repository = StreamRepository(database)

@@ -37,7 +37,6 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
   }, [hydrateCameras, initialCameras]);
 
   useWebSocket();
-  useWebSocket();
 
   const cameras = useMemo(
     () =>

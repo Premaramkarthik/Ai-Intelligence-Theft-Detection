@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     database_url: str # = "postgresql://postgres:postgres@localhost:5432/rtsp_camera"
     db_pool_min_size: int = 2
     db_pool_max_size: int = 10
+    run_migrations_on_startup: bool = True
 
     kafka_bootstrap_servers: str = "localhost:9092"
     kafka_group_id: str = "rtsp-camera-backend"

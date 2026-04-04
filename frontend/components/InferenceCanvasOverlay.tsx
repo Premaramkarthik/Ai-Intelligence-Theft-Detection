@@ -10,7 +10,7 @@ interface TrackingCanvasOverlayProps {
   tracks: TrackingTrackResponse[];
 }
 
-function getTrackColor(track: TrackingTrackResponse): string {
+function getTrackColor(): string {
   // Use a consistent color for tracking
   return "#34d399"; // Emerald 400
 }
@@ -96,7 +96,7 @@ export function TrackingCanvasOverlay({
       context.textBaseline = "middle";
 
       activeTracks.forEach((track) => {
-        const color = getTrackColor(track);
+        const color = getTrackColor();
         const left = displayRect.left + (track.left / videoWidth) * displayRect.width;
         const top = displayRect.top + (track.top / videoHeight) * displayRect.height;
         const widthPx = (track.width / videoWidth) * displayRect.width;
