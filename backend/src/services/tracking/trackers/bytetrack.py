@@ -23,6 +23,9 @@ class TrackedPerson:
     top: int
     width: int
     height: int
+    age_frames: int = 0
+    consecutive_hits: int = 0
+    frames_since_update: int = 0
 
 
 class RoboflowByteTrackPersonTracker:
@@ -65,23 +68,16 @@ def _to_supervision_detections(
     if not detections:
         return sv.Detections.empty()
 
-    xyxy = np.asarray(
-        [
-            [
-                detection.left,
-                detection.top,
-                detection.left + detection.width,
-                detection.top + detection.height,
-            ]
-            for detection in detections
-        ],
-        dtype=np.float32,
-    )
-    confidence = np.asarray(
-        [detection.confidence for detection in detections],
-        dtype=np.float32,
-    )
-    class_id = np.zeros(len(detections), dtype=np.int32)
+    n = len(detections)
+    xyxy = np.empty((n, 4), dtype=np.float32)
+    confidence = np.empty(n, dtype=np.float32)
+    for i, d in enumerate(detections):
+        xyxy[i, 0] = d.left
+        xyxy[i, 1] = d.top
+        xyxy[i, 2] = d.left + d.width
+        xyxy[i, 3] = d.top + d.height
+        confidence[i] = d.confidence
+    class_id = np.zeros(n, dtype=np.int32)
     return sv.Detections(
         xyxy=xyxy,
         confidence=confidence,
@@ -92,6 +88,11 @@ def _to_supervision_detections(
 def _to_tracked_people(detections: sv.Detections) -> list[TrackedPerson]:
     if detections.tracker_id is None or len(detections) == 0:
         return []
+
+    data: dict = detections.data if hasattr(detections, "data") and detections.data else {}
+    age_arr = data.get("age")
+    hit_arr = data.get("hit_streak")
+    frames_since_arr = data.get("frames_since_update")
 
     tracked_people: list[TrackedPerson] = []
     for index in range(len(detections)):
@@ -110,6 +111,9 @@ def _to_tracked_people(detections: sv.Detections) -> list[TrackedPerson]:
             if detections.confidence is not None
             else 0.0
         )
+        age_frames = int(age_arr[index]) if age_arr is not None else 0
+        consecutive_hits = int(hit_arr[index]) if hit_arr is not None else 0
+        frames_since_update = int(frames_since_arr[index]) if frames_since_arr is not None else 0
         tracked_people.append(
             TrackedPerson(
                 track_id=str(tracker_id),
@@ -119,6 +123,9 @@ def _to_tracked_people(detections: sv.Detections) -> list[TrackedPerson]:
                 top=top,
                 width=width,
                 height=height,
+                age_frames=age_frames,
+                consecutive_hits=consecutive_hits,
+                frames_since_update=frames_since_update,
             ),
         )
     return tracked_people
