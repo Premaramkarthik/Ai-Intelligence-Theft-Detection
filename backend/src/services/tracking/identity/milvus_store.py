@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -15,6 +16,16 @@ import numpy as np
 from pymilvus import DataType, MilvusClient
 
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+
+
+@dataclass(slots=True, frozen=True)
+class BatchResolveRequest:
+    """One entry in a batch_resolve() call."""
+
+    camera_id: str
+    stream_name: str
+    local_track_id: str
+    embedding: np.ndarray
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,6 +70,8 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
         self._client: MilvusClient | None = None
         self._lock = Lock()
+        # asyncio.Semaphore is created lazily per event-loop for batch_resolve().
+        self._batch_semaphore: asyncio.Semaphore | None = None
         self._healthy = True
         self._last_error: str | None = None
 
@@ -195,6 +208,106 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
             self._mark_unhealthy(exc)
             raise
         self._mark_healthy()
+
+    async def batch_resolve(
+        self,
+        requests: list[BatchResolveRequest],
+        *,
+        max_concurrent: int = 4,
+    ) -> list[IdentityMatch]:
+        """Resolve multiple identities in one Milvus search round-trip.
+
+        All embedding vectors are sent in a single client.search() call,
+        and a single client.upsert() writes all results back.  An asyncio
+        Semaphore (default 4) limits the number of concurrent calls so that
+        a burst of cameras cannot monopolise Milvus connections.
+        """
+
+        if not requests:
+            return []
+
+        if self._batch_semaphore is None:
+            self._batch_semaphore = asyncio.Semaphore(max_concurrent)
+
+        vectors = [
+            _normalize_embedding(r.embedding, self._embedding_dimension).tolist()
+            for r in requests
+        ]
+        now_ts = int(time() * 1000)
+
+        async with self._batch_semaphore:
+            try:
+                search_results = await asyncio.to_thread(
+                    self._batch_search, vectors
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                self._mark_unhealthy(exc)
+                raise
+
+        results: list[IdentityMatch] = []
+        upsert_payloads: list[dict] = []
+        for i, req in enumerate(requests):
+            hits = search_results[i] if i < len(search_results) else []
+            best = hits[0] if hits else None
+            similarity = float(best["distance"]) if best else 0.0
+            if best is not None and similarity >= self._similarity_threshold:
+                identity_id = _extract_identity_id(best)
+                matched = True
+            else:
+                identity_id = f"person_{uuid4().hex[:12]}"
+                matched = False
+            results.append(
+                IdentityMatch(
+                    identity_id=identity_id,
+                    matched_existing=matched,
+                    similarity=similarity,
+                )
+            )
+            upsert_payloads.append(
+                {
+                    "identity_id": identity_id,
+                    "embedding": vectors[i],
+                    "camera_id": req.camera_id,
+                    "stream_name": req.stream_name,
+                    "local_track_id": req.local_track_id,
+                    "first_seen_ts": now_ts,
+                    "last_seen_ts": now_ts,
+                }
+            )
+
+        async with self._batch_semaphore:
+            try:
+                await asyncio.to_thread(self._batch_upsert, upsert_payloads)
+            except Exception as exc:  # pylint: disable=broad-except
+                self._mark_unhealthy(exc)
+                raise
+
+        self._mark_healthy()
+        return results
+
+    def _batch_search(self, vectors: list[list[float]]) -> list[list[dict]]:
+        """Run a multi-vector Milvus search under the threading lock."""
+        with self._lock:
+            client = self._get_client()
+            self._ensure_collection_ready(client)
+            return client.search(
+                collection_name=self._collection_name,
+                data=vectors,
+                limit=self._search_limit,
+                output_fields=["identity_id", "camera_id", "stream_name", "last_seen_ts"],
+                search_params={"metric_type": "COSINE"},
+                timeout=self._timeout_seconds,
+            )
+
+    def _batch_upsert(self, payloads: list[dict]) -> None:
+        """Upsert multiple identity records under the threading lock."""
+        with self._lock:
+            client = self._get_client()
+            client.upsert(
+                collection_name=self._collection_name,
+                data=payloads,
+                timeout=self._timeout_seconds,
+            )
 
     def close(self) -> None:
         """Release the client connection."""
