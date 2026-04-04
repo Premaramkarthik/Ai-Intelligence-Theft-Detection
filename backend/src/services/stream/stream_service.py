@@ -47,7 +47,10 @@ class StreamService:
     async def start_stream(self, camera_id: str, request: StreamStartRequest) -> StreamInfoResponse:
         """Start frame extraction for a camera and return MediaMTX playback endpoints."""
 
-        camera = await self._camera_service.get_camera_record(camera_id)
+        camera = await self._camera_service.ensure_camera_reachable(
+            camera_id,
+            timeout_seconds=self._settings.validation_timeout_seconds,
+        )
         cameras = await self._camera_service.list_all_camera_records()
         await self._mediamtx_service.sync_config(cameras)
         await self._mediamtx_service.ensure_ready(cameras, camera)

@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --background: #0b0f14;
-  --foreground: #e5eef9;
-  --surface: #1f2937;
-  --surface-strong: #374151;
-  --muted: #94a3b8;
-  --accent-live: #22c55e;
-  --accent-reconnecting: #f59e0b;
-  --accent-error: #ef4444;
-  --accent-info: #3b82f6;
+  --background: #081218;
+  --foreground: #edf7f7;
+  --surface: #11202a;
+  --surface-strong: #183241;
+  --muted: #8ba8b5;
+  --accent-live: #2dd4bf;
+  --accent-reconnecting: #fbbf24;
+  --accent-error: #f87171;
+  --accent-info: #38bdf8;
 }
 
 @theme inline {
@@ -26,9 +26,13 @@ html {
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(circle at top, rgba(56, 189, 248, 0.10), transparent 28%),
+    radial-gradient(circle at 18% 14%, rgba(45, 212, 191, 0.10), transparent 24%),
+    linear-gradient(180deg, #09131a 0%, #05090d 100%);
   color: var(--foreground);
   font-family: "Avenir Next", "Segoe UI Variable", "Helvetica Neue", sans-serif;
+  background-attachment: fixed;
 }
 
 @keyframes screen-enter {
@@ -90,6 +94,6 @@ body {
 }
 
 ::selection {
-  background: rgba(59, 130, 246, 0.32);
+  background: rgba(45, 212, 191, 0.28);
   color: white;
 }

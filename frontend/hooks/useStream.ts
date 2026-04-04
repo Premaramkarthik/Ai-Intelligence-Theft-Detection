@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   BackendApiError,
@@ -12,9 +12,11 @@ import { StreamOrchestrator } from "@/media/orchestrator";
 import { useStreamStore } from "@/store/streamStore";
 import type {
   CameraResponse,
+  PlaybackViewMode,
   StartStreamRequest,
   PlaybackSnapshot,
   StreamInfoResponse,
+  StreamAccessUrls,
 } from "@/types/stream";
 import { useWebSocket } from "@/hooks/useWebSocket";
 
@@ -63,8 +65,8 @@ function buildStartRequest(
   return {
     force_restart: forceRestart,
     requested_protocol: "webrtc",
-    sample_fps: sampleFps ?? 1,
-    enable_tracking_events: false,
+    sample_fps: sampleFps ?? 5,
+    enable_tracking_events: true,
     reason,
   };
 }
@@ -80,10 +82,16 @@ export function useStream(
   cameraId: string,
   options: UseStreamOptions = {},
 ) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const attachedVideoElementRef = useRef<HTMLVideoElement | null>(null);
   const orchestratorRef = useRef<StreamOrchestrator | null>(null);
   const playbackActivationRef = useRef(false);
+  const selectedSourceKeyRef = useRef<string | null>(null);
   const routeSyncRequestRef = useRef(0);
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
+  const [sourceSelectionTouched, setSourceSelectionTouched] =
+    useState(false);
+  const [preferredPlaybackViewMode, setPreferredPlaybackViewMode] =
+    useState<PlaybackViewMode>("raw");
 
   const camera = useStreamStore((state) => state.cameras[cameraId]);
   const streamState = useStreamStore((state) => state.streams[cameraId]);
@@ -112,6 +120,52 @@ export function useStream(
     "stopped";
   const activeCommandState = streamState?.commandState ?? "idle";
   const activeCommandMessage = streamState?.commandMessage ?? null;
+  const activeTrackingState = activeStream?.tracking ?? null;
+  const trackingAvailable = Boolean(
+    activeTrackingState?.enabled &&
+    activeTrackingState.access_urls?.webrtc_url &&
+    activeTrackingState.access_urls?.hls_url,
+  );
+  const playbackViewMode: PlaybackViewMode =
+    sourceSelectionTouched
+      ? preferredPlaybackViewMode === "tracked" && !trackingAvailable
+        ? "raw"
+        : preferredPlaybackViewMode
+      : "raw";
+
+  const selectedAccessUrls: StreamAccessUrls | null =
+    playbackViewMode === "tracked" && trackingAvailable
+      ? activeTrackingState?.access_urls ?? null
+      : activeStream?.access_urls ?? null;
+
+  const setVideoRef = useCallback((node: HTMLVideoElement | null) => {
+    if (node === null) {
+      attachedVideoElementRef.current = null;
+      playbackActivationRef.current = false;
+    }
+    setVideoElement(node);
+  }, []);
+
+  const ensureOrchestrator = useCallback((): StreamOrchestrator | null => {
+    if (!videoElement) {
+      return null;
+    }
+
+    if (!orchestratorRef.current) {
+      orchestratorRef.current = new StreamOrchestrator({
+        onPlaybackSnapshot: (snapshot: PlaybackSnapshot) => {
+          setPlaybackSnapshot(cameraId, snapshot);
+        },
+      });
+    }
+
+    if (attachedVideoElementRef.current !== videoElement) {
+      orchestratorRef.current.attach(videoElement);
+      attachedVideoElementRef.current = videoElement;
+    }
+
+    return orchestratorRef.current;
+  }, [cameraId, setPlaybackSnapshot, videoElement]);
 
   useWebSocket(cameraId, activeStream?.websocket_url ?? null);
 
@@ -221,38 +275,30 @@ export function useStream(
   };
 
   const retryPlayback = async () => {
-    if (videoRef.current && !orchestratorRef.current) {
-      const orchestrator = new StreamOrchestrator({
-        onPlaybackSnapshot: (snapshot: PlaybackSnapshot) => {
-          setPlaybackSnapshot(cameraId, snapshot);
-        },
-      });
-      orchestrator.attach(videoRef.current);
-      orchestratorRef.current = orchestrator;
+    const orchestrator = ensureOrchestrator();
+    if (!orchestrator) {
+      return;
     }
     playbackActivationRef.current = true;
-    if (activeStream) {
-      orchestratorRef.current?.setSources({
-        webrtcUrl: activeStream.access_urls.webrtc_url,
-        hlsUrl: activeStream.access_urls.hls_url,
+    if (selectedAccessUrls) {
+      orchestrator.setSources({
+        webrtcUrl: selectedAccessUrls.webrtc_url,
+        hlsUrl: selectedAccessUrls.hls_url,
       });
     }
-    await orchestratorRef.current?.reconnect();
+    await orchestrator.reconnect();
   };
 
   useEffect(() => {
-    if (videoRef.current && !orchestratorRef.current) {
-      const orchestrator = new StreamOrchestrator({
-        onPlaybackSnapshot: (snapshot: PlaybackSnapshot) => {
-          setPlaybackSnapshot(cameraId, snapshot);
-        },
-      });
-      orchestrator.attach(videoRef.current);
-      orchestratorRef.current = orchestrator;
-    }
+    ensureOrchestrator();
+  }, [ensureOrchestrator]);
+
+  useEffect(() => {
     return () => {
       routeSyncRequestRef.current += 1;
       playbackActivationRef.current = false;
+      selectedSourceKeyRef.current = null;
+      attachedVideoElementRef.current = null;
       setPlaybackSnapshot(cameraId, IDLE_PLAYBACK_SNAPSHOT);
       void orchestratorRef.current?.stop();
       orchestratorRef.current = null;
@@ -269,37 +315,44 @@ export function useStream(
   ]);
 
   useEffect(() => {
-    if (videoRef.current && !orchestratorRef.current) {
-      const orchestrator = new StreamOrchestrator({
-        onPlaybackSnapshot: (snapshot: PlaybackSnapshot) => {
-          setPlaybackSnapshot(cameraId, snapshot);
-        },
-      });
-      orchestrator.attach(videoRef.current);
-      orchestratorRef.current = orchestrator;
-    }
-    if (!orchestratorRef.current || !activeStream) {
+    const orchestrator = ensureOrchestrator();
+    if (!orchestrator || !selectedAccessUrls) {
       return;
     }
 
-    orchestratorRef.current.setSources({
-      webrtcUrl: activeStream.access_urls.webrtc_url,
-      hlsUrl: activeStream.access_urls.hls_url,
+    const selectedSourceKey = [
+      playbackViewMode,
+      selectedAccessUrls.webrtc_url,
+      selectedAccessUrls.hls_url,
+    ].join("|");
+    const sourceChanged = selectedSourceKeyRef.current !== selectedSourceKey;
+    selectedSourceKeyRef.current = selectedSourceKey;
+
+    orchestrator.setSources({
+      webrtcUrl: selectedAccessUrls.webrtc_url,
+      hlsUrl: selectedAccessUrls.hls_url,
     });
 
     if (!isRunnableBackendState(activeBackendLifecycle)) {
       playbackActivationRef.current = false;
-      void orchestratorRef.current.stop();
+      selectedSourceKeyRef.current = null;
+      void orchestrator.stop();
       return;
     }
 
-    if (playbackActivationRef.current) {
+    if (playbackActivationRef.current && !sourceChanged) {
       return;
     }
 
     playbackActivationRef.current = true;
-    void orchestratorRef.current.start();
-  }, [activeBackendLifecycle, activeStream, cameraId, setPlaybackSnapshot]);
+    void orchestrator.start();
+  }, [
+    activeBackendLifecycle,
+    cameraId,
+    ensureOrchestrator,
+    playbackViewMode,
+    selectedAccessUrls,
+  ]);
 
   const runAction = (work: () => Promise<void>) => {
     if (activeCommandState !== "idle") {
@@ -311,6 +364,9 @@ export function useStream(
   return {
     camera: activeCamera,
     streamInfo: activeStream,
+    trackingInfo: activeTrackingState,
+    videoElement,
+    playbackViewMode,
     backendLifecycle: activeBackendLifecycle,
     commandState: activeCommandState,
     commandMessage: activeCommandMessage,
@@ -320,9 +376,14 @@ export function useStream(
     playbackError: streamState?.playbackError ?? null,
     timeline: streamState?.timeline ?? [],
     isPending: activeCommandState !== "idle",
-    videoRef,
+    videoRef: setVideoRef,
     refresh: () => runAction(refresh),
     retryPlayback,
+    setPlaybackViewMode: (viewMode: PlaybackViewMode) => {
+      setSourceSelectionTouched(true);
+      setPreferredPlaybackViewMode(viewMode);
+    },
+    isTrackedPlaybackAvailable: trackingAvailable,
     start: () => runAction(() => start(false)),
     forceRestart: () => runAction(() => start(true)),
     stop: () => runAction(stop),

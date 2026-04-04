@@ -11,3 +11,51 @@ scrape_configs:
     static_configs:
       - targets:
           - __PROMETHEUS_SCRAPE_TARGET__
+  - job_name: mediamtx
+    metrics_path: /metrics
+    basic_auth:
+      username: __MEDIAMTX_METRICS_USERNAME__
+      password: __MEDIAMTX_METRICS_PASSWORD__
+    static_configs:
+      - targets:
+          - 127.0.0.1:9998
+  - job_name: milvus
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9091
+  - job_name: triton
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:8002
+  - job_name: kafka_jmx
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:7071
+  - job_name: node
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9100
+  - job_name: postgres_exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9187
+  - job_name: dcgm_exporter
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:9400
+  - job_name: loki
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:3100
+  - job_name: alloy
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:12345

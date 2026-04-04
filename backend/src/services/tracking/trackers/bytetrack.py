@@ -9,7 +9,7 @@ import numpy as np
 import supervision as sv
 from trackers import ByteTrackTracker
 
-from src.services.tracking.detectors.yolo26_detector import PersonDetection
+from src.services.tracking.contracts import PersonDetection
 
 
 @dataclass(slots=True, frozen=True)

@@ -19,6 +19,7 @@ export type PlaybackState =
   | "failed";
 
 export type StreamProtocol = "webrtc" | "hls";
+export type PlaybackViewMode = "raw" | "tracked";
 
 export type StreamCommandState =
   | "idle"
@@ -114,6 +115,32 @@ export interface StreamAccessUrls {
   rtsp_pull_url: string;
 }
 
+export interface TrackingTrackResponse {
+  track_id: string;
+  persistent_id: string | null;
+  class_name: string | null;
+  confidence: number;
+  similarity: number | null;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface TrackingStateResponse {
+  enabled: boolean;
+  stream_name: string | null;
+  access_urls: StreamAccessUrls | null;
+  is_registered: boolean;
+  is_process_alive: boolean;
+  reconnect_attempts: number;
+  active_tracks: number;
+  identity_backend: string;
+  last_error_message: string | null;
+  tracks: TrackingTrackResponse[];
+}
+
+
 export interface StreamInfoResponse {
   camera_id: string;
   camera_name: string;
@@ -132,6 +159,7 @@ export interface StreamInfoResponse {
   last_event_at: string | null;
   last_error_code: string | null;
   last_error_message: string | null;
+  tracking: TrackingStateResponse | null;
   worker: WorkerStateResponse;
 }
 
@@ -170,3 +198,4 @@ export interface StreamTimelineEvent {
   message: string;
   timestamp: string;
 }
+

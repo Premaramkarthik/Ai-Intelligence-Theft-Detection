@@ -17,6 +17,24 @@ class CameraValidationException(AppException):
         super().__init__(message=message, error_code=error_code, status_code=400)
 
 
+class CameraSourceUnavailableException(AppException):
+    def __init__(
+        self,
+        camera_id: str,
+        message: str,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(
+            message=(
+                f"Camera '{camera_id}' RTSP source is unavailable. "
+                f"{message}"
+            ),
+            error_code="CAMERA_SOURCE_UNAVAILABLE",
+            status_code=503,
+            details={"camera_id": camera_id, **(details or {})},
+        )
+
+
 class CameraConflictException(AppException):
     def __init__(self, message: str) -> None:
         super().__init__(message=message, error_code="CAMERA_CONFLICT", status_code=409)

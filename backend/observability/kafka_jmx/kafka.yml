@@ -1,0 +1,40 @@
+startDelaySeconds: 10
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+ssl: false
+rules:
+  - pattern: 'kafka\.server<type=BrokerTopicMetrics, name=(MessagesInPerSec|BytesInPerSec|BytesOutPerSec|ReplicationBytesInPerSec|ReplicationBytesOutPerSec|FailedProduceRequestsPerSec|FailedFetchRequestsPerSec|TotalProduceRequestsPerSec|TotalFetchRequestsPerSec), topic=(.+)><>Count'
+    name: kafka_server_brokertopicmetrics_$1_total
+    labels:
+      topic: "$2"
+    type: COUNTER
+  - pattern: 'kafka\.server<type=BrokerTopicMetrics, name=(MessagesInPerSec|BytesInPerSec|BytesOutPerSec|ReplicationBytesInPerSec|ReplicationBytesOutPerSec|FailedProduceRequestsPerSec|FailedFetchRequestsPerSec|TotalProduceRequestsPerSec|TotalFetchRequestsPerSec)><>Count'
+    name: kafka_server_brokertopicmetrics_$1_total
+    type: COUNTER
+  - pattern: 'kafka\.network<type=RequestMetrics, name=RequestsPerSec, request=(.+), version=(.+)><>Count'
+    name: kafka_network_requests_total
+    labels:
+      request: "$1"
+      version: "$2"
+    type: COUNTER
+  - pattern: 'kafka\.network<type=RequestMetrics, name=ErrorsPerSec, request=(.+), error=(.+)><>Count'
+    name: kafka_network_request_errors_total
+    labels:
+      request: "$1"
+      error: "$2"
+    type: COUNTER
+  - pattern: 'kafka\.network<type=RequestChannel, name=RequestQueueSize><>Value'
+    name: kafka_network_request_queue_size
+    type: GAUGE
+  - pattern: 'kafka\.server<type=KafkaRequestHandlerPool, name=RequestHandlerAvgIdlePercent><>Value'
+    name: kafka_server_request_handler_avg_idle_percent
+    type: GAUGE
+  - pattern: 'kafka\.server<type=ReplicaManager, name=(UnderReplicatedPartitions|UnderMinIsrPartitionCount|LeaderCount|PartitionCount|OfflineReplicaCount)><>Value'
+    name: kafka_server_$1
+    type: GAUGE
+  - pattern: 'kafka\.controller<type=KafkaController, name=(ActiveControllerCount|OfflinePartitionsCount|PreferredReplicaImbalanceCount|GlobalTopicCount|GlobalPartitionCount)><>Value'
+    name: kafka_controller_$1
+    type: GAUGE
+  - pattern: 'kafka\.controller<type=ControllerStats, name=(LeaderElectionRateAndTimeMs|UncleanLeaderElectionsPerSec)><>Count'
+    name: kafka_controller_$1_total
+    type: COUNTER

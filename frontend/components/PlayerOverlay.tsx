@@ -155,7 +155,7 @@ export function PlayerOverlay({
       : copy.tone === "warning"
         ? "border-amber-500/40 bg-amber-500/12 text-amber-50"
         : copy.tone === "info"
-          ? "border-sky-500/40 bg-sky-500/12 text-sky-50"
+          ? "border-cyan-500/40 bg-cyan-500/12 text-cyan-50"
           : "border-slate-500/40 bg-slate-900/70 text-slate-100";
 
   return (

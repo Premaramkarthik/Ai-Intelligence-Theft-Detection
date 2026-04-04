@@ -1,7 +1,7 @@
-import type { RefObject, ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 interface VideoPlayerProps {
-  videoRef: RefObject<HTMLVideoElement | null>;
+  videoRef: Ref<HTMLVideoElement>;
   overlay?: ReactNode;
 }
 
@@ -11,7 +11,7 @@ export function VideoPlayer({ videoRef, overlay }: VideoPlayerProps) {
       <div className="aspect-video bg-[radial-gradient(circle_at_top,_rgba(59,130,246,0.18),_transparent_52%),linear-gradient(160deg,_#0f172a,_#020617)]">
         <video
           ref={videoRef}
-          className="size-full object-cover transition-opacity duration-500 ease-out"
+          className="size-full object-contain bg-black transition-opacity duration-500 ease-out"
           autoPlay
           playsInline
           muted

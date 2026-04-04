@@ -1,10 +1,13 @@
 """Async orchestration for many PyAV frame workers in one Python process."""
 
+# pylint: disable=duplicate-code,too-many-instance-attributes,too-many-arguments
+
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from src.core.logger.logger import get_logger
 from src.models.camera import StreamDesiredState
@@ -45,14 +48,16 @@ class WorkerSnapshot:
     process_id: int | None
     restart_count: int
     reconnect_attempts: int
+    decoded_frames: int = 0
     sampled_frames: int = 0
     dropped_frames: int = 0
     current_fps: float = 0.0
     queue_latency_ms: float = 0.0
     decode_time_ms: float = 0.0
+    last_frame_at: datetime | None = None
 
 
-class MediaMtxStreamManager:
+class MediaMtxStreamManager:  # pylint: disable=too-many-instance-attributes
     """Manage multiple PyAV stream workers inside a single asyncio event loop."""
 
     def __init__(
@@ -67,7 +72,7 @@ class MediaMtxStreamManager:
         max_reconnect_attempts: int = 8,
         metrics_recorder: MetricsRecorder | None = None,
         connection_alert_publisher: StreamConnectionAlertPublisher | None = None,
-    ) -> None:
+    ) -> None:  # pylint: disable=too-many-arguments
         """Create a stream manager with a shared queue and worker factory."""
 
         self._frame_queue = frame_queue
@@ -112,7 +117,14 @@ class MediaMtxStreamManager:
             self._connection_alert_publisher,
         )
         self._workers[camera_id] = worker
-        self._tasks[camera_id] = asyncio.create_task(worker.run())
+        task = asyncio.create_task(worker.run(), name=f"frame-worker:{camera_id}")
+        task.add_done_callback(
+            lambda completed_task, tracked_camera_id=camera_id: self._handle_worker_exit(
+                tracked_camera_id,
+                completed_task,
+            ),
+        )
+        self._tasks[camera_id] = task
         self._logger.info("Started realtime frame worker for %s.", camera_id)
 
     async def stop_stream(self, camera_id: str) -> None:
@@ -182,11 +194,13 @@ class MediaMtxStreamManager:
             process_id=None,
             restart_count=0,
             reconnect_attempts=metrics.reconnect_attempts,
+            decoded_frames=metrics.decoded_frames,
             sampled_frames=metrics.sampled_frames,
             dropped_frames=metrics.dropped_frames,
             current_fps=metrics.current_fps,
             queue_latency_ms=metrics.queue_latency_ms,
             decode_time_ms=metrics.decode_time_ms,
+            last_frame_at=metrics.last_frame_at,
         )
 
     def active_worker_count(self) -> int:
@@ -201,6 +215,43 @@ class MediaMtxStreamManager:
         """Attach the alert publisher used by newly created realtime workers."""
 
         self._connection_alert_publisher = publisher
+
+    def _handle_worker_exit(
+        self,
+        camera_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        """Clean up completed workers and publish terminal disconnect alerts when needed."""
+
+        worker = self._workers.pop(camera_id, None)
+        self._tasks.pop(camera_id, None)
+        if worker is None or task.cancelled():
+            return
+
+        try:
+            task.result()
+        except Exception as exc:  # pylint: disable=broad-except
+            self._logger.exception(
+                "Realtime frame worker task for %s exited with an unhandled exception: %s",
+                camera_id,
+                exc,
+            )
+            return
+
+        metrics = worker.metrics()
+        if (
+            metrics.reconnect_attempts < self._max_reconnect_attempts
+            or not metrics.last_error
+        ):
+            return
+
+        asyncio.create_task(
+            self._connection_alert_publisher.publish_camera_disconnected(
+                camera_id,
+                reconnect_attempts=metrics.reconnect_attempts,
+                error_message=metrics.last_error,
+            ),
+        )
 
 
 def _safe_metrics(worker: PyAvFrameWorker) -> StreamWorkerMetrics:

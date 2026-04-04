@@ -54,7 +54,7 @@ export function WorkerMetricsPanel({
   ];
 
   return (
-    <section className="space-y-4 rounded-[28px] border border-white/8 bg-slate-800/80 p-5 transition-all duration-300 ease-out">
+    <section className="space-y-4 rounded-[28px] border border-white/8 bg-[linear-gradient(160deg,rgba(17,32,42,0.92),rgba(9,18,24,0.92))] p-5 transition-all duration-300 ease-out">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
           <h2 className="text-lg font-semibold text-slate-50">
@@ -70,7 +70,7 @@ export function WorkerMetricsPanel({
             href={buildGrafanaDashboardUrl()}
             target="_blank"
             rel="noreferrer"
-            className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20"
+            className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20"
           >
             Open Grafana
           </a>
@@ -93,7 +93,7 @@ export function WorkerMetricsPanel({
         {metrics.map((metric) => (
           <div
             key={metric.label}
-            className="rounded-2xl border border-white/6 bg-slate-900/60 px-4 py-4"
+            className="rounded-2xl border border-white/6 bg-slate-950/55 px-4 py-4"
           >
             <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
               {metric.label}

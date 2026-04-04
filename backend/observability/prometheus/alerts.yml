@@ -36,3 +36,48 @@ groups:
         annotations:
           summary: P95 frame processing latency is too high
           description: The 95th percentile frame processing latency exceeded 100 ms.
+
+      - alert: HighInferenceLatencyP95
+        expr: histogram_quantile(0.95, sum by (model_name, le) (rate(inference_latency_seconds_bucket[5m]))) > 0.5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: P95 inference latency is too high
+          description: The 95th percentile Triton inference latency exceeded 500 ms.
+
+      - alert: HighInferenceFrameDropRate
+        expr: sum(rate(inference_frames_dropped_total[1m])) > 5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Inference frame drop rate is elevated
+          description: More than 5 inference ingest frames per second are being dropped.
+
+      - alert: TritonModelNotReady
+        expr: min(triton_model_ready) < 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Triton model is not ready
+          description: At least one configured Triton model is not ready to serve requests.
+
+      - alert: InferenceErrorRateHigh
+        expr: sum(rate(inference_requests_total{status="error"}[5m])) > 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Inference error rate is elevated
+          description: The inference plane is returning more than 1 error per second.
+
+      - alert: ActiveInferenceTracksHigh
+        expr: max by (camera_id) (inference_active_tracks_total) > 25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Active inference tracks exceeded the configured ceiling
+          description: One or more cameras are carrying more than 25 active inference tracks.

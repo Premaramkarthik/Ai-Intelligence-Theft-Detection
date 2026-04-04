@@ -148,6 +148,7 @@ function isStreamSnapshot(
   );
 }
 
+
 export const useStreamStore = create<StreamStoreState>((set) => ({
   cameras: {},
   cameraOrder: [],

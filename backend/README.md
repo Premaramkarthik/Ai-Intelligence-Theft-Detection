@@ -1,159 +1,160 @@
 # RTSP Camera Backend
 
-FastAPI backend for a real-time CCTV platform built around MediaMTX, PostgreSQL, Kafka, PyAV frame sampling, and backend-side person tracking.
+FastAPI backend for a CCTV streaming platform built around MediaMTX, PostgreSQL, Kafka, PyAV frame extraction, and backend-side person tracking.
 
 The backend is the control plane for the system:
 
-- cameras are registered and validated here
+- cameras are created, updated, validated, and deleted here
 - MediaMTX paths are generated and synchronized here
-- stream lifecycle is persisted here
+- stream lifecycle state is persisted here
 - WebSocket and Kafka updates originate here
-- tracking and re-identification run here
+- raw and tracked playback contracts are built here
+- person detection, tracking, re-identification, and tracked-stream publishing run here
+- Prometheus metrics for Grafana dashboards are exposed here
 
-Browsers do not connect to RTSP directly. Playback is exposed through MediaMTX as WebRTC first and HLS second.
+Browsers do not connect to RTSP cameras directly. Playback is exposed through MediaMTX, with WebRTC as the primary frontend path and HLS as the fallback.
 
-## What The Backend Does
+## Core Responsibilities
 
-- manages camera CRUD
-- validates RTSP reachability
-- stores camera and stream state in PostgreSQL
-- renders `runtime/mediamtx.generated.yml`
-- synchronizes MediaMTX runtime paths through the Control API
-- starts PyAV-based realtime frame workers
-- starts tracked annotated-stream workers
-- republishes tracked video back into MediaMTX
-- publishes lifecycle updates over WebSocket
-- consumes stream lifecycle events from Kafka
-- publishes tracking updates to Kafka
-- exposes Prometheus metrics for Grafana dashboards
+- manage camera CRUD
+- validate RTSP source reachability before stream start
+- persist camera and stream state in PostgreSQL
+- render [mediamtx.generated.yml](/home/karthik/Downloads/pipeline_opencv/backend/runtime/mediamtx.generated.yml)
+- synchronize MediaMTX runtime paths through the Control API
+- start and stop realtime frame workers
+- start and stop tracked annotated-stream workers
+- publish stream lifecycle updates over WebSocket
+- consume stream lifecycle events from Kafka
+- publish tracking metadata to Kafka
+- expose Prometheus metrics for Grafana
 
 ## Runtime Architecture
 
-The backend is split into four practical planes:
+The backend is easiest to understand as four planes:
 
-- control plane: FastAPI + PostgreSQL + WebSocket
-- media plane: MediaMTX
-- processing plane: PyAV workers + tracking workers
-- observability plane: Prometheus + Grafana
+- control plane: FastAPI, PostgreSQL, WebSocket, stream state, camera validation
+- media plane: MediaMTX raw paths and tracked paths
+- processing plane: PyAV frame workers and tracking workers
+- observability plane: Prometheus, Grafana, exporters, runtime metrics
 
-### High-Level Flow
+## High-Level Flow
 
 ```mermaid
 flowchart LR
     Camera["RTSP Camera"]
-    MediaMTX["MediaMTX"]
-    Frontend["Frontend Player"]
+    Frontend["Frontend"]
     API["FastAPI Backend"]
     DB["PostgreSQL"]
-    WS["WebSocket"]
+    MediaMTX["MediaMTX"]
     Kafka["Kafka"]
+    WS["WebSocket"]
     PyAV["PyAV Frame Worker"]
-    Tracking["Tracking Worker"]
-    ByteTrack["Roboflow ByteTrack"]
+    Detector["Roboflow Inference Detector"]
+    Tracker["Roboflow ByteTrack"]
     ReID["Mobilenet Re-ID"]
     Milvus["Milvus"]
     Tracked["Tracked MediaMTX Path"]
-    Metrics["Prometheus / Grafana"]
+    Prom["Prometheus"]
+    Grafana["Grafana"]
 
-    Camera --> MediaMTX
     Frontend -->|REST| API
     Frontend -->|WS| WS
     WS --> API
     API --> DB
     API --> Kafka
     Kafka --> API
-    MediaMTX -->|Raw WHEP / HLS| Frontend
+
+    Camera --> MediaMTX
+    MediaMTX -->|Raw WebRTC / HLS| Frontend
     MediaMTX -->|Raw RTSP Pull| PyAV
-    MediaMTX -->|Raw RTSP Pull| Tracking
-    PyAV --> Metrics
-    Tracking --> ByteTrack
-    ByteTrack --> ReID
+    MediaMTX -->|Raw RTSP Pull| Detector
+    Detector --> Tracker
+    Tracker --> ReID
     ReID --> Milvus
-    Tracking -->|Annotated RTSP Publish| Tracked
-    Tracked -->|Tracked WHEP / HLS| Frontend
-    API --> Metrics
-    Tracking --> Metrics
+    Tracker -->|Annotated RTSP Publish| Tracked
+    Tracked -->|Tracked WebRTC / HLS| Frontend
+
+    API --> Prom
+    MediaMTX --> Prom
+    Kafka --> Prom
+    Milvus --> Prom
+    Prom --> Grafana
 ```
 
-### Active Stream Lifecycle
+## Active Stream Lifecycle
 
 ```mermaid
 flowchart TD
-    Start["POST /streams/{camera_id}/start"] --> LoadCamera["Load camera from PostgreSQL"]
-    LoadCamera --> SyncConfig["Render and sync MediaMTX config"]
-    SyncConfig --> EnsurePath["Verify MediaMTX path is ready"]
-    EnsurePath --> PersistStart["Persist stream requested state"]
-    PersistStart --> StartWorker["Start PyAV realtime worker"]
-    StartWorker --> TrackingDecision{"Tracking enabled?"}
-    TrackingDecision -- Yes --> StartTracking["Start tracking worker"]
-    TrackingDecision -- No --> SkipTracking["Skip tracking worker"]
-    StartTracking --> RawContract["Return raw playback contract"]
-    SkipTracking --> RawContract
-    RawContract --> RawPlayback["Frontend opens raw playback_url or access_urls.webrtc_url"]
-    StartTracking --> TrackedPlayback["Frontend can also open tracking.access_urls.webrtc_url"]
-    StartWorker --> WSUpdates["WebSocket emits stream.updated / stream.connected"]
-    StartTracking --> TrackingUpdates["WebSocket and Kafka emit tracking.updated"]
+    Start["POST /streams/{camera_id}/start"] --> Load["Load camera from PostgreSQL"]
+    Load --> Validate["Validate upstream RTSP source"]
+    Validate --> Sync["Render and sync MediaMTX config"]
+    Sync --> Ensure["Verify MediaMTX raw + tracked paths are ready"]
+    Ensure --> Persist["Persist requested stream state"]
+    Persist --> Raw["Start PyAV realtime worker"]
+    Raw --> TrackChoice{"Tracking enabled?"}
+    TrackChoice -- Yes --> Track["Start tracking worker"]
+    TrackChoice -- No --> Skip["Skip tracking worker"]
+    Raw --> WSRaw["Emit stream.updated / stream.connected"]
+    Track --> WSTracked["Emit tracking.updated"]
+    Track --> KafkaTracked["Publish camera.tracking.updates"]
+    Skip --> Contract["Return raw playback contract"]
+    Track --> Contract["Return raw + tracked playback contract"]
+    Contract --> FrontendRaw["Frontend can open access_urls.webrtc_url"]
+    Contract --> FrontendTracked["Frontend can open tracking.access_urls.webrtc_url"]
 ```
 
 ## Main Components
 
-### FastAPI App
+### Application Bootstrap
 
-Application bootstrap lives in [main.py](/home/karthik/Downloads/pipeline_opencv/backend/src/main.py).
+Bootstrap lives in [main.py](/home/karthik/Downloads/pipeline_opencv/backend/src/main.py).
 
-On startup it:
+Startup sequence:
 
-- loads settings from `.env`
-- connects to PostgreSQL
-- initializes camera and stream services
-- writes and syncs MediaMTX config
-- starts Prometheus metrics when enabled
-- starts the stream Kafka consumer
-- starts tracking runtime services
+1. load settings from `.env`
+2. connect to PostgreSQL
+3. initialize camera, stream, MediaMTX, WebSocket, and tracking services
+4. start Prometheus metrics server when enabled
+5. start system and runtime metric collectors when enabled
+6. sync MediaMTX config from the current camera inventory
+7. start the Kafka stream consumer
+8. expose the API routes and WebSocket endpoint
 
-### MediaMTX Integration
+Shutdown sequence:
 
-MediaMTX orchestration lives in:
-
-- [mediamtx_service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/mediamtx_service.py)
-- [mediamtx_control_api.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/mediamtx_control_api.py)
-- [mediamtx.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/mediamtx.py)
-
-Current behavior:
-
-- generated config is written to [mediamtx.generated.yml](/home/karthik/Downloads/pipeline_opencv/backend/runtime/mediamtx.generated.yml)
-- when `mediamtx_manage_process=true`, the backend can run MediaMTX itself
-- when using an external MediaMTX service, the backend reconciles paths through the Control API at `MEDIAMTX_API_BASE_URL`
-- stream start verifies that the requested path is present before workers run
+1. stop Kafka consumer
+2. stop tracking Kafka producer
+3. stop tracking workers
+4. stop realtime frame workers
+5. stop metric collectors and metrics server
+6. stop managed MediaMTX if enabled
+7. disconnect from PostgreSQL
 
 ### Camera Domain
 
-Camera logic lives in:
+Primary files:
 
 - [camera_service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/camera/camera_service.py)
 - [camera_repository.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/camera/camera_repository.py)
 - [camera_validator.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/camera/camera_validator.py)
 
-A camera can be created in one of two ways:
+Behavior:
 
-1. `direct_rtsp_url`
-2. `host + port + path` with optional credentials
-
-Supported camera status values:
-
-- `active`
-- `inactive`
-- `error`
+- cameras can be created with `direct_rtsp_url` or with `host + path`
+- updates regenerate MediaMTX config
+- delete regenerates MediaMTX config
+- validation persists the last validation result
+- stream start fails fast with `503` if the upstream RTSP source is unreachable
 
 ### Stream Domain
 
-Stream orchestration lives in:
+Primary files:
 
 - [stream_service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/stream/stream_service.py)
 - [stream_repository.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/stream/stream_repository.py)
 - [stream_contract_service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/presentation/stream_contract_service.py)
 
-Current stream lifecycle values:
+Current stream status values:
 
 - `stopped`
 - `starting`
@@ -163,72 +164,99 @@ Current stream lifecycle values:
 - `error`
 - `crashed`
 
-The backend lifecycle state is the source of truth for the frontend. The player should not infer lifecycle state from WebRTC behavior alone.
+The backend stream state is the source of truth for the frontend. The player should not infer stream state only from browser media events.
 
-### Realtime Frame Worker
+### MediaMTX Integration
 
-PyAV worker logic lives in:
+Primary files:
+
+- [mediamtx_service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/mediamtx_service.py)
+- [mediamtx_control_api.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/mediamtx_control_api.py)
+- [mediamtx.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/mediamtx.py)
+
+Behavior:
+
+- generated config is written to [mediamtx.generated.yml](/home/karthik/Downloads/pipeline_opencv/backend/runtime/mediamtx.generated.yml)
+- raw camera paths are configured from the database
+- tracked paths are also configured so annotated streams can be republished
+- when `mediamtx_manage_process=true`, the backend can manage MediaMTX directly
+- when MediaMTX runs externally, the backend reconciles runtime paths through the Control API
+- stream start verifies MediaMTX readiness before workers are allowed to run
+
+### Realtime Frame Workers
+
+Primary files:
 
 - [frame_worker.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/frame_worker.py)
 - [stream_manager.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/stream_manager.py)
 - [queue.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/realtime_video/queue.py)
 
-What it does:
+Behavior:
 
-- pulls the raw MediaMTX RTSP path
-- decodes frames with PyAV
-- samples frames at the configured FPS
-- pushes sampled frames into the shared queue
-- records runtime metrics like FPS, decode time, queue latency, reconnect attempts
+- pull the raw MediaMTX RTSP path
+- decode frames with PyAV
+- sample frames at the configured rate
+- push sampled frames into a bounded queue
+- record runtime metrics such as decoded frames, sampled FPS, reconnect attempts, decode latency, and queue latency
+- stop automatically after the configured reconnect limit is exhausted
 
 ### Tracking Service
 
-Tracking code now lives entirely under [tracking](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking).
+All tracking code now lives under [tracking](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking).
 
-Key modules:
+Key files:
 
+- [contracts.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/contracts.py)
 - [worker.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/worker.py)
 - [manager.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/manager.py)
 - [updates.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/updates.py)
-- [yolo26_detector.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/detectors/yolo26_detector.py)
+- [inference_detector.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/detectors/inference_detector.py)
 - [bytetrack.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/trackers/bytetrack.py)
 - [embedder.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/reid/embedder.py)
 - [milvus_store.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking/identity/milvus_store.py)
 
-Tracking behavior:
+Current tracking pipeline:
 
-- detector: YOLO26 ONNX through OpenCV DNN
-- tracker: Roboflow Trackers ByteTrack
+- detector: Roboflow Inference SDK
+- default detector model: `rfdetr-medium`
+- target class: `person`
+- tracker: Roboflow `trackers` ByteTrack
 - re-id embedder: mobilenet bottleneck appearance model
-- persistent identity backend: Milvus
+- identity backend: Milvus
 
-The tracking worker republishes a second annotated MediaMTX path named:
+The tracking worker republishes an annotated MediaMTX path named:
 
 ```text
 <raw_stream_name>_tracked
 ```
 
+Tracked video contains drawn bounding boxes and IDs. The same tracking data is also emitted as structured metadata over WebSocket and Kafka.
+
 ### Tracking Kafka
 
-Tracking Kafka integration lives in:
+Primary files:
 
 - [service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking_kafka/service.py)
 - [publisher.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/tracking_kafka/publisher.py)
 - [tracking_events.py](/home/karthik/Downloads/pipeline_opencv/backend/src/schemas/tracking_events.py)
 
-It publishes metadata only, not video frames.
+Behavior:
+
+- publishes metadata only, never raw video frames
+- uses `camera_id` as the Kafka key for stable per-camera ordering
+- returns a null publisher if Kafka is unavailable so tracking can continue locally
 
 Default topic:
 
 - `camera.tracking.updates`
 
-### WebSocket
+### WebSocket Delivery
 
-WebSocket fanout is handled by:
+Primary file:
 
 - [websocket_manager.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/presentation/websocket_manager.py)
 
-The stream WebSocket endpoint is:
+Endpoint:
 
 ```text
 /streams/ws/updates
@@ -240,16 +268,17 @@ Optional query parameter:
 ?camera_id=<camera_id>
 ```
 
-Current event types used by the frontend include:
+Frontend-facing event types include:
 
 - `stream.snapshot`
 - `stream.updated`
 - `stream.connected`
+- `stream.disconnected`
 - `tracking.updated`
 
 ## API Surface
 
-### Camera Endpoints
+### Camera Routes
 
 Defined in [camera_routes.py](/home/karthik/Downloads/pipeline_opencv/backend/src/routes/camera_routes.py).
 
@@ -260,7 +289,7 @@ Defined in [camera_routes.py](/home/karthik/Downloads/pipeline_opencv/backend/sr
 - `DELETE /cameras/{camera_id}`
 - `POST /cameras/{camera_id}/validate`
 
-### Stream Endpoints
+### Stream Routes
 
 Defined in [stream_routes.py](/home/karthik/Downloads/pipeline_opencv/backend/src/routes/stream_routes.py).
 
@@ -270,7 +299,15 @@ Defined in [stream_routes.py](/home/karthik/Downloads/pipeline_opencv/backend/sr
 - `GET /streams/{camera_id}/info`
 - `WS /streams/ws/updates`
 
-### Health Endpoints
+`POST /streams/{camera_id}/start` accepts:
+
+- `force_restart`
+- `requested_protocol`
+- `sample_fps`
+- `enable_tracking_events`
+- `reason`
+
+### Health Routes
 
 Defined in [health_routes.py](/home/karthik/Downloads/pipeline_opencv/backend/src/routes/health_routes.py).
 
@@ -280,15 +317,14 @@ Defined in [health_routes.py](/home/karthik/Downloads/pipeline_opencv/backend/sr
 
 ## Stream Contract
 
-The frontend-ready contract is built by [stream_contract_service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/presentation/stream_contract_service.py) and returned by:
+The frontend contract is built in [stream_contract_service.py](/home/karthik/Downloads/pipeline_opencv/backend/src/services/presentation/stream_contract_service.py) and serialized by [stream_responses.py](/home/karthik/Downloads/pipeline_opencv/backend/src/schemas/stream_responses.py).
 
-- `GET /streams/{camera_id}/info`
-- `GET /streams/{camera_id}/status`
-- `POST /streams/{camera_id}/start`
-- `POST /streams/{camera_id}/stop`
+Top-level fields include:
 
-Important fields in `data`:
-
+- `camera_id`
+- `camera_name`
+- `stream_id`
+- `stream_name`
 - `status`
 - `protocol`
 - `playback_url`
@@ -296,47 +332,28 @@ Important fields in `data`:
 - `access_urls.hls_url`
 - `access_urls.rtsp_pull_url`
 - `websocket_url`
-- `tracking`
+- `fallback`
+- `last_error_code`
+- `last_error_message`
 - `worker`
+- `tracking`
 
-### Raw vs Tracked Playback
+The important split is:
 
-Raw stream:
+- raw stream: `playback_url` and `access_urls.*`
+- tracked stream: `tracking.access_urls.*`
 
-- `playback_url`
-- `access_urls.webrtc_url`
-- `access_urls.hls_url`
-
-Tracked annotated stream:
-
-- `tracking.access_urls.webrtc_url`
-- `tracking.access_urls.hls_url`
-- `tracking.access_urls.rtsp_pull_url`
-
-Important: the default `playback_url` still points to the raw stream. If the frontend wants boxes and IDs burned into the video, it must explicitly open the tracked stream URL from `tracking.access_urls`.
-
-### Worker Section
-
-The `worker` object reflects realtime backend worker state, including:
-
-- `desired_state`
-- `is_registered`
-- `is_process_alive`
-- `restart_count`
-- `reconnect_attempts`
-- `sampled_frames`
-- `dropped_frames`
-- `current_fps`
-- `queue_latency_ms`
-- `decode_time_ms`
+If the frontend opens the tracked URLs, it will see the annotated video stream with boxes and IDs. If it opens the raw URLs, it will see the unannotated camera feed.
 
 ### Tracking Section
 
-When tracking is enabled, `tracking` includes:
+When tracking is enabled, `tracking` contains:
 
 - `enabled`
 - `stream_name`
-- `access_urls`
+- `access_urls.webrtc_url`
+- `access_urls.hls_url`
+- `access_urls.rtsp_pull_url`
 - `is_registered`
 - `is_process_alive`
 - `reconnect_attempts`
@@ -345,7 +362,7 @@ When tracking is enabled, `tracking` includes:
 - `last_error_message`
 - `tracks[]`
 
-Each `tracks[]` item currently includes:
+Each `tracks[]` item contains:
 
 - `track_id`
 - `persistent_id`
@@ -357,131 +374,147 @@ Each `tracks[]` item currently includes:
 - `width`
 - `height`
 
-## Local Development
+## Data Model
 
-### Infrastructure Services
+SQL migrations live in [scripts/migrations](/home/karthik/Downloads/pipeline_opencv/backend/scripts/migrations).
 
-[docker-compose.yaml](/home/karthik/Downloads/pipeline_opencv/backend/docker-compose.yaml) starts:
+Current migrations:
 
-- MediaMTX
-- Kafka
-- Kafka topic init job
-- etcd
-- MinIO
-- Milvus standalone
-- Prometheus
-- Grafana
+- [001_create_camera_table.sql](/home/karthik/Downloads/pipeline_opencv/backend/scripts/migrations/001_create_camera_table.sql)
+- [002_create_stream_table.sql](/home/karthik/Downloads/pipeline_opencv/backend/scripts/migrations/002_create_stream_table.sql)
+- [003_allow_webrtc_stream_protocol.sql](/home/karthik/Downloads/pipeline_opencv/backend/scripts/migrations/003_allow_webrtc_stream_protocol.sql)
 
-It does not start PostgreSQL. You need a running Postgres instance and a valid `DATABASE_URL`.
+Main entities:
 
-Start infra:
+- camera records
+- stream records
 
-```bash
-cd /home/karthik/Downloads/pipeline_opencv/backend
-docker compose up -d mediamtx etcd minio milvus kafka kafka-init prometheus grafana
-```
+The database is not started by [docker-compose.yaml](/home/karthik/Downloads/pipeline_opencv/backend/docker-compose.yaml). You need a running PostgreSQL instance and a valid `DATABASE_URL`.
 
-Important local ports:
+## Configuration
 
-- backend API: `8000`
-- MediaMTX RTSP: `8554`
-- MediaMTX HLS: `8888`
-- MediaMTX WebRTC/WHEP: `8889`
-- MediaMTX WebRTC UDP: `8189/udp`
-- MediaMTX Control API: `9997`
-- MediaMTX metrics/pprof: `9998`
-- Kafka: `9092`
-- Milvus: `19530`
-- Milvus health: `9091`
-- Prometheus: `9090`
-- Grafana: `3001`
-- backend metrics: `9109`
+Runtime settings live in [config.py](/home/karthik/Downloads/pipeline_opencv/backend/src/core/config.py) and are loaded from `.env`.
 
-### Running The API
+Important variables:
 
-```bash
-cd /home/karthik/Downloads/pipeline_opencv/backend
-uvicorn src.main:app --reload
-```
+- `DATABASE_URL`
+- `KAFKA_BOOTSTRAP_SERVERS`
+- `MEDIAMTX_API_BASE_URL`
+- `MEDIAMTX_API_USERNAME`
+- `MEDIAMTX_API_PASSWORD`
+- `MEDIAMTX_RTSP_BASE_URL`
+- `MEDIAMTX_HLS_BASE_URL`
+- `MEDIAMTX_WEBRTC_BASE_URL`
+- `TRACKING_DETECTOR_MODEL_ID`
+- `TRACKING_DETECTOR_API_KEY`
+- `TRACKING_IDENTITY_STORE_URI`
+- `TRACKING_IDENTITY_STORE_TOKEN`
+- `TRACKING_SAMPLE_FPS`
+- `TRACKING_OUTPUT_FPS`
+- `METRICS_ENABLED`
+- `METRICS_PORT`
 
-### Typical Local `.env` Values
-
-At minimum:
+Recommended host-run development values:
 
 ```env
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/rtsp_camera
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
 MEDIAMTX_API_BASE_URL=http://localhost:9997
+MEDIAMTX_API_USERNAME=backend-control
+MEDIAMTX_API_PASSWORD=backend-control-dev-secret
 MEDIAMTX_RTSP_BASE_URL=rtsp://localhost:8554
 MEDIAMTX_HLS_BASE_URL=http://localhost:8888
 MEDIAMTX_WEBRTC_BASE_URL=http://localhost:8889
+TRACKING_DETECTOR_MODEL_ID=rfdetr-medium
 TRACKING_IDENTITY_STORE_URI=http://localhost:19530
-MEDIAMTX_API_USERNAME=backend-control
-MEDIAMTX_API_PASSWORD=backend-control-dev-secret
+METRICS_ENABLED=true
+METRICS_PORT=9109
 ```
 
-If you want Milvus Lite instead of Docker Milvus for development, leave `TRACKING_IDENTITY_STORE_URI` unset and the backend will use:
+Milvus options:
 
-```text
-runtime/milvus_tracking.db
+- if the backend runs on the host and you want Docker Milvus, use `http://localhost:19530`
+- if the backend runs in Docker and you want Docker Milvus, use `http://milvus:19530`
+- if you want Milvus Lite instead, leave the default local file path in place:
+  - [milvus_tracking.db](/home/karthik/Downloads/pipeline_opencv/backend/runtime/milvus_tracking.db)
+
+## Local Infrastructure
+
+[docker-compose.yaml](/home/karthik/Downloads/pipeline_opencv/backend/docker-compose.yaml) starts the backend support stack:
+
+- `mediamtx`
+- `etcd`
+- `minio`
+- `milvus`
+- `kafka`
+- `kafka-init`
+- `node-exporter`
+- `postgres-exporter`
+- `prometheus`
+- `grafana`
+
+If you run the backend on the host and want to use the Docker Milvus service instead of the local Lite file, set:
+
+```env
+TRACKING_IDENTITY_STORE_URI=http://localhost:19530
 ```
 
-## Operational Notes
+What Compose does not start:
 
-### MediaMTX Auth
+- PostgreSQL
+- the FastAPI application itself
 
-The backend expects MediaMTX Control API credentials to match:
+Bring up the support stack:
 
-- `MEDIAMTX_API_USERNAME`
-- `MEDIAMTX_API_PASSWORD`
+```bash
+cd backend
+docker compose up -d
+```
 
-Those credentials must be aligned between the backend and the MediaMTX container startup config.
+Run the backend:
 
-### Tracking Startup
-
-Tracking runtime services are created in [tracking_bootstrap.py](/home/karthik/Downloads/pipeline_opencv/backend/src/utils/tracking_bootstrap.py).
-
-Startup path:
-
-- start tracking Kafka producer
-- initialize Milvus identity store
-- create YOLO26 detector
-- create tracking manager
-- wire WebSocket + Kafka fanout publishers
-
-### Kafka Behavior
-
-The stream Kafka consumer is part of the main app and is started in [main.py](/home/karthik/Downloads/pipeline_opencv/backend/src/main.py).
-
-Tracking Kafka publishing is more defensive:
-
-- if Kafka is disabled, a null publisher is used
-- if the tracking producer cannot start, tracking still runs and WebSocket updates continue
+```bash
+cd backend
+uvicorn src.main:app --reload
+```
 
 ## Observability
 
-Prometheus metrics are exposed by the backend metrics server and scraped by the included Prometheus configuration.
+Application metrics and collectors live under [src/observability](/home/karthik/Downloads/pipeline_opencv/backend/src/observability).
 
-Observability files live under:
+Key files:
 
-- [observability/prometheus](/home/karthik/Downloads/pipeline_opencv/backend/observability/prometheus)
-- [observability/grafana](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana)
-- [observability/grafana/dashboards](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/dashboards)
+- [metrics.py](/home/karthik/Downloads/pipeline_opencv/backend/src/observability/metrics.py)
+- [metrics_server.py](/home/karthik/Downloads/pipeline_opencv/backend/src/observability/metrics_server.py)
+- [http_middleware.py](/home/karthik/Downloads/pipeline_opencv/backend/src/observability/http_middleware.py)
+- [system_metrics.py](/home/karthik/Downloads/pipeline_opencv/backend/src/observability/system_metrics.py)
+- [runtime_metrics.py](/home/karthik/Downloads/pipeline_opencv/backend/src/observability/runtime_metrics.py)
 
-## Project Layout
+Current observability stack:
+
+- backend Prometheus endpoint on `:9109`
+- MediaMTX metrics on `:9998`
+- Kafka JMX exporter on `:7071`
+- Node Exporter on `:9100`
+- Postgres Exporter on `:9187`
+- Milvus health and metrics on `:9091`
+- Prometheus on `:9090`
+- Grafana on `:3001`
+
+Prometheus configuration:
+
+- [prometheus.yml.tmpl](/home/karthik/Downloads/pipeline_opencv/backend/observability/prometheus/prometheus.yml.tmpl)
+- [alerts.yml](/home/karthik/Downloads/pipeline_opencv/backend/observability/prometheus/alerts.yml)
+
+Grafana dashboards:
+
+- [realtime_video_pipeline.json](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/dashboards/realtime_video_pipeline.json)
+- [platform_infrastructure.json](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/dashboards/platform_infrastructure.json)
+
+## Source Layout
 
 ```text
 backend/
-├── docker-compose.yaml
-├── model_repository/
-│   ├── cnn_transformers/
-│   ├── hf_vjepa2_finetune/
-│   └── yolo/
-├── observability/
-├── runtime/
-├── scripts/
-│   ├── migrations/
-│   └── sql/
 ├── src/
 │   ├── core/
 │   ├── models/
@@ -500,26 +533,88 @@ backend/
 │   │   │   └── trackers/
 │   │   └── tracking_kafka/
 │   └── utils/
-└── tests/
+├── scripts/
+│   └── migrations/
+├── observability/
+│   ├── grafana/
+│   ├── kafka_jmx/
+│   ├── postgres_exporter/
+│   └── prometheus/
+├── runtime/
+└── README.md
 ```
 
-## Quality Commands
+## Development
+
+Install dependencies:
 
 ```bash
-cd /home/karthik/Downloads/pipeline_opencv/backend
-.venv/bin/ruff check .
-PYTHONPATH=. MPLCONFIGDIR=/tmp/matplotlib .venv/bin/pylint src tests
-.venv/bin/pytest
+cd backend
+uv sync
 ```
 
-## Current Tracking Stack Summary
+Run the API:
 
-The backend no longer uses the old Deep SORT tracking algorithm.
+```bash
+cd backend
+uvicorn src.main:app --reload
+```
 
-Current production tracking stack:
+Quality checks:
 
-- person detector: YOLO26 ONNX
-- tracker: Roboflow Trackers ByteTrack
-- re-id embedder: mobilenet bottleneck appearance model
-- persistent identity store: Milvus
-- tracked stream output: MediaMTX `<stream_name>_tracked`
+```bash
+cd backend
+.venv/bin/python -m ruff check src tests
+PYLINTHOME=/tmp/pylint .venv/bin/python -m pylint src tests
+.venv/bin/python -m pytest
+```
+
+## Troubleshooting
+
+### FastAPI stops during startup
+
+Check these first:
+
+- `DATABASE_URL` points to a reachable PostgreSQL instance
+- `MEDIAMTX_API_BASE_URL` points to MediaMTX Control API
+- `TRACKING_IDENTITY_STORE_URI` matches how Milvus is running
+
+Common examples:
+
+- host-run backend with Docker Milvus:
+  - `TRACKING_IDENTITY_STORE_URI=http://localhost:19530`
+- Dockerized backend with Docker Milvus:
+  - `TRACKING_IDENTITY_STORE_URI=http://milvus:19530`
+
+### Stream start returns `503`
+
+Most common causes:
+
+- upstream RTSP source is unreachable
+- MediaMTX path is not ready
+- the camera source itself is offline
+
+### Tracked stream exists but the frontend shows raw video
+
+Make sure the frontend is opening:
+
+- `tracking.access_urls.webrtc_url`
+
+instead of:
+
+- `playback_url`
+- `access_urls.webrtc_url`
+
+### Prometheus or Grafana ports are not shown in `docker compose ps`
+
+`prometheus`, `grafana`, `node-exporter`, and `postgres-exporter` use host networking. Open them directly on the host:
+
+- Prometheus: `http://127.0.0.1:9090`
+- Grafana: `http://127.0.0.1:3001`
+
+## Notes
+
+- The backend currently uses Roboflow Inference plus Roboflow Trackers for tracking-by-detection.
+- The tracked stream is a second MediaMTX path, not a frontend overlay layer.
+- Kafka carries metadata and lifecycle events, not raw video.
+- Persistent cross-camera identity depends on Milvus availability. If Milvus is unavailable, tracking can continue with local track IDs but without stable persistent identity assignment.

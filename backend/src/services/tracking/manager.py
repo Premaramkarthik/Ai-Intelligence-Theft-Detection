@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from src.core.logger.logger import get_logger
@@ -18,7 +19,7 @@ from src.services.realtime_video.mediamtx import (
     build_stream_endpoints,
     build_tracking_stream_name,
 )
-from src.services.tracking.detectors.yolo26_detector import Yolo26PersonDetector
+from src.services.tracking.contracts import PersonDetector
 from src.services.tracking.identity.milvus_store import MilvusIdentityStore
 from src.services.tracking.updates import (
     NullTrackingUpdatePublisher,
@@ -29,7 +30,7 @@ from src.services.tracking.worker import RealtimeTrackingWorker
 TrackingWorkerFactory = Callable[
     [
         TrackingWorkerConfig,
-        Yolo26PersonDetector,
+        PersonDetector,
         MilvusIdentityStore,
         TrackingUpdatePublisher | None,
         Path | None,
@@ -39,7 +40,7 @@ TrackingWorkerFactory = Callable[
 
 
 @dataclass(slots=True)
-class TrackingSnapshot:
+class TrackingSnapshot:  # pylint: disable=too-many-instance-attributes
     """Frontend-safe runtime state for one tracking worker."""
 
     enabled: bool
@@ -52,13 +53,27 @@ class TrackingSnapshot:
     tracks: list[TrackingTrackSnapshot] = field(default_factory=list)
 
 
-class TrackingStreamManager:
+@dataclass(slots=True)
+class TrackingRuntimeSnapshot:  # pylint: disable=too-many-instance-attributes
+    """Runtime metrics-oriented snapshot for one tracking worker."""
+
+    is_registered: bool
+    is_process_alive: bool
+    reconnect_attempts: int
+    processed_frames: int = 0
+    published_frames: int = 0
+    active_tracks: int = 0
+    last_frame_at: datetime | None = None
+    last_error: str | None = None
+
+
+class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too-many-arguments,too-many-locals
     """Manage one annotated tracking worker per camera."""
 
     def __init__(
         self,
         *,
-        detector: Yolo26PersonDetector,
+        detector: PersonDetector,
         identity_store: MilvusIdentityStore,
         worker_factory: TrackingWorkerFactory | None = None,
         ffmpeg_binary: str,
@@ -79,7 +94,7 @@ class TrackingStreamManager:
         identity_sync_interval_seconds: float = 1.0,
         publish_update_interval_seconds: float = 0.5,
         update_publisher: TrackingUpdatePublisher | None = None,
-    ) -> None:
+    ) -> None:  # pylint: disable=too-many-arguments,too-many-locals
         self._detector = detector
         self._identity_store = identity_store
         self._worker_factory = worker_factory or RealtimeTrackingWorker
@@ -149,7 +164,14 @@ class TrackingStreamManager:
             self._embedder_weights_path,
         )
         self._workers[camera_id] = worker
-        self._tasks[camera_id] = asyncio.create_task(worker.run())
+        task = asyncio.create_task(worker.run(), name=f"tracking-worker:{camera_id}")
+        task.add_done_callback(
+            lambda completed_task, tracked_camera_id=camera_id: self._handle_worker_exit(
+                tracked_camera_id,
+                completed_task,
+            ),
+        )
+        self._tasks[camera_id] = task
         self._logger.info("Started tracking worker for %s.", camera_id)
 
     async def stop_stream(self, camera_id: str) -> None:
@@ -178,6 +200,36 @@ class TrackingStreamManager:
 
         await self.stop_all()
         self._identity_store.close()
+
+    def _handle_worker_exit(
+        self,
+        camera_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        """Clean up completed tracking workers so stale failed tasks do not linger."""
+
+        self._workers.pop(camera_id, None)
+        self._tasks.pop(camera_id, None)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:  # pylint: disable=broad-except
+            _log_unhandled_tracking_exception(self._logger, camera_id, exc)
+
+    def active_cameras(self) -> list[str]:
+        """Return camera identifiers that currently have active tracking workers."""
+
+        return sorted(
+            camera_id
+            for camera_id, task in self._tasks.items()
+            if not task.done()
+        )
+
+    def active_worker_count(self) -> int:
+        """Return the number of currently active tracking workers."""
+
+        return len(self.active_cameras())
 
     def stream_endpoints(self, source_stream_name: str) -> MediaMtxStreamEndpoints:
         """Return the annotated MediaMTX endpoints for a source stream."""
@@ -217,6 +269,42 @@ class TrackingStreamManager:
             tracks=list(metrics.tracks),
         )
 
+    def get_runtime_snapshot(self, camera_id: str) -> TrackingRuntimeSnapshot:
+        """Return a metrics-focused snapshot for one tracking worker."""
+
+        worker = self._workers.get(camera_id)
+        task = self._tasks.get(camera_id)
+        if worker is None or task is None:
+            return TrackingRuntimeSnapshot(
+                is_registered=False,
+                is_process_alive=False,
+                reconnect_attempts=0,
+            )
+
+        metrics = _safe_metrics(worker)
+        return TrackingRuntimeSnapshot(
+            is_registered=True,
+            is_process_alive=not task.done(),
+            reconnect_attempts=metrics.reconnect_attempts,
+            processed_frames=metrics.processed_frames,
+            published_frames=metrics.published_frames,
+            active_tracks=metrics.active_tracks,
+            last_frame_at=metrics.last_frame_at,
+            last_error=metrics.last_error,
+        )
+
 
 def _safe_metrics(worker: RealtimeTrackingWorker) -> TrackingWorkerMetrics:
     return worker.metrics()
+
+
+def _log_unhandled_tracking_exception(
+    logger,
+    camera_id: str,
+    exc: Exception,
+) -> None:
+    logger.exception(
+        "Tracking worker task for %s exited with an unhandled exception: %s",
+        camera_id,
+        exc,
+    )

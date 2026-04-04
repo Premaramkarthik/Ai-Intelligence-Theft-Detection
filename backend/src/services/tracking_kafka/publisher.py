@@ -1,7 +1,10 @@
+"""Kafka publisher for tracking metadata snapshots."""
+
 from __future__ import annotations
 
 from aiokafka import AIOKafkaProducer
 
+from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
 from src.schemas.tracking_events import (
     TrackingKafkaEventPayload,
     TrackingKafkaTrackPayload,
@@ -9,12 +12,20 @@ from src.schemas.tracking_events import (
 from src.services.realtime_video.contracts import TrackingTrackSnapshot
 
 
-class KafkaTrackingUpdatePublisher:
+class KafkaTrackingUpdatePublisher:  # pylint: disable=too-few-public-methods
     """Publish tracking snapshots to Kafka for downstream consumers."""
 
-    def __init__(self, producer: AIOKafkaProducer, topic: str) -> None:
+    def __init__(
+        self,
+        producer: AIOKafkaProducer,
+        topic: str,
+        metrics_recorder: MetricsRecorder | None = None,
+    ) -> None:
+        """Create a Kafka publisher for tracking update payloads."""
+
         self._producer = producer
         self._topic = topic
+        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
 
     async def publish(
         self,
@@ -24,6 +35,8 @@ class KafkaTrackingUpdatePublisher:
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
     ) -> None:
+        """Publish one camera-scoped tracking snapshot to Kafka."""
+
         payload = TrackingKafkaEventPayload(
             camera_id=camera_id,
             stream_name=stream_name,
@@ -44,8 +57,13 @@ class KafkaTrackingUpdatePublisher:
                 for track in tracks
             ],
         )
-        await self._producer.send_and_wait(
-            self._topic,
-            payload.model_dump(mode="json"),
-            key=camera_id,
-        )
+        try:
+            await self._producer.send_and_wait(
+                self._topic,
+                payload.model_dump(mode="json"),
+                key=camera_id,
+            )
+        except Exception:
+            self._metrics_recorder.increment_tracking_kafka_publish_failures()
+            raise
+        self._metrics_recorder.increment_tracking_kafka_messages_published()

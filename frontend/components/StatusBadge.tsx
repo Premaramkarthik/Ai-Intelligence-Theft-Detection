@@ -6,12 +6,12 @@ interface StatusBadgeProps {
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  active: "border-emerald-400/30 bg-emerald-500/20 text-emerald-300",
-  running: "border-emerald-400/30 bg-emerald-500/20 text-emerald-300",
-  playing: "border-emerald-400/30 bg-emerald-500/20 text-emerald-300",
-  starting: "border-sky-400/30 bg-sky-500/20 text-sky-300",
-  loading: "border-sky-400/30 bg-sky-500/20 text-sky-300",
-  buffering: "border-sky-400/30 bg-sky-500/20 text-sky-300",
+  active: "border-teal-300/30 bg-teal-400/15 text-teal-200",
+  running: "border-teal-300/30 bg-teal-400/15 text-teal-200",
+  playing: "border-teal-300/30 bg-teal-400/15 text-teal-200",
+  starting: "border-cyan-300/30 bg-cyan-400/15 text-cyan-100",
+  loading: "border-cyan-300/30 bg-cyan-400/15 text-cyan-100",
+  buffering: "border-cyan-300/30 bg-cyan-400/15 text-cyan-100",
   reconnecting: "border-amber-400/30 bg-amber-500/20 text-amber-300",
   recovering: "border-amber-400/30 bg-amber-500/20 text-amber-300",
   degraded: "border-amber-400/30 bg-amber-500/20 text-amber-300",

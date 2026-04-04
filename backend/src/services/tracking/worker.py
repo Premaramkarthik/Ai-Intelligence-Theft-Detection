@@ -25,7 +25,7 @@ from src.services.realtime_video.frame_worker import (
     StreamDeadError,
     _calculate_backoff_seconds,
 )
-from src.services.tracking.detectors.yolo26_detector import Yolo26PersonDetector
+from src.services.tracking.contracts import PersonDetector
 from src.services.tracking.identity.milvus_store import MilvusIdentityStore
 from src.services.tracking.reid.embedder import TrackingReIdEmbedder
 from src.services.tracking.trackers.bytetrack import (
@@ -48,13 +48,13 @@ class _PersistentTrackIdentity:
     last_seen_ns: int
 
 
-class RealtimeTrackingWorker:
+class RealtimeTrackingWorker:  # pylint: disable=too-many-instance-attributes,too-many-arguments,too-many-positional-arguments
     """Decode, track, annotate, and republish one camera stream."""
 
     def __init__(
         self,
         config: TrackingWorkerConfig,
-        detector: Yolo26PersonDetector,
+        detector: PersonDetector,
         identity_store: MilvusIdentityStore,
         update_publisher: TrackingUpdatePublisher | None = None,
         embedder_weights_path: str | None = None,
@@ -186,12 +186,20 @@ class RealtimeTrackingWorker:
     def _track_frame(self, frame: np.ndarray) -> list[TrackingTrackSnapshot]:
         detections = self._detector.detect(frame)
         tracks = self._tracker.update(detections)
-        prepared_tracks = _prepare_tracks_for_embedding(frame, tracks)
+        prepared_tracks = _prepare_tracks_for_embedding(
+            frame,
+            tracks,
+            track_ids_requiring_embedding={
+                track.track_id
+                for track in tracks
+                if self._should_refresh_identity(track.track_id)
+            },
+        )
         embeddings = self._reid_embedder.embed(
             [
                 prepared_track.crop
                 for prepared_track in prepared_tracks
-                if prepared_track.crop is not None
+                if prepared_track.crop is not None and prepared_track.needs_identity_refresh
             ],
         )
         embedding_index = 0
@@ -199,7 +207,7 @@ class RealtimeTrackingWorker:
         for prepared_track in prepared_tracks:
             persistent_id = None
             similarity = None
-            if prepared_track.crop is not None:
+            if prepared_track.crop is not None and prepared_track.needs_identity_refresh:
                 identity = self._upsert_identity(
                     prepared_track.track.track_id,
                     embeddings[embedding_index],
@@ -239,6 +247,14 @@ class RealtimeTrackingWorker:
         self._record_processed_frame(visible_tracks)
         return visible_tracks
 
+    def _should_refresh_identity(self, local_track_id: str) -> bool:
+        existing = self._persistent_identities.get(local_track_id)
+        if existing is None:
+            return True
+        if self._identity_sync_interval_ns <= 0:
+            return False
+        return monotonic_ns() - existing.last_synced_ns >= self._identity_sync_interval_ns
+
     def _upsert_identity(
         self,
         local_track_id: str,
@@ -247,17 +263,10 @@ class RealtimeTrackingWorker:
         now_ns = monotonic_ns()
         existing = self._persistent_identities.get(local_track_id)
         if existing is None:
-            match = self._identity_store.resolve_identity(
-                camera_id=self._config.camera_id,
-                stream_name=self._config.source_stream_name,
+            identity = self._resolve_new_identity(
                 local_track_id=local_track_id,
-                embedding=feature,
-            )
-            identity = _PersistentTrackIdentity(
-                persistent_id=match.identity_id,
-                similarity=match.similarity,
-                last_synced_ns=now_ns,
-                last_seen_ns=now_ns,
+                feature=feature,
+                now_ns=now_ns,
             )
             self._persistent_identities[local_track_id] = identity
             return identity
@@ -266,13 +275,29 @@ class RealtimeTrackingWorker:
             self._identity_sync_interval_ns > 0
             and now_ns - existing.last_synced_ns >= self._identity_sync_interval_ns
         ):
-            self._identity_store.refresh_identity(
-                identity_id=existing.persistent_id,
-                camera_id=self._config.camera_id,
-                stream_name=self._config.source_stream_name,
-                local_track_id=local_track_id,
-                embedding=feature,
-            )
+            if existing.persistent_id.startswith("local-"):
+                existing = self._resolve_new_identity(
+                    local_track_id=local_track_id,
+                    feature=feature,
+                    now_ns=now_ns,
+                )
+                self._persistent_identities[local_track_id] = existing
+                return existing
+            try:
+                self._identity_store.refresh_identity(
+                    identity_id=existing.persistent_id,
+                    camera_id=self._config.camera_id,
+                    stream_name=self._config.source_stream_name,
+                    local_track_id=local_track_id,
+                    embedding=feature,
+                )
+            except Exception as exc:  # pylint: disable=broad-except
+                self._logger.warning(
+                    "Failed to refresh persistent identity for %s/%s: %s",
+                    self._config.camera_id,
+                    local_track_id,
+                    exc,
+                )
             existing = replace(
                 existing,
                 last_synced_ns=now_ns,
@@ -282,6 +307,40 @@ class RealtimeTrackingWorker:
             existing = replace(existing, last_seen_ns=now_ns)
         self._persistent_identities[local_track_id] = existing
         return existing
+
+    def _resolve_new_identity(
+        self,
+        *,
+        local_track_id: str,
+        feature: np.ndarray,
+        now_ns: int,
+    ) -> _PersistentTrackIdentity:
+        try:
+            match = self._identity_store.resolve_identity(
+                camera_id=self._config.camera_id,
+                stream_name=self._config.source_stream_name,
+                local_track_id=local_track_id,
+                embedding=feature,
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            self._logger.warning(
+                "Failed to resolve persistent identity for %s/%s: %s",
+                self._config.camera_id,
+                local_track_id,
+                exc,
+            )
+            return _PersistentTrackIdentity(
+                persistent_id=f"local-{local_track_id}",
+                similarity=None,
+                last_synced_ns=now_ns,
+                last_seen_ns=now_ns,
+            )
+        return _PersistentTrackIdentity(
+            persistent_id=match.identity_id,
+            similarity=match.similarity,
+            last_synced_ns=now_ns,
+            last_seen_ns=now_ns,
+        )
 
     def _touch_identity(
         self,
@@ -407,7 +466,7 @@ class RealtimeTrackingWorker:
         )
 
 
-class _AnnotatedStreamPublisher:
+class _AnnotatedStreamPublisher:  # pylint: disable=too-many-arguments
     """Publish annotated raw frames to MediaMTX through FFmpeg."""
 
     def __init__(
@@ -419,7 +478,7 @@ class _AnnotatedStreamPublisher:
         height: int,
         fps: float,
         transport: str,
-    ) -> None:
+    ) -> None:  # pylint: disable=too-many-arguments
         # The subprocess is intentionally long-lived because it owns
         # the annotated RTSP publish session.
         # pylint: disable=consider-using-with
@@ -440,6 +499,8 @@ class _AnnotatedStreamPublisher:
         )
 
     def matches(self, width: int, height: int) -> bool:
+        """Return whether the publisher matches the requested frame geometry."""
+
         return (
             self._width == width
             and self._height == height
@@ -447,11 +508,15 @@ class _AnnotatedStreamPublisher:
         )
 
     def publish(self, frame: np.ndarray) -> None:
+        """Push one annotated frame into the FFmpeg subprocess."""
+
         if self._process.stdin is None or self._process.poll() is not None:
             raise RuntimeError("Annotated FFmpeg publisher is not available.")
         self._process.stdin.write(frame.tobytes())
 
     def close(self) -> None:
+        """Terminate the FFmpeg subprocess and close its stdin pipe."""
+
         if self._process.stdin is not None:
             self._process.stdin.close()
         if self._process.poll() is None:
@@ -464,10 +529,14 @@ class _AnnotatedStreamPublisher:
 
 
 def _import_av() -> Any:
+    """Import PyAV lazily for the tracking session worker."""
+
     return importlib.import_module("av")
 
 
 def _color_for_identity(identity: str) -> tuple[int, int, int]:
+    """Derive a stable highlight color for a track or persistent identity."""
+
     seed = abs(hash(identity))
     return (
         64 + (seed % 160),
@@ -483,12 +552,15 @@ class _PreparedTrackedPerson:
     top: int
     width: int
     height: int
+    needs_identity_refresh: bool
     crop: np.ndarray | None
 
 
 def _prepare_tracks_for_embedding(
     frame: np.ndarray,
     tracks: list[TrackedPerson],
+    *,
+    track_ids_requiring_embedding: set[str],
 ) -> list[_PreparedTrackedPerson]:
     prepared_tracks: list[_PreparedTrackedPerson] = []
     for track in tracks:
@@ -501,6 +573,7 @@ def _prepare_tracks_for_embedding(
         )
         if width <= 0 or height <= 0:
             continue
+        needs_identity_refresh = track.track_id in track_ids_requiring_embedding
         prepared_tracks.append(
             _PreparedTrackedPerson(
                 track=track,
@@ -508,6 +581,7 @@ def _prepare_tracks_for_embedding(
                 top=top,
                 width=width,
                 height=height,
+                needs_identity_refresh=needs_identity_refresh,
                 crop=crop_ltwh(frame, left, top, width, height),
             ),
         )

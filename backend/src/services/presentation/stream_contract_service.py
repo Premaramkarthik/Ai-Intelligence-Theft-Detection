@@ -183,3 +183,4 @@ class StreamContractService:
             parsed._replace(scheme=scheme, path="", params="", query="", fragment="")
         )
         return f"{websocket_base.rstrip('/')}/streams/ws/updates"
+

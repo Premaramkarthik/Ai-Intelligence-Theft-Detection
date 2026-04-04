@@ -1,3 +1,5 @@
+"""Kafka producer lifecycle management for tracking metadata events."""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +9,7 @@ from aiokafka.errors import KafkaError
 
 from src.core.config import Settings
 from src.core.logger.logger import get_logger
+from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
 from src.services.tracking.updates import NullTrackingUpdatePublisher, TrackingUpdatePublisher
 from src.services.tracking_kafka.publisher import KafkaTrackingUpdatePublisher
 
@@ -24,14 +27,23 @@ def _serialize_kafka_value(value: object) -> bytes:
 class TrackingKafkaProducerService:
     """Manage the Kafka producer used for tracking metadata events."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        metrics_recorder: MetricsRecorder | None = None,
+    ) -> None:
+        """Create the Kafka producer service used by the tracking pipeline."""
+
         self._settings = settings
         self._logger = get_logger(__name__)
+        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
         self._producer: AIOKafkaProducer | None = None
         self._healthy = not settings.kafka_enabled
         self._last_error: str | None = None
 
     async def start(self) -> None:
+        """Start the Kafka producer when Kafka integration is enabled."""
+
         if not self._settings.kafka_enabled:
             return
 
@@ -57,26 +69,35 @@ class TrackingKafkaProducerService:
         self._last_error = None
 
     async def stop(self) -> None:
+        """Stop the Kafka producer if it has been started."""
+
         if self._producer is None:
             return
         await self._producer.stop()
         self._producer = None
 
     def publisher(self) -> TrackingUpdatePublisher:
+        """Return a tracking update publisher backed by the current producer."""
+
         if self._producer is None:
             return NullTrackingUpdatePublisher()
         return KafkaTrackingUpdatePublisher(
             self._producer,
             self._settings.kafka_topic_camera_tracking_updates,
+            self._metrics_recorder,
         )
 
     def health_snapshot(self) -> dict[str, str | bool | None]:
+        """Return a health summary consumed by health checks and metrics."""
+
         return {
             "healthy": self._healthy,
             "last_error": self._last_error,
         }
 
     async def _safe_stop_producer(self, producer: AIOKafkaProducer) -> None:
+        """Stop a partially started producer without masking the original failure."""
+
         try:
             await producer.stop()
         except (KafkaError, OSError, ConnectionError) as exc:

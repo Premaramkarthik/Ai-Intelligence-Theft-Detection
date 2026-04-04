@@ -9,3 +9,9 @@ datasources:
     url: http://127.0.0.1:9090
     isDefault: true
     editable: true
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://127.0.0.1:3100
+    editable: true

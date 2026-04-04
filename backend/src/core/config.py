@@ -1,3 +1,5 @@
+"""Runtime configuration for the backend services."""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -10,6 +12,8 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables and defaults."""
+
     model_config = SettingsConfigDict(
         env_file=BACKEND_ROOT / ".env",
         env_file_encoding="utf-8",
@@ -56,7 +60,7 @@ class Settings(BaseSettings):
     mediamtx_webrtc_base_url: str = "http://localhost:8889"
     realtime_frame_sample_fps: float = 5.0
     realtime_frame_queue_size: int = 512
-    realtime_max_reconnect_attempts: int = 8
+    realtime_max_reconnect_attempts: int = 5
     metrics_enabled: bool = True
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9109
@@ -73,12 +77,13 @@ class Settings(BaseSettings):
 
     validation_timeout_seconds: int = 8
     tracking_enabled_by_default: bool = True
-    tracking_sample_fps: float = 5.0
-    tracking_output_fps: float = 5.0
-    tracking_detector_model_path: Path = BACKEND_ROOT / "model_repository" / "yolo" / "yolo26n.onnx"
-    tracking_detector_input_size: int = 640
-    tracking_detector_confidence_threshold: float = 0.35
-    tracking_detector_iou_threshold: float = 0.45
+    tracking_sample_fps: float = 8.0
+    tracking_output_fps: float = 8.0
+    tracking_detector_model_id: str = "rfdetr-medium"
+    tracking_detector_confidence_threshold: float = 0.45
+    tracking_detector_iou_threshold: float = 0.35
+    tracking_detector_target_class_name: str = "person"
+    tracking_detector_api_key: SecretStr | None = None
     tracking_embedder_name: str = "mobilenet"
     tracking_embedder_weights_path: Path = (
         BACKEND_ROOT
@@ -89,27 +94,29 @@ class Settings(BaseSettings):
         / "weights"
         / "mobilenetv2_bottleneck_wts.pt"
     )
-    tracking_tracker_lost_track_buffer: int = 30
+    tracking_tracker_lost_track_buffer: int = 10
     tracking_tracker_activation_threshold: float = 0.7
     tracking_tracker_minimum_consecutive_frames: int = 2
-    tracking_tracker_minimum_iou_threshold: float = 0.1
-    tracking_tracker_high_conf_det_threshold: float = 0.6
+    tracking_tracker_minimum_iou_threshold: float = 0.3
+    tracking_tracker_high_conf_det_threshold: float = 0.5
     tracking_identity_store_uri: str = str(BACKEND_ROOT / "runtime" / "milvus_tracking.db")
     tracking_identity_store_token: SecretStr | None = None
     tracking_identity_collection_name: str = "person_tracking_identities"
     tracking_identity_dimension: int = 1280
+    tracking_identity_store_timeout_seconds: float = 5.0
     tracking_identity_similarity_threshold: float = 0.75
     tracking_identity_search_limit: int = 5
     tracking_identity_sync_interval_seconds: float = 1.0
     tracking_publish_update_interval_seconds: float = 0.5
     tracking_stream_suffix: str = "tracked"
-
     log_level: str = "INFO"
     json_logs: bool = False
 
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
+        """Normalize comma-separated CORS origins into a list."""
+
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
@@ -117,6 +124,8 @@ class Settings(BaseSettings):
     @field_validator("debug", mode="before")
     @classmethod
     def parse_debug_flag(cls, value: bool | str) -> bool:
+        """Parse boolean-like debug environment values."""
+
         if isinstance(value, bool):
             return value
         normalized = value.strip().lower()
@@ -147,7 +156,6 @@ class Settings(BaseSettings):
         return BACKEND_ROOT / path
 
     @field_validator(
-        "tracking_detector_model_path",
         "tracking_embedder_weights_path",
         mode="before",
     )
@@ -162,13 +170,19 @@ class Settings(BaseSettings):
 
     @property
     def sql_dir(self) -> Path:
+        """Return the directory containing parameterized SQL files."""
+
         return BACKEND_ROOT / "scripts" / "sql"
 
     @property
     def migration_dir(self) -> Path:
+        """Return the directory containing database migrations."""
+
         return BACKEND_ROOT / "scripts" / "migrations"
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    """Return the cached application settings instance."""
+
     return Settings()

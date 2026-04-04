@@ -1,10 +1,14 @@
+"""Bootstrap helpers for tracking runtime services."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from src.core.config import Settings
+from src.core.logger.logger import get_logger
+from src.observability.metrics import MetricsRecorder
 from src.services.presentation.websocket_manager import WebSocketManager
-from src.services.tracking.detectors.yolo26_detector import Yolo26PersonDetector
+from src.services.tracking.detectors.inference_detector import InferencePersonDetector
 from src.services.tracking.identity.milvus_store import MilvusIdentityStore
 from src.services.tracking.manager import TrackingStreamManager
 from src.services.tracking.updates import (
@@ -16,14 +20,22 @@ from src.services.tracking_kafka.service import TrackingKafkaProducerService
 
 @dataclass(slots=True)
 class TrackingRuntimeServices:
+    """Resolved tracking services shared with the FastAPI lifespan."""
+
     tracking_manager: TrackingStreamManager
     tracking_kafka_producer: TrackingKafkaProducerService
+
+
+LOGGER = get_logger(__name__)
 
 
 async def create_tracking_runtime_services(
     settings: Settings,
     websocket_manager: WebSocketManager,
+    metrics_recorder: MetricsRecorder,
 ) -> TrackingRuntimeServices:
+    """Build tracking services without blocking API startup on Milvus warmup."""
+
     tracking_kafka_producer = TrackingKafkaProducerService(settings)
     await tracking_kafka_producer.start()
 
@@ -31,6 +43,7 @@ async def create_tracking_runtime_services(
         uri=settings.tracking_identity_store_uri,
         collection_name=settings.tracking_identity_collection_name,
         embedding_dimension=settings.tracking_identity_dimension,
+        timeout_seconds=settings.tracking_identity_store_timeout_seconds,
         similarity_threshold=settings.tracking_identity_similarity_threshold,
         search_limit=settings.tracking_identity_search_limit,
         token=(
@@ -38,15 +51,28 @@ async def create_tracking_runtime_services(
             if settings.tracking_identity_store_token is not None
             else None
         ),
+        metrics_recorder=metrics_recorder,
     )
-    identity_store.ensure_ready()
+    try:
+        identity_store.ensure_ready()
+    except Exception as exc:  # pylint: disable=broad-except
+        LOGGER.warning(
+            "Tracking identity store is unavailable during startup; "
+            "the backend will continue without blocking API startup: %s",
+            exc,
+        )
 
     tracking_manager = TrackingStreamManager(
-        detector=Yolo26PersonDetector(
-            settings.tracking_detector_model_path,
-            input_size=settings.tracking_detector_input_size,
+        detector=InferencePersonDetector(
+            settings.tracking_detector_model_id,
             confidence_threshold=settings.tracking_detector_confidence_threshold,
             iou_threshold=settings.tracking_detector_iou_threshold,
+            target_class_name=settings.tracking_detector_target_class_name,
+            api_key=(
+                settings.tracking_detector_api_key.get_secret_value()
+                if settings.tracking_detector_api_key is not None
+                else None
+            ),
         ),
         identity_store=identity_store,
         ffmpeg_binary=settings.ffmpeg_binary,

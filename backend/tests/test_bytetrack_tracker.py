@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from src.services.tracking.detectors.yolo26_detector import PersonDetection
+from src.services.tracking.contracts import PersonDetection
 from src.services.tracking.trackers.bytetrack import RoboflowByteTrackPersonTracker
 
 

@@ -129,3 +129,19 @@ class TrackingWorkerConfig:
     open_timeout_seconds: float = 5.0
     read_timeout_seconds: float = 5.0
     max_reconnect_attempts: int = 8
+
+
+@dataclass(slots=True)
+class InferenceTrackSnapshot:
+    """Frontend-safe summary of one inference-labelled tracked person."""
+
+    track_id: str
+    persistent_id: str | None
+    label: str
+    confidence: float
+    left: int
+    top: int
+    width: int
+    height: int
+    model_name: str
+    timestamp: datetime

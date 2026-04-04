@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 
+import { TrackingCanvasOverlay } from "@/components/InferenceCanvasOverlay";
 import { PlayerOverlay } from "@/components/PlayerOverlay";
 import { StatusBadge } from "@/components/StatusBadge";
 import { VideoPlayer } from "@/components/VideoPlayer";
@@ -13,6 +15,7 @@ import { useStreamStore } from "@/store/streamStore";
 import type {
   BackendLifecycleState,
   CameraResponse,
+  PlaybackViewMode,
   StreamCommandState,
   StreamInfoResponse,
 } from "@/types/stream";
@@ -65,18 +68,43 @@ function getControlLabel(
   return commandState === "refreshing" ? "Refreshing..." : "Refresh state";
 }
 
+function sourceButtonClasses(
+  isActive: boolean,
+  isDisabled: boolean,
+): string {
+  if (isActive) {
+    return "border-teal-300/40 bg-teal-400/15 text-teal-100";
+  }
+  if (isDisabled) {
+    return "cursor-not-allowed border-white/5 bg-white/[0.02] text-slate-500";
+  }
+  return "border-white/10 bg-white/[0.03] text-slate-200 hover:border-white/20 hover:bg-white/[0.06]";
+}
+
+function getSourceDescription(
+  playbackViewMode: PlaybackViewMode,
+): string {
+  return playbackViewMode === "tracked"
+    ? "Showing annotated tracking video with IDs burned into the stream."
+    : "Showing the raw camera feed without tracking overlays.";
+}
+
 export function CameraDetail({
   cameraId,
   initialCamera,
   initialStreamInfo,
 }: CameraDetailProps) {
   const router = useRouter();
+  const [trackingOverlayEnabled, setTrackingOverlayEnabled] = useState(true);
   const setCommandState = useStreamStore((state) => state.setCommandState);
   const clearCommandState = useStreamStore((state) => state.clearCommandState);
   const removeCamera = useStreamStore((state) => state.removeCamera);
   const {
     camera,
     streamInfo,
+    trackingInfo,
+    videoElement,
+    playbackViewMode,
     backendLifecycle,
     commandState,
     commandMessage,
@@ -87,6 +115,8 @@ export function CameraDetail({
     videoRef,
     refresh,
     retryPlayback,
+    setPlaybackViewMode,
+    isTrackedPlaybackAvailable,
     start,
     forceRestart,
     stop,
@@ -94,8 +124,11 @@ export function CameraDetail({
     initialCamera,
     initialStreamInfo,
     autoStart: true,
-    sampleFps: 1,
+    sampleFps: 5,
   });
+
+  const overlayEligible =
+    playbackViewMode === "raw" && Boolean(trackingInfo?.enabled);
 
   const startDisabled = !canStartAction(backendLifecycle, commandState);
   const stopDisabled = !canStopAction(backendLifecycle, commandState);
@@ -131,7 +164,7 @@ export function CameraDetail({
         <div className="space-y-2">
           <Link
             href="/dashboard"
-            className="text-sm font-medium text-sky-300 transition-all duration-300 ease-out hover:text-sky-200"
+            className="text-sm font-medium text-cyan-300 transition-all duration-300 ease-out hover:text-cyan-200"
           >
             ← Back to dashboard
           </Link>
@@ -152,20 +185,68 @@ export function CameraDetail({
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.6fr)_minmax(340px,0.9fr)]">
         <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex rounded-full border border-white/10 bg-slate-950/65 p-1">
+              <button
+                type="button"
+                onClick={() => setPlaybackViewMode("raw")}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition-all duration-300 ease-out ${sourceButtonClasses(
+                  playbackViewMode === "raw",
+                  false,
+                )}`}
+              >
+                Raw feed
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlaybackViewMode("tracked")}
+                disabled={!isTrackedPlaybackAvailable}
+                className={`rounded-full px-4 py-2 text-sm font-semibold transition-all duration-300 ease-out ${sourceButtonClasses(
+                  playbackViewMode === "tracked",
+                  !isTrackedPlaybackAvailable,
+                )}`}
+              >
+                Tracked feed
+              </button>
+            </div>
+            {overlayEligible ? (
+              <button
+                type="button"
+                onClick={() => setTrackingOverlayEnabled((value) => !value)}
+                className={`rounded-full border px-4 py-2 text-sm font-semibold transition-all duration-300 ease-out ${
+                  trackingOverlayEnabled
+                    ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/20"
+                    : "border-white/10 bg-white/[0.03] text-slate-200 hover:border-white/20 hover:bg-white/[0.06]"
+                }`}
+              >
+                {trackingOverlayEnabled ? "Tracking overlay on" : "Tracking overlay off"}
+              </button>
+            ) : null}
+            <p className="text-sm text-slate-400">
+              {getSourceDescription(playbackViewMode)}
+            </p>
+          </div>
           <VideoPlayer
             videoRef={videoRef}
             overlay={
-              <PlayerOverlay
-                backendLifecycle={backendLifecycle}
-                commandState={commandState}
-                commandMessage={commandMessage}
-                backendErrorMessage={streamInfo?.last_error_message ?? null}
-                playbackState={playbackState}
-                playbackProtocol={playbackProtocol}
-                playbackMessage={playbackMessage}
-                playbackError={playbackError}
-                onRetry={retryPlayback}
-              />
+              <>
+                <TrackingCanvasOverlay
+                  enabled={overlayEligible && trackingOverlayEnabled}
+                  videoElement={videoElement}
+                  tracks={trackingInfo?.tracks ?? []}
+                />
+                <PlayerOverlay
+                  backendLifecycle={backendLifecycle}
+                  commandState={commandState}
+                  commandMessage={commandMessage}
+                  backendErrorMessage={streamInfo?.last_error_message ?? null}
+                  playbackState={playbackState}
+                  playbackProtocol={playbackProtocol}
+                  playbackMessage={playbackMessage}
+                  playbackError={playbackError}
+                  onRetry={retryPlayback}
+                />
+              </>
             }
           />
           <div className="flex flex-wrap gap-3">
@@ -173,7 +254,7 @@ export function CameraDetail({
               type="button"
               onClick={start}
               disabled={startDisabled}
-              className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-all duration-300 ease-out hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 transition-all duration-300 ease-out hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {getControlLabel("start", commandState)}
             </button>
@@ -181,7 +262,7 @@ export function CameraDetail({
               type="button"
               onClick={forceRestart}
               disabled={restartDisabled}
-              className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition-all duration-300 ease-out hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-all duration-300 ease-out hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {getControlLabel("restart", commandState)}
             </button>
@@ -211,7 +292,7 @@ export function CameraDetail({
             </button>
           </div>
           {commandMessage ? (
-            <div className="rounded-2xl border border-sky-400/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-100 transition-all duration-300 ease-out">
+            <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100 transition-all duration-300 ease-out">
               {commandMessage}
             </div>
           ) : null}
@@ -224,7 +305,7 @@ export function CameraDetail({
         </div>
 
         <aside className="space-y-5">
-          <div className="rounded-[28px] border border-white/8 bg-slate-800/80 p-5">
+          <div className="rounded-[28px] border border-white/8 bg-[linear-gradient(160deg,rgba(17,32,42,0.92),rgba(9,18,24,0.92))] p-5">
             <h2 className="text-lg font-semibold text-slate-50">Playback contract</h2>
             <dl className="mt-4 space-y-4 text-sm text-slate-300">
               <div>
@@ -245,6 +326,22 @@ export function CameraDetail({
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Tracked WebRTC
+                </dt>
+                <dd className="mt-2 break-all text-slate-100">
+                  {trackingInfo?.access_urls?.webrtc_url ?? "Tracked stream not ready yet"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Tracked HLS
+                </dt>
+                <dd className="mt-2 break-all text-slate-100">
+                  {trackingInfo?.access_urls?.hls_url ?? "Tracked stream not ready yet"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
                   WebSocket
                 </dt>
                 <dd className="mt-2 break-all text-slate-100">
@@ -253,6 +350,72 @@ export function CameraDetail({
               </div>
             </dl>
           </div>
+
+
+          <div className="rounded-[28px] border border-white/8 bg-[linear-gradient(160deg,rgba(17,32,42,0.92),rgba(9,18,24,0.92))] p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-50">Tracked objects</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  Live metadata from the backend tracking contract.
+                </p>
+              </div>
+              <StatusBadge
+                label={`${trackingInfo?.active_tracks ?? 0} active`}
+                status={
+                  trackingInfo?.enabled && trackingInfo.is_process_alive
+                    ? "running"
+                    : "stopped"
+                }
+              />
+            </div>
+
+            {trackingInfo?.tracks.length ? (
+              <div className="mt-4 space-y-3">
+                {trackingInfo.tracks.map((track) => (
+                  <div
+                    key={`${track.track_id}-${track.persistent_id ?? "pending"}`}
+                    className="rounded-2xl border border-white/8 bg-slate-900/60 px-4 py-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-100">
+                          Track {track.track_id}
+                        </p>
+                        <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">
+                          {track.class_name ?? "person"}
+                        </p>
+                      </div>
+                      <div className="text-right text-sm text-slate-300">
+                        <p>
+                          Persistent ID:{" "}
+                          <span className="font-medium text-emerald-200">
+                            {track.persistent_id ?? "Assigning..."}
+                          </span>
+                        </p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Confidence {track.confidence.toFixed(2)}
+                          {track.similarity !== null
+                            ? ` • similarity ${track.similarity.toFixed(2)}`
+                            : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <p className="mt-3 text-xs text-slate-400">
+                      BBox: x={track.left}, y={track.top}, w={track.width}, h={track.height}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-slate-900/40 px-4 py-5 text-sm text-slate-400">
+                {trackingInfo?.enabled
+                  ? "Tracking is enabled. Person IDs will appear here when detections are active."
+                  : "Tracking is not active for this stream yet."}
+              </div>
+            )}
+          </div>
+
         </aside>
       </div>
     </section>

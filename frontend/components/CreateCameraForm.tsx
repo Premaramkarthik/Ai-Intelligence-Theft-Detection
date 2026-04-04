@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import { BackendApiError, createCamera } from "@/lib/api";
+import { useStreamStore } from "@/store/streamStore";
 
 type SourceMode = "direct" | "components";
 
@@ -77,6 +78,7 @@ function validateDraft(sourceMode: SourceMode, draft: CameraDraft): string | nul
  */
 export function CreateCameraForm() {
   const router = useRouter();
+  const upsertCamera = useStreamStore((state) => state.upsertCamera);
   const [sourceMode, setSourceMode] = useState<SourceMode>("direct");
   const [draft, setDraft] = useState<CameraDraft>(INITIAL_DRAFT);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -142,7 +144,8 @@ export function CreateCameraForm() {
         metadata,
         tags: parseTags(draft.tags),
       });
-      router.push(`/camera/${camera.id}`);
+      upsertCamera(camera);
+      router.replace(`/camera/${camera.id}`);
       router.refresh();
     } catch (error) {
       if (error instanceof BackendApiError) {
@@ -162,17 +165,17 @@ export function CreateCameraForm() {
         <div className="space-y-2">
           <Link
             href="/dashboard"
-            className="text-sm font-medium text-sky-300 transition-all duration-300 ease-out hover:text-sky-200"
+            className="text-sm font-medium text-cyan-300 transition-all duration-300 ease-out hover:text-cyan-200"
           >
             ← Back to dashboard
           </Link>
           <h1 className="text-4xl font-semibold text-slate-50">
             Add camera
           </h1>
-          <p className="max-w-2xl text-base leading-7 text-slate-400">
-            Register a new RTSP camera using the same frontend-safe contract the
-            backend exposes. The stream source can be a full RTSP URL or host
-            and path components.
+          <p className="max-w-2xl text-base leading-7 text-slate-300">
+            Register a new RTSP source using the same contract the backend
+            validates before it allows stream startup, so bad camera URLs are
+            caught early instead of failing silently in the player.
           </p>
         </div>
       </div>
@@ -180,7 +183,7 @@ export function CreateCameraForm() {
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.9fr)]">
         <form
           onSubmit={onSubmit}
-          className="space-y-6 rounded-[28px] border border-white/8 bg-slate-800/80 p-6 shadow-[0_20px_80px_rgba(0,0,0,0.35)]"
+          className="space-y-6 rounded-[28px] border border-white/8 bg-[linear-gradient(160deg,rgba(17,32,42,0.92),rgba(9,18,24,0.92))] p-6 shadow-[0_24px_90px_rgba(0,0,0,0.36)]"
         >
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="space-y-2">
@@ -189,7 +192,7 @@ export function CreateCameraForm() {
                 value={draft.name}
                 onChange={(event) => updateField("name", event.target.value)}
                 placeholder="Front gate"
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
               />
             </label>
             <label className="space-y-2">
@@ -198,12 +201,12 @@ export function CreateCameraForm() {
                 value={draft.location}
                 onChange={(event) => updateField("location", event.target.value)}
                 placeholder="Building A"
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
               />
             </label>
           </div>
 
-          <div className="rounded-[24px] border border-white/6 bg-slate-900/60 p-4">
+          <div className="rounded-[24px] border border-white/6 bg-slate-950/55 p-4">
             <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
               Source mode
             </p>
@@ -213,8 +216,8 @@ export function CreateCameraForm() {
                 onClick={() => setSourceMode("direct")}
                 className={`rounded-full px-4 py-2 text-sm font-semibold transition-all duration-300 ease-out ${
                   sourceMode === "direct"
-                    ? "bg-sky-500 text-slate-950"
-                    : "border border-white/10 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                    ? "bg-cyan-300 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-100 hover:bg-slate-800"
                 }`}
               >
                 Direct RTSP URL
@@ -224,8 +227,8 @@ export function CreateCameraForm() {
                 onClick={() => setSourceMode("components")}
                 className={`rounded-full px-4 py-2 text-sm font-semibold transition-all duration-300 ease-out ${
                   sourceMode === "components"
-                    ? "bg-sky-500 text-slate-950"
-                    : "border border-white/10 bg-slate-800 text-slate-100 hover:bg-slate-700"
+                    ? "bg-cyan-300 text-slate-950"
+                    : "border border-white/10 bg-slate-900 text-slate-100 hover:bg-slate-800"
                 }`}
               >
                 Host + path
@@ -240,7 +243,7 @@ export function CreateCameraForm() {
                 value={draft.directRtspUrl}
                 onChange={(event) => updateField("directRtspUrl", event.target.value)}
                 placeholder="rtsp://192.168.1.2:8080/h264_ulaw.sdp"
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
               />
             </label>
           ) : (
@@ -251,7 +254,7 @@ export function CreateCameraForm() {
                   value={draft.host}
                   onChange={(event) => updateField("host", event.target.value)}
                   placeholder="192.168.1.2"
-                  className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
                 />
               </label>
               <label className="space-y-2">
@@ -261,7 +264,7 @@ export function CreateCameraForm() {
                   onChange={(event) => updateField("port", event.target.value)}
                   placeholder="554"
                   inputMode="numeric"
-                  className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
                 />
               </label>
               <label className="space-y-2 sm:col-span-3">
@@ -270,7 +273,7 @@ export function CreateCameraForm() {
                   value={draft.path}
                   onChange={(event) => updateField("path", event.target.value)}
                   placeholder="/h264_ulaw.sdp"
-                  className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                  className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
                 />
               </label>
             </div>
@@ -283,7 +286,7 @@ export function CreateCameraForm() {
                 value={draft.username}
                 onChange={(event) => updateField("username", event.target.value)}
                 placeholder="Optional"
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
               />
             </label>
             <label className="space-y-2">
@@ -293,7 +296,7 @@ export function CreateCameraForm() {
                 value={draft.password}
                 onChange={(event) => updateField("password", event.target.value)}
                 placeholder="Optional"
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
               />
             </label>
           </div>
@@ -306,7 +309,7 @@ export function CreateCameraForm() {
                 onChange={(event) =>
                   updateField("transport", event.target.value as CameraDraft["transport"])
                 }
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out focus:border-cyan-400/40"
               >
                 <option value="tcp">TCP</option>
                 <option value="udp">UDP</option>
@@ -319,7 +322,7 @@ export function CreateCameraForm() {
                 onChange={(event) =>
                   updateField("status", event.target.value as CameraDraft["status"])
                 }
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out focus:border-cyan-400/40"
               >
                 <option value="inactive">Inactive</option>
                 <option value="active">Active</option>
@@ -332,7 +335,7 @@ export function CreateCameraForm() {
                 value={draft.tags}
                 onChange={(event) => updateField("tags", event.target.value)}
                 placeholder="front-gate, perimeter"
-                className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+                className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
               />
             </label>
           </div>
@@ -343,7 +346,7 @@ export function CreateCameraForm() {
               value={draft.metadata}
               onChange={(event) => updateField("metadata", event.target.value)}
               rows={8}
-              className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+              className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
             />
           </label>
 
@@ -357,7 +360,7 @@ export function CreateCameraForm() {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition-all duration-300 ease-out hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-full bg-amber-300 px-5 py-3 text-sm font-semibold text-slate-950 transition-all duration-300 ease-out hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSubmitting ? "Creating camera..." : "Create camera"}
             </button>
@@ -371,15 +374,15 @@ export function CreateCameraForm() {
         </form>
 
         <aside className="space-y-5">
-          <div className="rounded-[28px] border border-white/8 bg-slate-800/80 p-5">
+          <div className="rounded-[28px] border border-white/8 bg-[linear-gradient(160deg,rgba(17,32,42,0.92),rgba(9,18,24,0.92))] p-5">
             <h2 className="text-lg font-semibold text-slate-50">Preview</h2>
-            <div className="mt-4 rounded-2xl border border-white/6 bg-slate-900/60 p-4">
+            <div className="mt-4 rounded-2xl border border-white/6 bg-slate-950/55 p-4">
               <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
                 Source URL preview
               </p>
               <p className="mt-2 break-all text-sm text-slate-100">{previewUrl}</p>
             </div>
-            <div className="mt-4 rounded-2xl border border-white/6 bg-slate-900/60 p-4">
+            <div className="mt-4 rounded-2xl border border-white/6 bg-slate-950/55 p-4">
               <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
                 Backend rules
               </p>

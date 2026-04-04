@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from src.core.exceptions.camera.camera_exceptions import (
     CameraNotFoundException,
+    CameraSourceUnavailableException,
     CameraValidationException,
 )
 from src.core.logger.logger import get_logger
@@ -14,7 +15,7 @@ from src.schemas.camera_requests import CameraListQuery, CreateCameraRequest, Up
 from src.schemas.camera_responses import CameraResponse, CameraValidationResponse
 from src.schemas.common import PaginatedItems, PaginationMeta
 from src.services.camera.camera_repository import CameraRepository
-from src.services.camera.camera_validator import CameraValidator
+from src.services.camera.camera_validator import CameraValidationResult, CameraValidator
 from src.services.realtime_video.mediamtx_service import MediaMtxService
 from src.utils.ffmpeg import build_rtsp_url_from_camera, mask_rtsp_url
 
@@ -168,18 +169,7 @@ class CameraService:
         timeout_seconds: int | None = None,
     ) -> CameraValidationResponse:
         camera = await self.get_camera_record(camera_id)
-        validation = await self._validator.validate(camera, timeout_seconds)
-        validation_status = (
-            ValidationStatus.reachable.value
-            if validation.is_reachable
-            else ValidationStatus.unreachable.value
-        )
-        updated = await self._repository.update_validation_status(
-            camera_id=camera_id,
-            validation_status=validation_status,
-            validation_message=validation.message,
-        )
-        target_camera = updated or camera
+        target_camera, validation = await self._validate_and_persist(camera, timeout_seconds)
         return CameraValidationResponse(
             camera_id=target_camera.id,
             camera_name=target_camera.name,
@@ -190,6 +180,27 @@ class CameraService:
             latency_ms=validation.latency_ms,
             details=validation.details,
             validated_at=validation.validated_at,
+        )
+
+    async def ensure_camera_reachable(
+        self,
+        camera_id: str,
+        timeout_seconds: int | None = None,
+    ) -> CameraRecord:
+        camera = await self.get_camera_record(camera_id)
+        validated_camera, validation = await self._validate_and_persist(camera, timeout_seconds)
+        if validation.is_reachable:
+            return validated_camera
+
+        raise CameraSourceUnavailableException(
+            camera_id=camera_id,
+            message=validation.message,
+            details={
+                "validation_code": validation.code,
+                "resolved_rtsp_url_preview": validation.resolved_rtsp_url_preview,
+                "latency_ms": validation.latency_ms,
+                "validation_details": validation.details,
+            },
         )
 
     def _to_response(self, camera: CameraRecord) -> CameraResponse:
@@ -237,3 +248,21 @@ class CameraService:
                 "Failed to regenerate MediaMTX config after camera change: %s",
                 exc,
             )
+
+    async def _validate_and_persist(
+        self,
+        camera: CameraRecord,
+        timeout_seconds: int | None = None,
+    ) -> tuple[CameraRecord, CameraValidationResult]:
+        validation = await self._validator.validate(camera, timeout_seconds)
+        validation_status = (
+            ValidationStatus.reachable.value
+            if validation.is_reachable
+            else ValidationStatus.unreachable.value
+        )
+        updated = await self._repository.update_validation_status(
+            camera_id=camera.id,
+            validation_status=validation_status,
+            validation_message=validation.message,
+        )
+        return updated or camera, validation

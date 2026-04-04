@@ -21,6 +21,7 @@ from src.core.logger.logger import get_logger
 from src.models.camera import CameraRecord
 from src.services.realtime_video.mediamtx import (
     build_stream_endpoints,
+    build_tracking_stream_name,
     is_rtsp_endpoint_reachable,
     normalize_stream_name,
 )
@@ -42,7 +43,7 @@ class MediaMtxHealthSnapshot:
     last_error: str | None = None
 
 
-class MediaMtxService:
+class MediaMtxService:  # pylint: disable=too-many-instance-attributes
     """Own MediaMTX startup and dynamic path configuration for camera streams."""
 
     def __init__(self, settings: Settings) -> None:
@@ -266,7 +267,10 @@ class MediaMtxService:
     async def _sync_runtime_paths_unlocked(self, cameras: list[CameraRecord]) -> None:
         """Reconcile runtime MediaMTX paths through the Control API in external-service mode."""
 
-        desired_paths = _render_runtime_path_configs(cameras)
+        desired_paths = _render_runtime_path_configs(
+            cameras,
+            tracking_suffix=self._settings.tracking_stream_suffix,
+        )
         try:
             configured_paths = await self._call_control_api_with_retry(
                 self._control_api.list_configured_paths,
@@ -403,7 +407,10 @@ class MediaMtxService:
         hls_port = _port_from_url(self._settings.mediamtx_hls_base_url, 8888)
         webrtc_port = _port_from_url(self._settings.mediamtx_webrtc_base_url, 8889)
         webrtc_hosts = _webrtc_hosts(self._settings.mediamtx_webrtc_base_url)
-        path_lines = _render_path_lines(cameras)
+        path_lines = _render_path_lines(
+            cameras,
+            tracking_suffix=self._settings.tracking_stream_suffix,
+        )
         return "\n".join(
             [
                 "logLevel: info",
@@ -504,7 +511,11 @@ def _webrtc_hosts(base_url: str) -> list[str]:
     return hosts
 
 
-def _render_path_lines(cameras: list[CameraRecord]) -> list[str]:
+def _render_path_lines(
+    cameras: list[CameraRecord],
+    *,
+    tracking_suffix: str,
+) -> list[str]:
     """Render the per-camera MediaMTX path definitions for the generated config."""
 
     if not cameras:
@@ -519,10 +530,22 @@ def _render_path_lines(cameras: list[CameraRecord]) -> list[str]:
         stream_name = stream_name_from_camera(camera)
         lines.append(f"  {stream_name}:")
         lines.append(f"    source: {json.dumps(source_url)}")
+        tracked_stream_name = build_tracking_stream_name(
+            stream_name,
+            suffix=tracking_suffix,
+        )
+        lines.append(f"  {tracked_stream_name}:")
+        lines.append("    source: publisher")
+        lines.append("    sourceOnDemand: false")
+        lines.append("    overridePublisher: true")
     return lines
 
 
-def _render_runtime_path_configs(cameras: list[CameraRecord]) -> dict[str, dict[str, Any]]:
+def _render_runtime_path_configs(
+    cameras: list[CameraRecord],
+    *,
+    tracking_suffix: str,
+) -> dict[str, dict[str, Any]]:
     """Render the runtime path payloads used by the MediaMTX Control API."""
 
     runtime_paths: dict[str, dict[str, Any]] = {}
@@ -531,7 +554,8 @@ def _render_runtime_path_configs(cameras: list[CameraRecord]) -> dict[str, dict[
             source_url = build_rtsp_url_from_camera(camera)
         except ValueError:
             continue
-        runtime_paths[stream_name_from_camera(camera)] = {
+        stream_name = stream_name_from_camera(camera)
+        runtime_paths[stream_name] = {
             "source": source_url,
             "sourceOnDemand": True,
             "sourceOnDemandStartTimeout": "10s",
@@ -539,6 +563,18 @@ def _render_runtime_path_configs(cameras: list[CameraRecord]) -> dict[str, dict[
             "rtspTransport": "tcp",
             "useAbsoluteTimestamp": False,
             "overridePublisher": False,
+        }
+        runtime_paths[
+            build_tracking_stream_name(
+                stream_name,
+                suffix=tracking_suffix,
+            )
+        ] = {
+            "source": "publisher",
+            "sourceOnDemand": False,
+            "rtspTransport": "tcp",
+            "useAbsoluteTimestamp": False,
+            "overridePublisher": True,
         }
     return runtime_paths
 

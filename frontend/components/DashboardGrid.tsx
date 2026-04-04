@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { StreamCard } from "@/components/StreamCard";
@@ -18,6 +19,7 @@ interface DashboardGridProps {
 }
 
 export function DashboardGrid({ initialCameras }: DashboardGridProps) {
+  const router = useRouter();
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
 
@@ -34,6 +36,7 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
     hydrateCameras(initialCameras);
   }, [hydrateCameras, initialCameras]);
 
+  useWebSocket();
   useWebSocket();
 
   const cameras = useMemo(
@@ -71,8 +74,8 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
     try {
       const streamInfo = await startStream(cameraId, {
         requested_protocol: "webrtc",
-        sample_fps: 1,
-        enable_tracking_events: false,
+        sample_fps: 5,
+        enable_tracking_events: true,
         reason: "dashboard_start_request",
       });
       upsertStreamInfo(streamInfo);
@@ -116,6 +119,7 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
     try {
       await deleteCamera(cameraId);
       removeCamera(cameraId);
+      router.refresh();
     } catch {
       clearCommandState(cameraId);
     }
@@ -123,17 +127,18 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
 
   return (
     <section className="screen-enter space-y-6">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+      <div className="flex flex-col gap-4 rounded-[32px] border border-white/8 bg-[linear-gradient(140deg,rgba(17,32,42,0.94),rgba(9,18,24,0.90)),radial-gradient(circle_at_top_right,rgba(45,212,191,0.16),transparent_28%),radial-gradient(circle_at_bottom_left,rgba(251,191,36,0.10),transparent_24%)] p-6 shadow-[0_30px_120px_rgba(0,0,0,0.38)] lg:flex-row lg:items-end lg:justify-between">
         <div className="space-y-2">
-          <p className="text-xs uppercase tracking-[0.26em] text-sky-300">
-            Real-time CCTV dashboard
+          <p className="text-xs uppercase tracking-[0.26em] text-cyan-300">
+            Sentinel operations deck
           </p>
           <h1 className="text-4xl font-semibold text-slate-50">
-            Live camera control plane
+            Live surveillance control plane
           </h1>
-          <p className="max-w-2xl text-base leading-7 text-slate-400">
-            WebRTC is reserved for playback, backend state comes from the API and
-            WebSocket, and streams stay dormant until an operator opens them.
+          <p className="max-w-2xl text-base leading-7 text-slate-300">
+            Raw playback, tracked playback, worker health, and observability links
+            stay in one operator-first workspace so camera issues can be triaged
+            without hopping between tools.
           </p>
         </div>
         <div className="w-full max-w-sm space-y-3">
@@ -145,13 +150,13 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Front gate, warehouse, loading bay..."
-              className="w-full rounded-2xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-sky-400/40"
+              className="w-full rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-100 outline-none transition-all duration-300 ease-out placeholder:text-slate-500 focus:border-cyan-400/40"
             />
           </label>
           <div className="flex flex-wrap gap-2">
             <Link
               href="/cameras/new"
-              className="rounded-full bg-emerald-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-all duration-300 ease-out hover:bg-emerald-400"
+              className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 transition-all duration-300 ease-out hover:bg-amber-200"
             >
               Add camera
             </Link>
@@ -159,7 +164,7 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
               href={buildGrafanaDashboardUrl()}
               target="_blank"
               rel="noreferrer"
-              className="rounded-full border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition-all duration-300 ease-out hover:bg-sky-500/20"
+              className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-all duration-300 ease-out hover:bg-cyan-500/20"
             >
               View Grafana
             </a>
@@ -167,7 +172,7 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
               href={buildPrometheusTargetsUrl()}
               target="_blank"
               rel="noreferrer"
-              className="rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-100 transition-all duration-300 ease-out hover:border-white/20 hover:bg-white/5"
+              className="rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-100 transition-all duration-300 ease-out hover:border-cyan-300/30 hover:bg-white/5"
             >
               View Prometheus
             </a>
