@@ -203,6 +203,36 @@ class MetricsRecorder:
     def increment_stream_kafka_consumer_failures(self) -> None:
         """Increment the stream-event Kafka consumer failure counter."""
 
+    def observe_detector_pool_wait(self, camera_id: str, seconds: float) -> None:
+        """Observe time a worker spent waiting for a detector checkout."""
+
+        del camera_id, seconds
+
+    def observe_embedding_queue_depth(self, depth: int) -> None:
+        """Observe the current depth of the shared embedding request queue."""
+
+        del depth
+
+    def observe_enrichment_queue_depth(self, camera_id: str, depth: int) -> None:
+        """Observe the current depth of the per-camera enrichment queue."""
+
+        del camera_id, depth
+
+    def observe_annotated_frame_queue_depth(self, camera_id: str, depth: int) -> None:
+        """Observe the current depth of the per-camera annotated-frame output queue."""
+
+        del camera_id, depth
+
+    def observe_inference_ingress_queue_depth(self, camera_id: str, depth: int) -> None:
+        """Observe the current depth of the per-camera inference ingress queue."""
+
+        del camera_id, depth
+
+    def increment_inference_frame_drop(self, camera_id: str) -> None:
+        """Increment the counter of inference ingress frames dropped due to backpressure."""
+
+        del camera_id
+
 
 class NullMetricsRecorder(MetricsRecorder):
     """Provide a no-op metrics recorder when observability is disabled."""
@@ -432,6 +462,42 @@ class PrometheusMetrics(MetricsRecorder):
             "Kafka stream event consumer failures inside the backend.",
             registry=self._registry,
         )
+        self._detector_pool_wait_seconds = Histogram(
+            "detector_pool_wait_seconds",
+            "Time a tracking worker waited to acquire a detector from the pool.",
+            labelnames=("camera_id",),
+            buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0),
+            registry=self._registry,
+        )
+        self._embedding_queue_depth = Gauge(
+            "embedding_queue_depth",
+            "Current number of pending embedding requests in the shared embedding queue.",
+            registry=self._registry,
+        )
+        self._enrichment_queue_depth = Gauge(
+            "enrichment_queue_depth",
+            "Current number of pending items in the per-camera enrichment queue.",
+            labelnames=("camera_id",),
+            registry=self._registry,
+        )
+        self._annotated_frame_queue_depth = Gauge(
+            "annotated_frame_queue_depth",
+            "Current number of annotated frames buffered in the per-camera output queue.",
+            labelnames=("camera_id",),
+            registry=self._registry,
+        )
+        self._inference_ingress_queue_depth = Gauge(
+            "inference_ingress_queue_depth",
+            "Current number of samples queued in the per-camera inference ingress queue.",
+            labelnames=("camera_id",),
+            registry=self._registry,
+        )
+        self._inference_frame_drops_total = Counter(
+            "inference_frame_drops_total",
+            "Inference ingress samples dropped due to full queue backpressure.",
+            labelnames=("camera_id",),
+            registry=self._registry,
+        )
 
     @property
     def registry(self) -> CollectorRegistry:
@@ -586,4 +652,22 @@ class PrometheusMetrics(MetricsRecorder):
 
     def increment_stream_kafka_consumer_failures(self) -> None:
         self._stream_kafka_consumer_failures_total.inc()
+
+    def observe_detector_pool_wait(self, camera_id: str, seconds: float) -> None:
+        self._detector_pool_wait_seconds.labels(camera_id=camera_id).observe(max(seconds, 0.0))
+
+    def observe_embedding_queue_depth(self, depth: int) -> None:
+        self._embedding_queue_depth.set(depth)
+
+    def observe_enrichment_queue_depth(self, camera_id: str, depth: int) -> None:
+        self._enrichment_queue_depth.labels(camera_id=camera_id).set(depth)
+
+    def observe_annotated_frame_queue_depth(self, camera_id: str, depth: int) -> None:
+        self._annotated_frame_queue_depth.labels(camera_id=camera_id).set(depth)
+
+    def observe_inference_ingress_queue_depth(self, camera_id: str, depth: int) -> None:
+        self._inference_ingress_queue_depth.labels(camera_id=camera_id).set(depth)
+
+    def increment_inference_frame_drop(self, camera_id: str) -> None:
+        self._inference_frame_drops_total.labels(camera_id=camera_id).inc()
 

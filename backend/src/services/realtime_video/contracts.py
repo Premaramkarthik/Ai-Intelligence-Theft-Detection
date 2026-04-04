@@ -122,7 +122,6 @@ class TrackingWorkerConfig:
     ffmpeg_binary: str
     sample_fps: float = 5.0
     output_fps: float = 5.0
-    embedder_name: str = "mobilenet"
     tracker_lost_track_buffer: int = 30
     tracker_activation_threshold: float = 0.7
     tracker_minimum_consecutive_frames: int = 2
@@ -137,8 +136,8 @@ class TrackingWorkerConfig:
 
 
 @dataclass(slots=True)
-class InferenceTrackSnapshot:
-    """Frontend-safe summary of one inference-labelled tracked person."""
+class InferenceResult:
+    """Canonical inference result contract for one labelled tracked person."""
 
     track_id: str
     persistent_id: str | None
@@ -149,4 +148,7 @@ class InferenceTrackSnapshot:
     width: int
     height: int
     model_name: str
-    timestamp: datetime
+    strategy: str
+    alert_level: str  # "normal" | "warning" | "alert"
+    score: float
+    sampled_at: datetime = field(default_factory=utc_now)
