@@ -19,6 +19,11 @@ class TrackingKafkaTrackPayload(BaseModel):
     top: int
     width: int
     height: int
+    sampled_at: datetime = Field(default_factory=_utc_now)
+    age_frames: int = 0
+    consecutive_hits: int = 0
+    frames_since_update: int = 0
+    persistent_id_state: str = "pending"  # "pending" | "assigned" | "local"
 
 
 class TrackingKafkaEventPayload(BaseModel):

@@ -110,6 +110,11 @@ class WebSocketTrackingUpdatePublisher:
                             "top": track.top,
                             "width": track.width,
                             "height": track.height,
+                            "sampled_at": track.sampled_at.isoformat(),
+                            "age_frames": track.age_frames,
+                            "consecutive_hits": track.consecutive_hits,
+                            "frames_since_update": track.frames_since_update,
+                            "persistent_id_state": track.persistent_id_state,
                         }
                         for track in tracks
                     ],
