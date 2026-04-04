@@ -90,6 +90,11 @@ class TrackingTrackSnapshot:
     top: int
     width: int
     height: int
+    sampled_at: datetime = field(default_factory=utc_now)
+    age_frames: int = 0
+    consecutive_hits: int = 0
+    frames_since_update: int = 0
+    persistent_id_state: str = "pending"  # "pending" | "assigned" | "local"
 
 
 @dataclass(slots=True)
