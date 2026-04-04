@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,7 +21,9 @@ from src.services.realtime_video.mediamtx import (
     build_tracking_stream_name,
 )
 from src.services.tracking.contracts import PersonDetector
+from src.services.tracking.detectors.detector_pool import DetectorPool
 from src.services.tracking.identity.milvus_store import MilvusIdentityStore
+from src.services.tracking.reid.shared_embedding_service import SharedEmbeddingService
 from src.services.tracking.updates import (
     NullTrackingUpdatePublisher,
     TrackingUpdatePublisher,
@@ -33,7 +36,7 @@ TrackingWorkerFactory = Callable[
         PersonDetector,
         MilvusIdentityStore,
         TrackingUpdatePublisher | None,
-        Path | None,
+        SharedEmbeddingService | None,
     ],
     RealtimeTrackingWorker,
 ]
@@ -73,8 +76,9 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
     def __init__(
         self,
         *,
-        detector: PersonDetector,
+        detector_pool: DetectorPool,
         identity_store: MilvusIdentityStore,
+        shared_embedding_service: SharedEmbeddingService | None = None,
         worker_factory: TrackingWorkerFactory | None = None,
         ffmpeg_binary: str,
         rtsp_base_url: str = "rtsp://localhost:8554",
@@ -84,8 +88,6 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
         output_fps: float = 5.0,
         max_reconnect_attempts: int = 8,
         tracking_suffix: str = "tracked",
-        embedder_name: str = "mobilenet",
-        embedder_weights_path: Path | None = None,
         tracker_lost_track_buffer: int = 30,
         tracker_activation_threshold: float = 0.7,
         tracker_minimum_consecutive_frames: int = 2,
@@ -95,8 +97,9 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
         publish_update_interval_seconds: float = 0.5,
         update_publisher: TrackingUpdatePublisher | None = None,
     ) -> None:  # pylint: disable=too-many-arguments,too-many-locals
-        self._detector = detector
+        self._detector_pool = detector_pool
         self._identity_store = identity_store
+        self._shared_embedding_service = shared_embedding_service
         self._worker_factory = worker_factory or RealtimeTrackingWorker
         self._ffmpeg_binary = ffmpeg_binary
         self._rtsp_base_url = rtsp_base_url
@@ -106,8 +109,6 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
         self._output_fps = output_fps
         self._max_reconnect_attempts = max_reconnect_attempts
         self._tracking_suffix = tracking_suffix
-        self._embedder_name = embedder_name
-        self._embedder_weights_path = embedder_weights_path
         self._tracker_lost_track_buffer = tracker_lost_track_buffer
         self._tracker_activation_threshold = tracker_activation_threshold
         self._tracker_minimum_consecutive_frames = tracker_minimum_consecutive_frames
@@ -119,13 +120,41 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
         self._logger = get_logger(__name__)
         self._workers: dict[str, RealtimeTrackingWorker] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        # Checked-out detectors keyed by camera_id (returned to pool on stop).
+        self._checked_out_detectors: dict[str, PersonDetector] = {}
+        # Background task for the shared embedding service.
+        self._embedding_task: asyncio.Task[None] | None = None
 
     async def start_stream(self, camera_id: str, source_stream_name: str) -> None:
         """Start tracking for a camera if it is not already active."""
 
+        if not _binary_is_available(self._ffmpeg_binary):
+            self._logger.warning(
+                "Tracking worker for %s will not start because FFmpeg binary '%s' "
+                "is not available on this host.",
+                camera_id,
+                self._ffmpeg_binary,
+            )
+            return
+
         if camera_id in self._tasks and not self._tasks[camera_id].done():
             self._logger.info("Tracking stream for %s is already running.", camera_id)
             return
+
+        # Start the shared embedding service background task once, lazily.
+        if (
+            self._shared_embedding_service is not None
+            and (self._embedding_task is None or self._embedding_task.done())
+        ):
+            await self._shared_embedding_service.start()
+            self._embedding_task = asyncio.create_task(
+                self._shared_embedding_service.run(),
+                name="shared-embedding-service",
+            )
+
+        # Check out one detector from the pool for this worker's lifetime.
+        detector = await self._detector_pool.get()
+        self._checked_out_detectors[camera_id] = detector
 
         annotated_stream_name = build_tracking_stream_name(
             source_stream_name,
@@ -148,7 +177,6 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
                 ffmpeg_binary=self._ffmpeg_binary,
                 sample_fps=self._sample_fps,
                 output_fps=self._output_fps,
-                embedder_name=self._embedder_name,
                 tracker_lost_track_buffer=self._tracker_lost_track_buffer,
                 tracker_activation_threshold=self._tracker_activation_threshold,
                 tracker_minimum_consecutive_frames=self._tracker_minimum_consecutive_frames,
@@ -158,10 +186,10 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
                 publish_update_interval_seconds=self._publish_update_interval_seconds,
                 max_reconnect_attempts=self._max_reconnect_attempts,
             ),
-            self._detector,
+            detector,
             self._identity_store,
             self._update_publisher,
-            self._embedder_weights_path,
+            self._shared_embedding_service,
         )
         self._workers[camera_id] = worker
         task = asyncio.create_task(worker.run(), name=f"tracking-worker:{camera_id}")
@@ -187,6 +215,10 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
             await task
         except asyncio.CancelledError:
             pass
+        # Return the checked-out detector to the pool.
+        detector = self._checked_out_detectors.pop(camera_id, None)
+        if detector is not None:
+            self._detector_pool.put(detector)
         self._logger.info("Stopped tracking worker for %s.", camera_id)
 
     async def stop_all(self) -> None:
@@ -200,6 +232,14 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
 
         await self.stop_all()
         self._identity_store.close()
+        if self._shared_embedding_service is not None:
+            self._shared_embedding_service.stop()
+        if self._embedding_task is not None and not self._embedding_task.done():
+            self._embedding_task.cancel()
+            try:
+                await self._embedding_task
+            except asyncio.CancelledError:
+                pass
 
     def _handle_worker_exit(
         self,
@@ -210,6 +250,10 @@ class TrackingStreamManager:  # pylint: disable=too-many-instance-attributes,too
 
         self._workers.pop(camera_id, None)
         self._tasks.pop(camera_id, None)
+        # Return any checked-out detector to the pool.
+        detector = self._checked_out_detectors.pop(camera_id, None)
+        if detector is not None:
+            self._detector_pool.put(detector)
         if task.cancelled():
             return
         try:
@@ -308,3 +352,10 @@ def _log_unhandled_tracking_exception(
         camera_id,
         exc,
     )
+
+
+def _binary_is_available(binary: str) -> bool:
+    candidate = Path(binary)
+    if candidate.is_file():
+        return True
+    return shutil.which(binary) is not None
