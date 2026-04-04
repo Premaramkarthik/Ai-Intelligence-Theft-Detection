@@ -39,20 +39,45 @@ class WebSocketManager:
             self._metrics_recorder.decrement_websocket_connections()
 
     async def broadcast(self, message: WebSocketEnvelope) -> None:
-        """Send one event to all subscribers matching the optional camera filter."""
+        """Send one event to all subscribers matching the optional camera filter.
 
-        stale_connections: list[WebSocket] = []
+        BN-10: snapshot active connections under lock (fast), release lock, then
+        fan out to all clients concurrently via asyncio.gather with a per-client
+        timeout.  Stale connections are evicted in a final brief lock re-acquire
+        so one slow client cannot block all others.
+        """
+
         payload = message.model_dump(mode="json")
+
+        # 1. Snapshot relevant connections (lock held only for dict read).
         async with self._lock:
-            for websocket, subscribed_camera_id in self._connections.items():
-                if subscribed_camera_id and subscribed_camera_id != message.camera_id:
-                    continue
-                try:
-                    await websocket.send_json(payload)
-                    self._metrics_recorder.record_websocket_message_sent(message.type)
-                except (RuntimeError, WebSocketDisconnect):
-                    self._metrics_recorder.record_websocket_broadcast_failure(message.type)
-                    stale_connections.append(websocket)
+            targets: list[WebSocket] = [
+                ws
+                for ws, subscribed_camera_id in self._connections.items()
+                if not subscribed_camera_id or subscribed_camera_id == message.camera_id
+            ]
+
+        if not targets:
+            return
+
+        # 2. Send concurrently; collect failures without holding the lock.
+        async def _send(ws: WebSocket) -> WebSocket | None:
+            try:
+                await asyncio.wait_for(ws.send_json(payload), timeout=2.0)
+                self._metrics_recorder.record_websocket_message_sent(message.type)
+                return None
+            except Exception:  # pylint: disable=broad-except
+                self._metrics_recorder.record_websocket_broadcast_failure(message.type)
+                return ws
+
+        results = await asyncio.gather(*(_send(ws) for ws in targets))
+        stale_connections: list[WebSocket] = [ws for ws in results if ws is not None]
+
+        if not stale_connections:
+            return
+
+        # 3. Evict stale connections under a brief re-lock.
+        async with self._lock:
             for websocket in stale_connections:
                 self._connections.pop(websocket, None)
         for _ in stale_connections:
