@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from typing import Protocol
 
@@ -52,20 +53,25 @@ class FanoutTrackingUpdatePublisher:
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
     ) -> None:
-        for publisher in self._publishers:
-            try:
-                await publisher.publish(
+        results = await asyncio.gather(
+            *(
+                publisher.publish(
                     camera_id=camera_id,
                     stream_name=stream_name,
                     annotated_stream_name=annotated_stream_name,
                     tracks=tracks,
                 )
-            except Exception as exc:  # pylint: disable=broad-except
+                for publisher in self._publishers
+            ),
+            return_exceptions=True,
+        )
+        for publisher, result in zip(self._publishers, results):
+            if isinstance(result, Exception):
                 self._logger.warning(
                     "Tracking update publisher %s failed for camera %s: %s",
                     publisher.__class__.__name__,
                     camera_id,
-                    exc,
+                    result,
                 )
 
 
