@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.models.camera import StreamDesiredState, StreamProtocol, StreamStatus
 from src.schemas.common import utc_now
+from src.schemas.inference_events import InferenceStateResponse
 
 
 class StreamFallbackInfo(BaseModel):
@@ -84,6 +85,7 @@ class StreamInfoResponse(BaseModel):
     last_error_code: str | None = None
     last_error_message: str | None = None
     tracking: TrackingStateResponse | None = None
+    inference: InferenceStateResponse | None = None
     worker: WorkerStateResponse
 
 

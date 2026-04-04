@@ -11,6 +11,8 @@ from aiokafka.errors import KafkaError
 from src.core.config import Settings
 from src.core.logger.logger import get_logger
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.schemas.common import WebSocketEnvelope
+from src.schemas.inference_events import InferenceKafkaEventPayload
 from src.schemas.stream_responses import StreamEventPayload
 from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.stream.stream_service import StreamService
@@ -95,15 +97,32 @@ class StreamEventConsumer:  # pylint: disable=too-many-instance-attributes
             return
         async for message in self._consumer:
             try:
-                event = StreamEventPayload.model_validate(message.value)
-                websocket_event = await self._stream_service.build_websocket_event(event)
-                await self._websocket_manager.broadcast(websocket_event)
+                if message.topic == self._settings.kafka_topic_camera_ai_results:
+                    await self._handle_inference_event(message.value)
+                else:
+                    await self._handle_stream_event(message.value)
                 self._metrics_recorder.increment_stream_kafka_messages_consumed()
             except Exception as exc:  # pylint: disable=broad-except
                 self._healthy = False
                 self._last_error = str(exc)
                 self._metrics_recorder.increment_stream_kafka_consumer_failures()
                 self._logger.exception("Failed to process Kafka event: %s", exc)
+
+    async def _handle_stream_event(self, raw: object) -> None:
+        event = StreamEventPayload.model_validate(raw)
+        websocket_event = await self._stream_service.build_websocket_event(event)
+        await self._websocket_manager.broadcast(websocket_event)
+
+    async def _handle_inference_event(self, raw: object) -> None:
+        event = InferenceKafkaEventPayload.model_validate(raw)
+        envelope = WebSocketEnvelope(
+            type=event.event,
+            topic="inference",
+            message="Inference result received.",
+            camera_id=event.camera_id,
+            data=event.model_dump(mode="json"),
+        )
+        await self._websocket_manager.broadcast(envelope)
 
     async def _safe_stop_consumer(self, consumer: AIOKafkaConsumer) -> None:
         try:
