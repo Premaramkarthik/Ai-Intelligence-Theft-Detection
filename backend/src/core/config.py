@@ -95,10 +95,10 @@ class Settings(BaseSettings):
         / "weights"
         / "mobilenetv2_bottleneck_wts.pt"
     )
-    tracking_tracker_lost_track_buffer: int = 10
-    tracking_tracker_activation_threshold: float = 0.7
-    tracking_tracker_minimum_consecutive_frames: int = 2
-    tracking_tracker_minimum_iou_threshold: float = 0.3
+    tracking_tracker_lost_track_buffer: int = 30         # was 10; 30 frames ≈ 3.75 s at 8 fps
+    tracking_tracker_activation_threshold: float = 0.45  # was 0.7; lower avoids false new-person at low conf
+    tracking_tracker_minimum_consecutive_frames: int = 3  # was 2; extra stability at 8 fps
+    tracking_tracker_minimum_iou_threshold: float = 0.2   # was 0.3; looser match for sampled CCTV
     tracking_tracker_high_conf_det_threshold: float = 0.5
     tracking_identity_store_uri: str = str(BACKEND_ROOT / "runtime" / "milvus_tracking.db")
     tracking_identity_store_token: SecretStr | None = None
