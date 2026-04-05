@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from time import time
@@ -42,6 +44,13 @@ from src.services.tracking.manager import TrackingStreamManager
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
 from src.utils.migration_runner import apply_pending_migrations
 from src.utils.tracking_bootstrap import create_tracking_runtime_services
+
+
+if sys.platform == "win32":
+    # Windows selector loops do not implement asyncio subprocess transports.
+    # This backend uses asyncio.create_subprocess_exec for ffprobe/MediaMTX flows,
+    # so force the subprocess-capable policy before Uvicorn creates the server loop.
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 
 @dataclass(slots=True)

@@ -165,7 +165,6 @@ services:
 
   node-exporter:
     image: prom/node-exporter:latest
-    network_mode: host
     pid: host
     command:
       - "--path.rootfs=/host"
@@ -173,34 +172,39 @@ services:
       - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|host|etc)($|/)"
       - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
     volumes:
-      - /:/host:ro,rslave
+      # Docker Desktop on Windows rejects mount propagation flags like rslave here.
+      # A plain read-only bind is enough to keep the observability stack starting.
+      - /:/host:ro
+    networks:
+      - backend_net
     restart: unless-stopped
 
 
   postgres-exporter:
     image: quay.io/prometheuscommunity/postgres-exporter:latest
-    network_mode: host
     command:
       - "--config.file=/etc/postgres_exporter/postgres_exporter.yml"
     environment:
-      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DATA_SOURCE_NAME:-postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable}
+      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DATA_SOURCE_NAME:-postgresql://postgres:postgres@host.docker.internal:5432/postgres?sslmode=disable}
     volumes:
       - ./observability/postgres_exporter/postgres_exporter.yml:/etc/postgres_exporter/postgres_exporter.yml:ro
+    networks:
+      - backend_net
     restart: unless-stopped
 
   loki:
     image: grafana/loki:latest
-    network_mode: host
     command:
       - "-config.file=/etc/loki/config.yaml"
     volumes:
       - ./observability/loki/config.yaml:/etc/loki/config.yaml:ro
       - ./runtime/loki:/loki
+    networks:
+      - backend_net
     restart: unless-stopped
 
   alloy:
     image: grafana/alloy:latest
-    network_mode: host
     command:
       - run
       - --server.http.listen-addr=0.0.0.0:12345
@@ -210,19 +214,22 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - loki
+    networks:
+      - backend_net
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:latest
-    network_mode: host
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        sed -e "s|__PROMETHEUS_SCRAPE_TARGET__|127.0.0.1:9109|g" \
+        sed -e "s|__PROMETHEUS_SCRAPE_TARGET__|host.docker.internal:9109|g" \
           -e "s|__MEDIAMTX_METRICS_USERNAME__|${MEDIAMTX_API_USERNAME:-backend-control}|g" \
           -e "s|__MEDIAMTX_METRICS_PASSWORD__|${MEDIAMTX_API_PASSWORD:-backend-control-dev-secret}|g" \
           /etc/prometheus/prometheus.yml.tmpl > /tmp/prometheus.yml
         exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"
     volumes:
       - ./observability/prometheus/prometheus.yml.tmpl:/etc/prometheus/prometheus.yml.tmpl:ro
       - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -232,14 +239,17 @@ services:
       - postgres-exporter
       - loki
       - alloy
+    networks:
+      - backend_net
 
   grafana:
     image: grafana/grafana:latest
-    network_mode: host
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_SERVER_HTTP_PORT: 3001
+    ports:
+      - "3001:3001"
     volumes:
       - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
       - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
@@ -247,6 +257,8 @@ services:
     depends_on:
       - prometheus
       - loki
+    networks:
+      - backend_net
 
 networks:
   backend_net:

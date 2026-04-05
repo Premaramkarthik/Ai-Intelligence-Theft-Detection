@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -60,22 +62,38 @@ class CameraValidator:
         ]
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            completed = await asyncio.to_thread(
+                subprocess.run,
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=timeout + 2,
             )
-        except FileNotFoundError as exc:
-            raise CameraValidationException(
-                "ffprobe is not installed or not available in PATH.",
-                "FFPROBE_NOT_AVAILABLE",
-            ) from exc
-
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout + 2)
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.communicate()
+        except FileNotFoundError:
+            self._logger.warning(
+                "ffprobe is not available in PATH. Falling back to PyAV RTSP validation.",
+            )
+            return await asyncio.to_thread(
+                self._validate_with_pyav,
+                camera,
+                rtsp_url,
+                timeout,
+                started,
+            )
+        except PermissionError:
+            self._logger.warning(
+                "ffprobe subprocess could not be started on this Windows host. "
+                "Falling back to PyAV RTSP validation.",
+            )
+            return await asyncio.to_thread(
+                self._validate_with_pyav,
+                camera,
+                rtsp_url,
+                timeout,
+                started,
+            )
+        except subprocess.TimeoutExpired:
             return CameraValidationResult(
                 is_reachable=False,
                 code="RTSP_TIMEOUT",
@@ -87,9 +105,11 @@ class CameraValidator:
             )
 
         latency_ms = int((time.perf_counter() - started) * 1000)
+        stdout = completed.stdout
+        stderr = completed.stderr
         stderr_text = stderr.decode("utf-8", errors="ignore").strip()
 
-        if process.returncode == 0:
+        if completed.returncode == 0:
             probe_payload = json.loads(stdout.decode("utf-8") or "{}")
             return CameraValidationResult(
                 is_reachable=True,
@@ -122,3 +142,82 @@ class CameraValidator:
         if "no route to host" in normalized or "network is unreachable" in normalized:
             return "RTSP_HOST_UNREACHABLE", "The RTSP host could not be reached from the backend."
         return "RTSP_UNREACHABLE", "The RTSP endpoint could not be validated."
+
+    def _validate_with_pyav(
+        self,
+        camera: CameraRecord,
+        rtsp_url: str,
+        timeout: int,
+        started: float,
+    ) -> CameraValidationResult:
+        try:
+            av_module = importlib.import_module("av")
+            container = av_module.open(
+                rtsp_url,
+                mode="r",
+                timeout=(timeout, timeout),
+                options={
+                    "rtsp_transport": camera.transport.value,
+                    "fflags": "nobuffer",
+                    "flags": "low_delay",
+                    "reorder_queue_size": "0",
+                },
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            code, message = self._map_probe_error(str(exc))
+            self._logger.warning(
+                "PyAV RTSP validation failed for camera %s: %s",
+                camera.id,
+                exc,
+            )
+            return CameraValidationResult(
+                is_reachable=False,
+                code=code,
+                message=message,
+                resolved_rtsp_url_preview=mask_rtsp_url(rtsp_url),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                details={"stderr": str(exc), "validator": "pyav"},
+                validated_at=datetime.now(timezone.utc),
+            )
+
+        try:
+            video_stream = container.streams.video[0]
+            codec_context = getattr(video_stream, "codec_context", None)
+            return CameraValidationResult(
+                is_reachable=True,
+                code="RTSP_REACHABLE",
+                message="RTSP endpoint responded successfully.",
+                resolved_rtsp_url_preview=mask_rtsp_url(rtsp_url),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                details={
+                    "streams": [
+                        {
+                            "index": getattr(video_stream, "index", None),
+                            "codec_name": getattr(codec_context, "name", None),
+                            "codec_type": getattr(video_stream, "type", None),
+                            "width": getattr(codec_context, "width", None),
+                            "height": getattr(codec_context, "height", None),
+                        },
+                    ],
+                    "validator": "pyav",
+                },
+                validated_at=datetime.now(timezone.utc),
+            )
+        except Exception as exc:  # pylint: disable=broad-except
+            code, message = self._map_probe_error(str(exc))
+            self._logger.warning(
+                "PyAV RTSP validation did not find a usable video stream for camera %s: %s",
+                camera.id,
+                exc,
+            )
+            return CameraValidationResult(
+                is_reachable=False,
+                code=code,
+                message=message,
+                resolved_rtsp_url_preview=mask_rtsp_url(rtsp_url),
+                latency_ms=int((time.perf_counter() - started) * 1000),
+                details={"stderr": str(exc), "validator": "pyav"},
+                validated_at=datetime.now(timezone.utc),
+            )
+        finally:
+            container.close()

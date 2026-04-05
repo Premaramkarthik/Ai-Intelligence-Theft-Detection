@@ -362,3 +362,4 @@ vite.config.ts.timestamp-*
 
 model_repository
 backend/runtime/milvus
+backend/runtime/loki
