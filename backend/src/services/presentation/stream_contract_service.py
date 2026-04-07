@@ -4,6 +4,7 @@ from urllib.parse import urlparse, urlunparse
 
 from src.core.config import Settings
 from src.models.camera import CameraRecord, StreamProtocol, StreamRecord, StreamStatus
+from src.schemas.inference_events import InferenceStateResponse
 from src.schemas.stream_responses import (
     StreamAccessUrls,
     StreamFallbackInfo,
@@ -14,6 +15,7 @@ from src.schemas.stream_responses import (
 )
 from src.services.realtime_video.contracts import MediaMtxStreamEndpoints
 from src.services.realtime_video.stream_manager import WorkerSnapshot
+from src.services.inference.contracts import InferenceSnapshot
 from src.services.tracking.manager import TrackingSnapshot
 
 
@@ -29,6 +31,7 @@ class StreamContractService:
         stream_endpoints: MediaMtxStreamEndpoints,
         tracking_snapshot: TrackingSnapshot | None = None,
         tracking_endpoints: MediaMtxStreamEndpoints | None = None,
+        inference_snapshot: InferenceSnapshot | None = None,
     ) -> StreamInfoResponse:
         if stream_record is None:
             status = StreamStatus.stopped
@@ -77,6 +80,7 @@ class StreamContractService:
                 tracking_snapshot,
                 tracking_endpoints,
             ),
+            inference=self._build_inference_state(inference_snapshot),
             worker=WorkerStateResponse(
                 desired_state=worker_snapshot.desired_state,
                 is_registered=worker_snapshot.is_registered,
@@ -90,6 +94,22 @@ class StreamContractService:
                 queue_latency_ms=worker_snapshot.queue_latency_ms,
                 decode_time_ms=worker_snapshot.decode_time_ms,
             ),
+        )
+
+    @staticmethod
+    def _build_inference_state(
+        snapshot: InferenceSnapshot | None,
+    ) -> InferenceStateResponse | None:
+        if snapshot is None:
+            return None
+        return InferenceStateResponse(
+            enabled=snapshot.enabled,
+            strategy=snapshot.strategy,
+            healthy=snapshot.healthy,
+            last_error_message=snapshot.last_error_message,
+            queue_depth=snapshot.queue_depth,
+            active_tracks=snapshot.active_tracks,
+            last_result_at=snapshot.last_result_at,
         )
 
     def _build_tracking_state(

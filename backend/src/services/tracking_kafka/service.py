@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from aiokafka import AIOKafkaProducer
 from aiokafka.errors import KafkaError
@@ -87,6 +88,17 @@ class TrackingKafkaProducerService:
             self._metrics_recorder,
         )
 
+    def inference_publisher(self, topic: str) -> Any:
+        """Return a raw Kafka publisher for inference event payloads.
+
+        The returned object exposes ``async publish(data: dict)``, which
+        serialises ``data`` as JSON and sends it to ``topic``.  Returns
+        ``None`` when the producer has not started (Kafka disabled).
+        """
+        if self._producer is None:
+            return None
+        return _InferenceKafkaPublisher(self._producer, topic)
+
     def health_snapshot(self) -> dict[str, str | bool | None]:
         """Return a health summary consumed by health checks and metrics."""
 
@@ -105,3 +117,23 @@ class TrackingKafkaProducerService:
                 "Tracking Kafka producer cleanup failed after startup error: %s",
                 exc,
             )
+
+
+class _InferenceKafkaPublisher:
+    """Thin adapter that publishes raw inference event dicts to a Kafka topic.
+
+    Used by ``InferenceOrchestrator`` which needs ``async publish(data: dict)``
+    rather than the full ``TrackingUpdatePublisher`` protocol.
+    """
+
+    def __init__(self, producer: AIOKafkaProducer, topic: str) -> None:
+        self._producer = producer
+        self._topic = topic
+
+    async def publish(self, data: dict) -> None:
+        camera_id: str = data.get("camera_id", "unknown")
+        await self._producer.send_and_wait(
+            self._topic,
+            data,
+            key=camera_id,
+        )

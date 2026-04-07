@@ -16,6 +16,7 @@ from src.services.tracking.reid.embedder import TrackingReIdEmbedder
 from src.services.tracking.reid.shared_embedding_service import SharedEmbeddingService
 from src.services.tracking.updates import (
     FanoutTrackingUpdatePublisher,
+    InferenceIngressPublisher,
     WebSocketTrackingUpdatePublisher,
 )
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
@@ -36,11 +37,14 @@ async def create_tracking_runtime_services(
     settings: Settings,
     websocket_manager: WebSocketManager,
     metrics_recorder: MetricsRecorder,
+    inference_manager: object | None = None,
+    tracking_kafka_producer: TrackingKafkaProducerService | None = None,
 ) -> TrackingRuntimeServices:
     """Build tracking services without blocking API startup on Milvus warmup."""
 
-    tracking_kafka_producer = TrackingKafkaProducerService(settings)
-    await tracking_kafka_producer.start()
+    if tracking_kafka_producer is None:
+        tracking_kafka_producer = TrackingKafkaProducerService(settings)
+        await tracking_kafka_producer.start()
 
     identity_store = MilvusIdentityStore(
         uri=settings.tracking_identity_store_uri,
@@ -114,10 +118,15 @@ async def create_tracking_runtime_services(
         identity_sync_interval_seconds=settings.tracking_identity_sync_interval_seconds,
         publish_update_interval_seconds=settings.tracking_publish_update_interval_seconds,
         update_publisher=FanoutTrackingUpdatePublisher(
-            (
+            [
                 WebSocketTrackingUpdatePublisher(websocket_manager),
                 tracking_kafka_producer.publisher(),
-            ),
+                *(
+                    [InferenceIngressPublisher(inference_manager)]
+                    if inference_manager is not None
+                    else []
+                ),
+            ],
         ),
     )
     return TrackingRuntimeServices(

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from typing import Protocol
+from datetime import datetime, timezone
+from typing import Any, Protocol
 
 from src.core.logger.logger import get_logger
 from src.schemas.common import WebSocketEnvelope
+from src.services.inference.contracts import InferenceIngressSample
 from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.realtime_video.contracts import TrackingTrackSnapshot
+from src.utils.image import crop_ltwh
 
 
 class TrackingUpdatePublisher(Protocol):
@@ -20,6 +23,7 @@ class TrackingUpdatePublisher(Protocol):
         stream_name: str,
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
+        frame: Any = None,
     ) -> None:
         """Publish the latest tracking state."""
 
@@ -34,8 +38,9 @@ class NullTrackingUpdatePublisher:
         stream_name: str,
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
+        frame: Any = None,
     ) -> None:
-        del camera_id, stream_name, annotated_stream_name, tracks
+        del camera_id, stream_name, annotated_stream_name, tracks, frame
 
 
 class FanoutTrackingUpdatePublisher:
@@ -52,6 +57,7 @@ class FanoutTrackingUpdatePublisher:
         stream_name: str,
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
+        frame: Any = None,
     ) -> None:
         results = await asyncio.gather(
             *(
@@ -60,6 +66,7 @@ class FanoutTrackingUpdatePublisher:
                     stream_name=stream_name,
                     annotated_stream_name=annotated_stream_name,
                     tracks=tracks,
+                    frame=frame,
                 )
                 for publisher in self._publishers
             ),
@@ -88,7 +95,9 @@ class WebSocketTrackingUpdatePublisher:
         stream_name: str,
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
+        frame: Any = None,
     ) -> None:
+        del frame
         await self._websocket_manager.broadcast(
             WebSocketEnvelope(
                 type="tracking.updated",
@@ -121,3 +130,61 @@ class WebSocketTrackingUpdatePublisher:
                 },
             ),
         )
+
+
+class _InferenceIngress(Protocol):
+    """Structural protocol satisfied by ``InferenceManager.ingest_sample``."""
+
+    def ingest_sample(self, sample: InferenceIngressSample) -> None:
+        """Dispatch one sample into the inference ingress pipeline."""
+
+
+class InferenceIngressPublisher:
+    """Forward eligible tracking crops into the inference ingress pipeline.
+
+    Implements ``TrackingUpdatePublisher`` and sits alongside the WebSocket
+    and Kafka publishers inside ``FanoutTrackingUpdatePublisher``.  It
+    receives the unannotated ``frame`` (captured before annotation drawing
+    in the tracking worker), crops each track's bounding box, and routes
+    the resulting ``InferenceIngressSample`` to ``InferenceManager`` which
+    delegates to the per-camera ``InferenceIngressScheduler``.  The
+    scheduler's dispatch gate applies the final quality checks.
+    """
+
+    def __init__(self, ingress: _InferenceIngress) -> None:
+        self._ingress = ingress
+
+    async def publish(
+        self,
+        *,
+        camera_id: str,
+        stream_name: str,
+        annotated_stream_name: str,
+        tracks: list[TrackingTrackSnapshot],
+        frame: Any = None,
+    ) -> None:
+        del annotated_stream_name
+        if frame is None or not tracks:
+            return
+        now = datetime.now(timezone.utc)
+        for track in tracks:
+            if track.persistent_id is None:
+                continue
+            crop = crop_ltwh(frame, track.left, track.top, track.width, track.height)
+            sample = InferenceIngressSample(
+                camera_id=camera_id,
+                stream_name=stream_name,
+                local_track_id=track.track_id,
+                persistent_id=track.persistent_id,
+                sampled_at=now,
+                left=track.left,
+                top=track.top,
+                width=track.width,
+                height=track.height,
+                crop=crop,
+                age_frames=track.age_frames,
+                consecutive_hits=track.consecutive_hits,
+                frames_since_update=track.frames_since_update,
+                persistent_id_state=track.persistent_id_state,
+            )
+            self._ingress.ingest_sample(sample)

@@ -40,6 +40,8 @@ from src.services.realtime_video.stream_manager import MediaMtxStreamManager
 from src.services.stream.kafka_event_consumer import StreamEventConsumer
 from src.services.stream.stream_repository import StreamRepository
 from src.services.stream.stream_service import StreamService
+from src.services.inference.bootstrap import create_inference_runtime_services
+from src.services.inference.manager import InferenceManager
 from src.services.tracking.manager import TrackingStreamManager
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
 from src.utils.migration_runner import apply_pending_migrations
@@ -65,6 +67,7 @@ class ApplicationContainer:  # pylint: disable=too-many-instance-attributes
     stream_manager: MediaMtxStreamManager
     tracking_manager: TrackingStreamManager
     tracking_kafka_producer: TrackingKafkaProducerService
+    inference_manager: InferenceManager
     websocket_manager: WebSocketManager
     kafka_consumer: StreamEventConsumer
     metrics_server: MetricsServer | None
@@ -143,13 +146,28 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
                 websocket_manager,
             ),
         )
+        # Build the shared Kafka producer first so both inference and tracking
+        # bootstraps can reference the same started producer instance.
+        tracking_kafka_producer = TrackingKafkaProducerService(settings, metrics_recorder)
+        await tracking_kafka_producer.start()
+
+        # Inference manager is created before tracking so InferenceIngressPublisher
+        # can be wired into the tracking fanout publisher.
+        inference_manager = create_inference_runtime_services(
+            settings,
+            database,
+            websocket_manager,
+            tracking_kafka_producer,
+            metrics_recorder,
+        )
         tracking_services = await create_tracking_runtime_services(
             settings,
             websocket_manager,
             metrics_recorder,
+            inference_manager=inference_manager,
+            tracking_kafka_producer=tracking_kafka_producer,
         )
         tracking_manager = tracking_services.tracking_manager
-        tracking_kafka_producer = tracking_services.tracking_kafka_producer
         stream_service = StreamService(
             settings,
             camera_service,
@@ -189,6 +207,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             stream_manager=stream_manager,
             tracking_manager=tracking_manager,
             tracking_kafka_producer=tracking_kafka_producer,
+            inference_manager=inference_manager,
             websocket_manager=websocket_manager,
             kafka_consumer=kafka_consumer,
             metrics_server=metrics_server,
@@ -200,6 +219,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             yield
         finally:
             await kafka_consumer.stop()
+            await inference_manager.close()
             await tracking_kafka_producer.stop()
             await tracking_manager.close()
             await stream_manager.stop_all()

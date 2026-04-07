@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from aiokafka import AIOKafkaProducer
 
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
@@ -34,7 +36,9 @@ class KafkaTrackingUpdatePublisher:  # pylint: disable=too-few-public-methods
         stream_name: str,
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
+        frame: Any = None,
     ) -> None:
+        del frame
         """Publish one camera-scoped tracking snapshot to Kafka."""
 
         payload = TrackingKafkaEventPayload(

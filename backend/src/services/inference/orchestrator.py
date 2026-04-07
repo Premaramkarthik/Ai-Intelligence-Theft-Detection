@@ -16,7 +16,7 @@ from src.services.inference.event_repository import InferenceEventRepository
 from src.services.inference.ingress_scheduler import InferenceIngressScheduler
 from src.services.inference.triton_client import TritonInferenceClient
 from src.services.presentation.websocket_manager import WebSocketManager
-from src.services.tracking_kafka.publisher import TrackingKafkaPublisher
+from src.services.tracking_kafka.service import _InferenceKafkaPublisher
 
 
 def _utc_now() -> datetime:
@@ -40,7 +40,7 @@ class InferenceOrchestrator:
         decision_engine: DecisionEngine,
         event_repository: InferenceEventRepository,
         websocket_manager: WebSocketManager,
-        kafka_publisher: TrackingKafkaPublisher | None,
+        kafka_publisher: _InferenceKafkaPublisher | None,
         metrics_recorder: MetricsRecorder | None = None,
     ) -> None:
         self._config = config
@@ -157,12 +157,10 @@ class InferenceOrchestrator:
             emitted_at=emitted_at,
         )
 
-        await asyncio.gather(
-            self._broadcast_ws(payload),
-            self._publish_kafka(payload),
-            self._persist(payload),
-            return_exceptions=True,
-        )
+        tasks = [self._broadcast_ws(payload), self._publish_kafka(payload)]
+        if alert_level != "normal":
+            tasks.append(self._persist(payload))
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _broadcast_ws(self, payload: InferenceKafkaEventPayload) -> None:
         envelope = WebSocketEnvelope(

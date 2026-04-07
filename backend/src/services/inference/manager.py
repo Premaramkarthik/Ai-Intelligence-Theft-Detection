@@ -1,0 +1,157 @@
+"""Lifecycle manager for per-camera inference orchestrators."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from src.core.logger.logger import get_logger
+from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.services.inference.batch_builder import BatchBuilder
+from src.services.inference.contracts import (
+    InferenceIngressSample,
+    InferenceSnapshot,
+    InferenceWorkerConfig,
+)
+from src.services.inference.decision_engine import DecisionEngine
+from src.services.inference.event_repository import InferenceEventRepository
+from src.services.inference.ingress_scheduler import InferenceIngressScheduler
+from src.services.inference.orchestrator import InferenceOrchestrator
+from src.services.inference.temporal_buffer import TemporalBufferService
+from src.services.inference.triton_client import TritonInferenceClient
+from src.services.presentation.websocket_manager import WebSocketManager
+
+
+class InferenceManager:
+    """Manage the lifecycle of per-camera ``InferenceOrchestrator`` instances.
+
+    Mirrors ``TrackingStreamManager`` — cameras are opted in via
+    ``configure_stream(enabled=True)`` or when ``PATCH /streams/{id}/inference``
+    is called.  Tracking always runs regardless of inference state.
+    """
+
+    def __init__(
+        self,
+        event_repository: InferenceEventRepository,
+        websocket_manager: WebSocketManager,
+        kafka_publisher: Any | None,
+        metrics_recorder: MetricsRecorder | None = None,
+        triton_url: str = "localhost:8001",
+        triton_max_in_flight: int = 8,
+    ) -> None:
+        self._event_repository = event_repository
+        self._websocket_manager = websocket_manager
+        self._kafka_publisher = kafka_publisher
+        self._metrics = metrics_recorder or NullMetricsRecorder()
+        self._triton_url = triton_url
+        self._triton_max_in_flight = triton_max_in_flight
+        self._logger = get_logger(__name__)
+        self._orchestrators: dict[str, InferenceOrchestrator] = {}
+        self._schedulers: dict[str, InferenceIngressScheduler] = {}
+
+    # ------------------------------------------------------------------
+    # Ingress — called by InferenceIngressPublisher from the event loop
+    # ------------------------------------------------------------------
+
+    def ingest_sample(self, sample: InferenceIngressSample) -> None:
+        """Route one tracking crop to the camera's scheduler, if active."""
+        scheduler = self._schedulers.get(sample.camera_id)
+        if scheduler is not None:
+            scheduler.ingest(sample)
+
+    # ------------------------------------------------------------------
+    # Control plane — called by PATCH /streams/{camera_id}/inference
+    # ------------------------------------------------------------------
+
+    async def configure_stream(
+        self,
+        camera_id: str,
+        *,
+        enabled: bool | None = None,
+        strategy: str | None = None,
+    ) -> None:
+        """Start, stop, or reconfigure inference for one camera.
+
+        - ``enabled=True``  — starts the orchestrator (no-op if already running).
+        - ``enabled=False`` — stops and removes the orchestrator.
+        - ``strategy``      — live strategy switch; buffer is NOT flushed (§3.4).
+        """
+        if enabled is True and camera_id not in self._orchestrators:
+            await self._start_camera(camera_id, strategy or "cnn_transformer")
+        elif enabled is False:
+            await self._stop_camera(camera_id)
+        elif strategy is not None and camera_id in self._orchestrators:
+            await self._orchestrators[camera_id].configure(strategy=strategy)
+
+    # ------------------------------------------------------------------
+    # State inspection
+    # ------------------------------------------------------------------
+
+    def get_snapshot(self, camera_id: str) -> InferenceSnapshot | None:
+        """Return the current ``InferenceSnapshot`` for a camera, or ``None``."""
+        orchestrator = self._orchestrators.get(camera_id)
+        if orchestrator is None:
+            return None
+        data = orchestrator.get_snapshot_data()
+        return InferenceSnapshot(camera_id=camera_id, **data)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def close(self) -> None:
+        """Stop all running orchestrators and release Triton connections."""
+        for camera_id in list(self._orchestrators):
+            await self._stop_camera(camera_id)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _start_camera(self, camera_id: str, strategy: str) -> None:
+        config = InferenceWorkerConfig(
+            camera_id=camera_id,
+            strategy=strategy,
+            triton_url=self._triton_url,
+            triton_max_in_flight=self._triton_max_in_flight,
+        )
+        buffer = TemporalBufferService(
+            window_size=config.temporal_buffer_size,
+            gap_reset_seconds=config.identity_gap_reset_seconds,
+        )
+        scheduler = InferenceIngressScheduler(config, buffer, self._metrics)
+        triton = TritonInferenceClient(
+            url=config.triton_url,
+            max_in_flight=config.triton_max_in_flight,
+        )
+        try:
+            await triton.connect()
+        except Exception as exc:  # pylint: disable=broad-except
+            self._logger.warning(
+                "Triton connection failed for camera %s — inference will start but "
+                "requests will error until Triton is reachable: %s",
+                camera_id,
+                exc,
+            )
+
+        orchestrator = InferenceOrchestrator(
+            config=config,
+            scheduler=scheduler,
+            triton=triton,
+            batch_builder=BatchBuilder(),
+            decision_engine=DecisionEngine(config),
+            event_repository=self._event_repository,
+            websocket_manager=self._websocket_manager,
+            kafka_publisher=self._kafka_publisher,
+            metrics_recorder=self._metrics,
+        )
+        self._schedulers[camera_id] = scheduler
+        self._orchestrators[camera_id] = orchestrator
+        orchestrator.start()
+        self._logger.info("Inference started for camera %s (strategy=%s)", camera_id, strategy)
+
+    async def _stop_camera(self, camera_id: str) -> None:
+        orchestrator = self._orchestrators.pop(camera_id, None)
+        self._schedulers.pop(camera_id, None)
+        if orchestrator is not None:
+            await orchestrator.close()
+            self._logger.info("Inference stopped for camera %s", camera_id)

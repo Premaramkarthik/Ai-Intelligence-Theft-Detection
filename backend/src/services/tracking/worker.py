@@ -214,6 +214,9 @@ class RealtimeTrackingWorker:  # pylint: disable=too-many-instance-attributes,to
                     if not self._sampling_gate.should_emit():
                         continue
                     frame_array = frame.to_ndarray(format="bgr24")
+                    # Copy before annotation so InferenceIngressPublisher receives
+                    # clean crops without bounding-box overlays drawn by _track_frame.
+                    inference_frame = frame_array.copy()
                     tracks = self._track_frame(frame_array, loop)
                     if self._publish_gate.should_emit():
                         self._ensure_publisher(frame_array)
@@ -222,7 +225,9 @@ class RealtimeTrackingWorker:  # pylint: disable=too-many-instance-attributes,to
                             self._publisher.put(frame_array)
                             self._record_published_frame()
                     if self._should_publish_update():
-                        loop.call_soon_threadsafe(self._publish_update_to_loop, tracks)
+                        loop.call_soon_threadsafe(
+                            self._publish_update_to_loop, tracks, inference_frame
+                        )
         finally:
             container.close()
             enrichment_thread.join(timeout=5.0)
@@ -487,18 +492,23 @@ class RealtimeTrackingWorker:  # pylint: disable=too-many-instance-attributes,to
     # Update publisher helpers
     # ------------------------------------------------------------------
 
-    def _publish_update_to_loop(self, tracks: list[TrackingTrackSnapshot]) -> None:
+    def _publish_update_to_loop(
+        self, tracks: list[TrackingTrackSnapshot], frame: Any = None
+    ) -> None:
         asyncio.create_task(
-            self._publish_update_safely(tracks),
+            self._publish_update_safely(tracks, frame),
         )
 
-    async def _publish_update_safely(self, tracks: list[TrackingTrackSnapshot]) -> None:
+    async def _publish_update_safely(
+        self, tracks: list[TrackingTrackSnapshot], frame: Any = None
+    ) -> None:
         try:
             await self._update_publisher.publish(
                 camera_id=self._config.camera_id,
                 stream_name=self._config.source_stream_name,
                 annotated_stream_name=self._config.annotated_stream_name,
                 tracks=tracks,
+                frame=frame,
             )
         except Exception as exc:  # pylint: disable=broad-except
             self._record_last_error(str(exc))
