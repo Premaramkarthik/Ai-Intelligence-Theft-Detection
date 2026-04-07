@@ -15,6 +15,7 @@ class RecordingPublisher:
         stream_name: str,
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
+        frame: object = None,
     ) -> None:
         self.calls.append(
             {
@@ -34,8 +35,9 @@ class FailingPublisher:
         stream_name: str,
         annotated_stream_name: str,
         tracks: list[TrackingTrackSnapshot],
+        frame: object = None,
     ) -> None:
-        del camera_id, stream_name, annotated_stream_name, tracks
+        del camera_id, stream_name, annotated_stream_name, tracks, frame
         raise RuntimeError("boom")
 
 
