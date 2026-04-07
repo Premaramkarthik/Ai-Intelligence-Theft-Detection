@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
+from src.services.tracking.detectors.detector_pool import DetectorPool
 from src.services.tracking.manager import TrackingStreamManager
 
 
@@ -16,13 +17,13 @@ class FakeTrackingWorker:
         detector,
         identity_store,
         update_publisher,
-        embedder_weights_path,
+        shared_embedding_service,
     ) -> None:
         self.config = config
         self.detector = detector
         self.identity_store = identity_store
         self.update_publisher = update_publisher
-        self.embedder_weights_path = embedder_weights_path
+        self.shared_embedding_service = shared_embedding_service
         self._stop_event = asyncio.Event()
 
     async def run(self) -> None:
@@ -49,8 +50,9 @@ class FakeIdentityStore:
 
 
 async def test_tracking_manager_builds_annotated_endpoints() -> None:
+    pool = DetectorPool([FakeDetector()])
     manager = TrackingStreamManager(
-        detector=FakeDetector(),
+        detector_pool=pool,
         identity_store=FakeIdentityStore(),
         worker_factory=FakeTrackingWorker,
         ffmpeg_binary="ffmpeg",
@@ -67,9 +69,16 @@ async def test_tracking_manager_builds_annotated_endpoints() -> None:
     assert endpoints.whep_url == "http://mediamtx:8889/front_gate_tracked/whep"
 
 
-async def test_tracking_manager_runs_multiple_workers_in_one_loop() -> None:
+async def test_tracking_manager_runs_multiple_workers_in_one_loop(monkeypatch) -> None:
+    # ffmpeg need not be on PATH for this unit test.
+    monkeypatch.setattr(
+        "src.services.tracking.manager._binary_is_available",
+        lambda _: True,
+    )
+
+    pool = DetectorPool([FakeDetector(), FakeDetector()])
     manager = TrackingStreamManager(
-        detector=FakeDetector(),
+        detector_pool=pool,
         identity_store=FakeIdentityStore(),
         worker_factory=FakeTrackingWorker,
         ffmpeg_binary="ffmpeg",

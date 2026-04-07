@@ -68,15 +68,7 @@ def test_prometheus_metrics_record_camera_and_backend_values() -> None:
     metrics.increment_tracking_kafka_publish_failures()
     metrics.increment_stream_kafka_messages_consumed()
     metrics.increment_stream_kafka_consumer_failures()
-    metrics.increment_inference_frames_dropped("cam_1", "queue_full")
-    metrics.record_inference_request("cam_1", "stgcn_pose", "ok")
-    metrics.observe_inference_latency("stgcn_pose", 0.24)
-    metrics.observe_inference_batch_size("stgcn_pose", 4)
-    metrics.set_inference_active_tracks("cam_1", 2)
-    metrics.increment_label_prediction("cam_1", "normal")
-    metrics.increment_label_transition("cam_1", "normal", "shoplifting")
-    metrics.set_decision_ema_score("cam_1", 0.81)
-    metrics.set_triton_model_ready("stgcn_pose", True)
+    metrics.increment_inference_frame_drop("cam_1")
 
     families = {metric.name: metric for metric in registry.collect()}
 
@@ -129,38 +121,11 @@ def test_prometheus_metrics_record_camera_and_backend_values() -> None:
     assert (
         _sample_value(
             families,
-            "inference_requests",
-            "inference_requests_total",
+            "inference_frame_drops",
+            "inference_frame_drops_total",
         )
         == 1.0
     )
-    assert (
-        _sample_value(
-            families,
-            "inference_frames_dropped",
-            "inference_frames_dropped_total",
-        )
-        == 1.0
-    )
-    assert families["inference_active_tracks_total"].samples[0].value == 2.0
-    assert (
-        _sample_value(
-            families,
-            "label_predictions",
-            "label_predictions_total",
-        )
-        == 1.0
-    )
-    assert (
-        _sample_value(
-            families,
-            "label_transitions",
-            "label_transitions_total",
-        )
-        == 1.0
-    )
-    assert families["decision_ema_score"].samples[0].value == 0.81
-    assert families["triton_model_ready"].samples[0].value == 1.0
 
 
 async def test_system_metrics_collector_updates_queue_and_resource_metrics(
@@ -303,34 +268,11 @@ async def test_runtime_metrics_collector_exports_worker_and_dependency_state() -
                 last_frame_at=now - timedelta(seconds=1),
             )
 
-    class FakeInferenceManager:
-        def active_cameras(self) -> list[str]:
-            return ["cam_1"]
-
-        def get_runtime_snapshot(self, camera_id: str):
-            assert camera_id == "cam_1"
-            return SimpleNamespace(
-                enabled=True,
-                model_name="stgcn_pose",
-                active_tracks=2,
-                ema_score=0.77,
-                last_alert=None,
-            )
-
-        async def health_snapshot(self):
-            return SimpleNamespace(
-                healthy=True,
-                model_name="stgcn_pose",
-                model_ready=True,
-                last_error=None,
-            )
-
     collector = RuntimeMetricsCollector(
         metrics=metrics,
         dependencies=RuntimeMetricsDependencies(
             stream_manager=FakeStreamManager(),
             tracking_manager=FakeTrackingManager(),
-            inference_manager=FakeInferenceManager(),
             tracking_kafka_producer=SimpleNamespace(
                 health_snapshot=lambda: {"healthy": True, "last_error": None},
             ),
@@ -354,9 +296,6 @@ async def test_runtime_metrics_collector_exports_worker_and_dependency_state() -
     assert families["tracking_worker_count"].samples[0].value == 1.0
     assert families["tracking_processed_frames"].samples[0].value == 10.0
     assert families["tracking_active_tracks"].samples[0].value == 2.0
-    assert families["inference_active_tracks_total"].samples[0].value == 2.0
-    assert families["decision_ema_score"].samples[0].value == 0.77
-    assert families["triton_model_ready"].samples[0].value == 1.0
 
     dependency_samples = {
         sample.labels["component"]: sample.value
@@ -366,7 +305,6 @@ async def test_runtime_metrics_collector_exports_worker_and_dependency_state() -
     assert dependency_samples["mediamtx"] == 1.0
     assert dependency_samples["kafka_consumer"] == 0.0
     assert dependency_samples["tracking_kafka_producer"] == 1.0
-    assert dependency_samples["inference"] == 1.0
 
 
 async def test_http_metrics_middleware_records_route_templates() -> None:

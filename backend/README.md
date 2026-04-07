@@ -91,7 +91,7 @@ flowchart LR
     Triton["Triton<br/>(standalone inference modules)"]
 
     Frontend -->|REST| API
-    Frontend -->|WS subscribe| WS
+    Frontend -->|WS subscribe| WSadd.
     API --> DB
     API --> MediaMtxSvc
     MediaMtxSvc --> MediaMTX

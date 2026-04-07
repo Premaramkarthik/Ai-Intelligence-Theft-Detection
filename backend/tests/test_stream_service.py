@@ -89,7 +89,6 @@ async def test_start_stream_fails_fast_when_camera_source_is_unreachable() -> No
         mediamtx_service=mediamtx_service,
         stream_manager=stream_manager,
         tracking_manager=tracking_manager,
-        inference_manager=inference_manager,
         contract_service=SimpleNamespace(),
     )
 

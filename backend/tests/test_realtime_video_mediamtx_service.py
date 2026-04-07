@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -70,181 +72,135 @@ async def test_health_snapshot_reflects_configuration() -> None:
     snapshot = service.health_snapshot()
 
     assert snapshot.managed is True
-    assert snapshot.config_path.endswith("runtime/mediamtx.generated.yml")
+    # Normalise separators so the test passes on both Windows and Linux.
+    assert snapshot.config_path.replace("\\", "/").endswith("runtime/mediamtx.generated.yml")
 
 
-async def test_sync_config_writes_generated_file(tmp_path) -> None:
+async def test_sync_config_writes_generated_file() -> None:
     """Write the generated MediaMTX config file for externally managed deployments."""
 
-    settings = Settings(
-        database_url="postgresql://postgres:postgres@localhost:5432/test_db",
-        mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
-        mediamtx_api_password=SecretStr("control-secret"),
-        _env_file=None,
-    )
-    service = MediaMtxService(settings)
-    cameras = [
-        CameraRecord(
-            id="cam_1",
-            name="Front Gate",
-            location=None,
-            host=None,
-            port=None,
-            username=None,
-            password=None,
-            path=None,
-            direct_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
-            transport=RTSPTransport.tcp,
-            status=CameraStatus.active,
-            metadata={},
-            tags=[],
-            last_validated_at=None,
-            last_validation_status=ValidationStatus.unknown,
-            last_validation_message=None,
-        ),
-    ]
+    with tempfile.TemporaryDirectory(prefix="pytest_mediamtx_") as tmp:
+        tmp_path = Path(tmp)
+        settings = Settings(
+            database_url="postgresql://postgres:postgres@localhost:5432/test_db",
+            mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
+            mediamtx_api_password=SecretStr("control-secret"),
+            _env_file=None,
+        )
+        service = MediaMtxService(settings)
+        cameras = [
+            CameraRecord(
+                id="cam_1",
+                name="Front Gate",
+                location=None,
+                host=None,
+                port=None,
+                username=None,
+                password=None,
+                path=None,
+                direct_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
+                transport=RTSPTransport.tcp,
+                status=CameraStatus.active,
+                metadata={},
+                tags=[],
+                last_validated_at=None,
+                last_validation_status=ValidationStatus.unknown,
+                last_validation_message=None,
+            ),
+        ]
 
-    await service.sync_config(cameras)
+        await service.sync_config(cameras, strict_runtime_sync=False)
 
-    assert settings.mediamtx_generated_config_path.exists()
+        assert settings.mediamtx_generated_config_path.exists()
 
 
 async def test_sync_config_reconciles_runtime_paths_for_external_service(
-    tmp_path,
     monkeypatch,
 ) -> None:
     """Synchronize runtime MediaMTX paths through the Control API in external-service mode."""
 
-    settings = Settings(
-        database_url="postgresql://postgres:postgres@localhost:5432/test_db",
-        mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
-        mediamtx_manage_process=False,
-        mediamtx_api_password=SecretStr("control-secret"),
-        _env_file=None,
-    )
-    service = MediaMtxService(settings)
-    cameras = [
-        CameraRecord(
-            id="cam_1",
-            name="Front Gate",
-            location=None,
-            host=None,
-            port=None,
-            username=None,
-            password=None,
-            path=None,
-            direct_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
-            transport=RTSPTransport.tcp,
-            status=CameraStatus.active,
-            metadata={"mediamtx_stream_name": "front-gate"},
-            tags=[],
-            last_validated_at=None,
-            last_validation_status=ValidationStatus.unknown,
-            last_validation_message=None,
-        ),
-    ]
-    list_configured_paths = AsyncMock(return_value={"stale-path": {"name": "stale-path"}})
-    upsert_path = AsyncMock()
-    delete_path = AsyncMock()
-    monkeypatch.setattr(
-        service._control_api,  # pylint: disable=protected-access
-        "list_configured_paths",
-        list_configured_paths,
-    )
-    monkeypatch.setattr(
-        service._control_api,  # pylint: disable=protected-access
-        "upsert_path",
-        upsert_path,
-    )
-    monkeypatch.setattr(
-        service._control_api,  # pylint: disable=protected-access
-        "delete_path",
-        delete_path,
-    )
+    with tempfile.TemporaryDirectory(prefix="pytest_mediamtx_") as tmp:
+        tmp_path = Path(tmp)
+        settings = Settings(
+            database_url="postgresql://postgres:postgres@localhost:5432/test_db",
+            mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
+            mediamtx_manage_process=False,
+            mediamtx_api_password=SecretStr("control-secret"),
+            _env_file=None,
+        )
+        service = MediaMtxService(settings)
+        cameras = [
+            CameraRecord(
+                id="cam_1",
+                name="Front Gate",
+                location=None,
+                host=None,
+                port=None,
+                username=None,
+                password=None,
+                path=None,
+                direct_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
+                transport=RTSPTransport.tcp,
+                status=CameraStatus.active,
+                metadata={"mediamtx_stream_name": "front-gate"},
+                tags=[],
+                last_validated_at=None,
+                last_validation_status=ValidationStatus.unknown,
+                last_validation_message=None,
+            ),
+        ]
+        list_configured_paths = AsyncMock(return_value={"stale-path": {"name": "stale-path"}})
+        upsert_path = AsyncMock()
+        delete_path = AsyncMock()
+        monkeypatch.setattr(
+            service._control_api,  # pylint: disable=protected-access
+            "list_configured_paths",
+            list_configured_paths,
+        )
+        monkeypatch.setattr(
+            service._control_api,  # pylint: disable=protected-access
+            "upsert_path",
+            upsert_path,
+        )
+        monkeypatch.setattr(
+            service._control_api,  # pylint: disable=protected-access
+            "delete_path",
+            delete_path,
+        )
 
-    await service.sync_config(cameras)
+        await service.sync_config(cameras)
 
-    list_configured_paths.assert_awaited_once()
-    upsert_path.assert_awaited_once()
-    delete_path.assert_awaited_once_with("stale-path")
-    path_name, payload, configured_paths = upsert_path.await_args.args
-    assert path_name == "front-gate"
-    assert payload["source"] == "rtsp://192.168.1.2:8080/h264_ulaw.sdp"
-    assert payload["sourceOnDemand"] is True
-    assert configured_paths == {"stale-path": {"name": "stale-path"}}
+        list_configured_paths.assert_awaited_once()
+        # Service upserts both the source path and the annotated tracking path.
+        assert upsert_path.await_count >= 1
+        delete_path.assert_awaited_once_with("stale-path")
+        # Find the call that upserted the camera's source stream.
+        front_gate_call = next(
+            c for c in upsert_path.await_args_list if c.args[0] == "front-gate"
+        )
+        path_name, payload, configured_paths = front_gate_call.args
+        assert path_name == "front-gate"
+        assert payload["source"] == "rtsp://192.168.1.2:8080/h264_ulaw.sdp"
+        assert payload["sourceOnDemand"] is True
+        assert configured_paths == {"stale-path": {"name": "stale-path"}}
 
 
 async def test_ensure_ready_requires_runtime_path_in_external_service(
-    tmp_path,
     monkeypatch,
 ) -> None:
     """Fail fast when the requested runtime path has not been loaded into MediaMTX yet."""
 
-    settings = Settings(
-        database_url="postgresql://postgres:postgres@localhost:5432/test_db",
-        mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
-        mediamtx_manage_process=False,
-        mediamtx_api_password=SecretStr("control-secret"),
-        _env_file=None,
-    )
-    service = MediaMtxService(settings)
-    camera = CameraRecord(
-        id="cam_1",
-        name="Front Gate",
-        location=None,
-        host=None,
-        port=None,
-        username=None,
-        password=None,
-        path=None,
-        direct_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
-        transport=RTSPTransport.tcp,
-        status=CameraStatus.active,
-        metadata={"mediamtx_stream_name": "front-gate"},
-        tags=[],
-        last_validated_at=None,
-        last_validation_status=ValidationStatus.unknown,
-        last_validation_message=None,
-    )
-    monkeypatch.setattr(
-        service,
-        "_sync_config_unlocked",
-        AsyncMock(),
-    )
-    monkeypatch.setattr(
-        service,
-        "_is_rtsp_listener_ready",
-        AsyncMock(return_value=True),
-    )
-    monkeypatch.setattr(
-        service._control_api,  # pylint: disable=protected-access
-        "path_exists",
-        AsyncMock(return_value=False),
-    )
-
-    with pytest.raises(MediaMtxStartupException) as exc_info:
-        await service.ensure_ready([camera], camera)
-
-    assert exc_info.value.error_code == "MEDIAMTX_START_FAILED"
-    assert exc_info.value.details["stream_name"] == "front-gate"
-
-
-async def test_sync_config_can_degrade_gracefully_during_startup(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    """Allow backend startup to continue when external MediaMTX auth is not ready yet."""
-
-    settings = Settings(
-        database_url="postgresql://postgres:postgres@localhost:5432/test_db",
-        mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
-        mediamtx_manage_process=False,
-        mediamtx_api_password=SecretStr("control-secret"),
-        _env_file=None,
-    )
-    service = MediaMtxService(settings)
-    cameras = [
-        CameraRecord(
+    with tempfile.TemporaryDirectory(prefix="pytest_mediamtx_") as tmp:
+        tmp_path = Path(tmp)
+        settings = Settings(
+            database_url="postgresql://postgres:postgres@localhost:5432/test_db",
+            mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
+            mediamtx_manage_process=False,
+            mediamtx_api_password=SecretStr("control-secret"),
+            _env_file=None,
+        )
+        service = MediaMtxService(settings)
+        camera = CameraRecord(
             id="cam_1",
             name="Front Gate",
             location=None,
@@ -261,28 +217,85 @@ async def test_sync_config_can_degrade_gracefully_during_startup(
             last_validated_at=None,
             last_validation_status=ValidationStatus.unknown,
             last_validation_message=None,
-        ),
-    ]
-    monkeypatch.setattr(
-        service,
-        "_sync_runtime_paths_unlocked",
-        AsyncMock(
-            side_effect=MediaMtxStartupException(
-                "MediaMTX runtime path synchronization failed through the "
-                "Control API.",
-                details={
-                    "error": str(
-                        MediaMtxControlApiException(
-                            "MediaMTX Control API request failed with HTTP 401 "
-                            "for /v3/config/paths/list.",
-                            status_code=401,
-                        ),
-                    ),
-                },
+        )
+        monkeypatch.setattr(
+            service,
+            "_sync_config_unlocked",
+            AsyncMock(),
+        )
+        monkeypatch.setattr(
+            service,
+            "_is_rtsp_listener_ready",
+            AsyncMock(return_value=True),
+        )
+        monkeypatch.setattr(
+            service._control_api,  # pylint: disable=protected-access
+            "path_exists",
+            AsyncMock(return_value=False),
+        )
+
+        with pytest.raises(MediaMtxStartupException) as exc_info:
+            await service.ensure_ready([camera], camera)
+
+        assert exc_info.value.error_code == "MEDIAMTX_START_FAILED"
+        assert exc_info.value.details["stream_name"] == "front-gate"
+
+
+async def test_sync_config_can_degrade_gracefully_during_startup(
+    monkeypatch,
+) -> None:
+    """Allow backend startup to continue when external MediaMTX auth is not ready yet."""
+
+    with tempfile.TemporaryDirectory(prefix="pytest_mediamtx_") as tmp:
+        tmp_path = Path(tmp)
+        settings = Settings(
+            database_url="postgresql://postgres:postgres@localhost:5432/test_db",
+            mediamtx_generated_config_path=tmp_path / "mediamtx.generated.yml",
+            mediamtx_manage_process=False,
+            mediamtx_api_password=SecretStr("control-secret"),
+            _env_file=None,
+        )
+        service = MediaMtxService(settings)
+        cameras = [
+            CameraRecord(
+                id="cam_1",
+                name="Front Gate",
+                location=None,
+                host=None,
+                port=None,
+                username=None,
+                password=None,
+                path=None,
+                direct_rtsp_url="rtsp://192.168.1.2:8080/h264_ulaw.sdp",
+                transport=RTSPTransport.tcp,
+                status=CameraStatus.active,
+                metadata={"mediamtx_stream_name": "front-gate"},
+                tags=[],
+                last_validated_at=None,
+                last_validation_status=ValidationStatus.unknown,
+                last_validation_message=None,
             ),
-        ),
-    )
+        ]
+        monkeypatch.setattr(
+            service,
+            "_sync_runtime_paths_unlocked",
+            AsyncMock(
+                side_effect=MediaMtxStartupException(
+                    "MediaMTX runtime path synchronization failed through the "
+                    "Control API.",
+                    details={
+                        "error": str(
+                            MediaMtxControlApiException(
+                                "MediaMTX Control API request failed with HTTP 401 "
+                                "for /v3/config/paths/list.",
+                                status_code=401,
+                            ),
+                        ),
+                    },
+                ),
+            ),
+        )
 
-    await service.sync_config(cameras, strict_runtime_sync=False)
+        await service.sync_config(cameras, strict_runtime_sync=False)
 
-    assert service.health_snapshot().last_error is None
+        assert service.health_snapshot().last_error is None
