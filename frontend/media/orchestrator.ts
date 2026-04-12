@@ -63,6 +63,10 @@ export class StreamOrchestrator {
     this.stopRequested = false;
     this.startToken += 1;
     this.retryCount = 0;
+    if (this.retryTimerId !== null) {
+      window.clearTimeout(this.retryTimerId);
+      this.retryTimerId = null;
+    }
     await this.clearAdapters();
     await this.activateWebRtc(this.startToken, 0);
   }
@@ -158,6 +162,10 @@ export class StreamOrchestrator {
     }
 
     await this.webRtcAdapter.stop();
+    if (this.retryTimerId !== null) {
+      window.clearTimeout(this.retryTimerId);
+      this.retryTimerId = null;
+    }
 
     const nextAttempt = this.retryCount + 1;
     if (nextAttempt >= this.maxRetries) {
@@ -177,6 +185,7 @@ export class StreamOrchestrator {
     });
 
     this.retryTimerId = window.setTimeout(() => {
+      this.retryTimerId = null;
       void this.activateWebRtc(token, nextAttempt);
     }, delay);
   }
@@ -245,6 +254,10 @@ export class StreamOrchestrator {
   }
 
   private async clearAdapters(): Promise<void> {
+    if (this.retryTimerId !== null) {
+      window.clearTimeout(this.retryTimerId);
+      this.retryTimerId = null;
+    }
     this.unsubscribeWebRtc?.();
     this.unsubscribeWebRtc = null;
     this.unsubscribeHls?.();

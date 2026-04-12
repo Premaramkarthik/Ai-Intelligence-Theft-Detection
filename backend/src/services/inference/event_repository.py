@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import asyncpg
 
 from src.core.logger.logger import get_logger
+from src.services.inference.logging import log_inference_event
 
 
 class InferenceEventRepository:
@@ -71,9 +73,17 @@ class InferenceEventRepository:
                     emitted_at,
                 )
         except asyncpg.PostgresError as exc:
-            self._logger.error(
-                "Failed to persist inference event for camera %s track %s: %s",
-                camera_id,
-                local_track_id,
-                exc,
+            log_inference_event(
+                self._logger,
+                logging.ERROR,
+                "inference.persistence_failed",
+                "Failed to persist inference event.",
+                camera_id=camera_id,
+                stream_name=stream_name,
+                persistent_id=persistent_id,
+                local_track_id=local_track_id,
+                strategy=strategy,
+                model_name=model_name,
+                error=str(exc),
+                error_type=exc.__class__.__name__,
             )

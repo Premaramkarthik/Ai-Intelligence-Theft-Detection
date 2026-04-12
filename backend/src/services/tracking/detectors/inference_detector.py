@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -34,6 +35,11 @@ class _Prediction:
     height: float
     confidence: float
     class_name: str
+
+
+_WINDOWS_SYMLINK_PRIVILEGE_ERROR = 1314
+_INFERENCE_COMPAT_LOCK = threading.Lock()
+_WINDOWS_INFERENCE_SYMLINK_FALLBACK_APPLIED = False
 
 
 class InferencePersonDetector:
@@ -138,6 +144,182 @@ def _configure_inference_environment() -> None:
     }
     for key, value in optional_feature_flags.items():
         os.environ.setdefault(key, value)
+    _apply_windows_inference_symlink_fallback()
+
+
+def _apply_windows_inference_symlink_fallback() -> None:
+    if os.name != "nt":
+        return
+
+    global _WINDOWS_INFERENCE_SYMLINK_FALLBACK_APPLIED
+    if _WINDOWS_INFERENCE_SYMLINK_FALLBACK_APPLIED:
+        return
+
+    with _INFERENCE_COMPAT_LOCK:
+        if _WINDOWS_INFERENCE_SYMLINK_FALLBACK_APPLIED:
+            return
+        try:
+            from inference_models.models.auto_loaders import core as auto_loader_core
+        except Exception:
+            return
+
+        original_handle_symlink_creation = getattr(
+            auto_loader_core,
+            "handle_symlink_creation",
+            None,
+        )
+        original_handle_dependencies_directories_creation = getattr(
+            auto_loader_core,
+            "handle_dependencies_directories_creation",
+            None,
+        )
+        if not callable(original_handle_symlink_creation) or not callable(
+            original_handle_dependencies_directories_creation,
+        ):
+            return
+
+        def _handle_symlink_creation_with_copy_fallback(
+            target_path: str,
+            link_name: str,
+            model_download_file_lock_acquire_timeout: int = auto_loader_core.FILE_LOCK_ACQUIRE_TIMEOUT,
+            on_symlink_created: Callable[[str, str], None] | None = None,
+            on_symlink_deleted: Callable[[str], None] | None = None,
+        ) -> None:
+            try:
+                original_handle_symlink_creation(
+                    target_path=target_path,
+                    link_name=link_name,
+                    model_download_file_lock_acquire_timeout=model_download_file_lock_acquire_timeout,
+                    on_symlink_created=on_symlink_created,
+                    on_symlink_deleted=on_symlink_deleted,
+                )
+                return
+            except OSError as exc:
+                if not _is_windows_symlink_privilege_error(exc):
+                    raise
+
+            link_dir, link_file_name = os.path.split(os.path.abspath(link_name))
+            os.makedirs(link_dir, exist_ok=True)
+            lock_path = os.path.join(link_dir, f".{link_file_name}.lock")
+            _copy_path_with_lock(
+                source_path=target_path,
+                destination_path=link_name,
+                lock_path=lock_path,
+                lock_timeout=model_download_file_lock_acquire_timeout,
+                file_lock_cls=auto_loader_core.FileLock,
+                on_created=on_symlink_created,
+                on_deleted=on_symlink_deleted,
+            )
+
+        def _handle_dependencies_directories_creation_with_copy_fallback(
+            model_package_cache_dir: str,
+            model_dependencies_directories: dict[str, str] | None,
+            model_download_file_lock_acquire_timeout: int = auto_loader_core.FILE_LOCK_ACQUIRE_TIMEOUT,
+            on_symlink_created: Callable[[str, str], None] | None = None,
+            on_symlink_deleted: Callable[[str], None] | None = None,
+        ) -> set[str]:
+            try:
+                return original_handle_dependencies_directories_creation(
+                    model_package_cache_dir=model_package_cache_dir,
+                    model_dependencies_directories=model_dependencies_directories,
+                    model_download_file_lock_acquire_timeout=model_download_file_lock_acquire_timeout,
+                    on_symlink_created=on_symlink_created,
+                    on_symlink_deleted=on_symlink_deleted,
+                )
+            except OSError as exc:
+                if not _is_windows_symlink_privilege_error(exc):
+                    raise
+
+            resolved_files: set[str] = set()
+            if not model_dependencies_directories:
+                return resolved_files
+
+            for dependency_name, dependency_directory in model_dependencies_directories.items():
+                dependency_files = auto_loader_core.scan_dependency_directory_for_resolved_files(
+                    dependency_directory=dependency_directory,
+                )
+                resolved_files.update(dependency_files)
+                dependencies_sub_dir = os.path.join(
+                    model_package_cache_dir,
+                    auto_loader_core.MODEL_DEPENDENCIES_SUB_DIR,
+                )
+                target_dependency_dir = os.path.join(dependencies_sub_dir, dependency_name)
+                os.makedirs(dependencies_sub_dir, exist_ok=True)
+                dependency_lock_path = os.path.join(
+                    dependencies_sub_dir,
+                    f".{dependency_name}.lock",
+                )
+                _copy_path_with_lock(
+                    source_path=dependency_directory,
+                    destination_path=target_dependency_dir,
+                    lock_path=dependency_lock_path,
+                    lock_timeout=model_download_file_lock_acquire_timeout,
+                    file_lock_cls=auto_loader_core.FileLock,
+                    on_created=on_symlink_created,
+                    on_deleted=on_symlink_deleted,
+                )
+            return resolved_files
+
+        auto_loader_core.handle_symlink_creation = (
+            _handle_symlink_creation_with_copy_fallback
+        )
+        auto_loader_core.handle_dependencies_directories_creation = (
+            _handle_dependencies_directories_creation_with_copy_fallback
+        )
+        _WINDOWS_INFERENCE_SYMLINK_FALLBACK_APPLIED = True
+
+
+def _is_windows_symlink_privilege_error(exc: OSError) -> bool:
+    return os.name == "nt" and getattr(exc, "winerror", None) == _WINDOWS_SYMLINK_PRIVILEGE_ERROR
+
+
+def _copy_path_with_lock(
+    *,
+    source_path: str,
+    destination_path: str,
+    lock_path: str,
+    lock_timeout: int,
+    file_lock_cls: Any,
+    on_created: Callable[[str, str], None] | None = None,
+    on_deleted: Callable[[str], None] | None = None,
+) -> None:
+    with file_lock_cls(lock_path, timeout=lock_timeout):
+        if os.path.islink(destination_path):
+            os.remove(destination_path)
+            if on_deleted is not None:
+                on_deleted(destination_path)
+        elif os.path.exists(destination_path):
+            return
+
+        _copy_path_atomically(source_path=source_path, destination_path=destination_path)
+        if on_created is not None:
+            on_created(source_path, destination_path)
+
+
+def _copy_path_atomically(*, source_path: str, destination_path: str) -> None:
+    temp_destination_path = (
+        f"{destination_path}.tmp-copy-{os.getpid()}-{threading.get_ident()}"
+    )
+    _remove_path_if_exists(temp_destination_path)
+    try:
+        if os.path.isdir(source_path):
+            shutil.copytree(source_path, temp_destination_path)
+        else:
+            shutil.copy2(source_path, temp_destination_path)
+        os.replace(temp_destination_path, destination_path)
+    finally:
+        _remove_path_if_exists(temp_destination_path)
+
+
+def _remove_path_if_exists(path: str) -> None:
+    if os.path.islink(path):
+        os.remove(path)
+        return
+    if os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+        return
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def _extract_predictions(result: Any) -> list[_Prediction]:

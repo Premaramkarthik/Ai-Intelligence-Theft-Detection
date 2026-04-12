@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from time import perf_counter
 from typing import Any
 
 import numpy as np
 
 from src.core.logger.logger import get_logger
+from src.services.inference.logging import (
+    log_inference_event,
+    log_inference_exception,
+    summarize_named_arrays,
+)
 
 
 class TritonInferenceClient:
@@ -20,23 +27,65 @@ class TritonInferenceClient:
 
     def __init__(self, url: str, max_in_flight: int = 8) -> None:
         self._url = url
+        self._max_in_flight = max_in_flight
         self._semaphore = asyncio.Semaphore(max_in_flight)
         self._client: Any = None  # tritonclientutils.InferenceServerClient at runtime
         self._logger = get_logger(__name__)
 
     async def connect(self) -> None:
         """Create the gRPC channel and verify server liveness."""
+
         import tritonclient.grpc.aio as triton_grpc  # pylint: disable=import-outside-toplevel
 
-        self._client = triton_grpc.InferenceServerClient(url=self._url)
-        if not await self._client.is_server_live():
-            raise RuntimeError(f"Triton server at {self._url} is not live")
+        connect_started_at = perf_counter()
+        log_inference_event(
+            self._logger,
+            logging.INFO,
+            "inference.triton_connecting",
+            "Connecting to Triton inference server.",
+            triton_url=self._url,
+            max_in_flight=self._max_in_flight,
+        )
+        try:
+            self._client = triton_grpc.InferenceServerClient(url=self._url)
+            if not await self._client.is_server_live():
+                raise RuntimeError(f"Triton server at {self._url} is not live")
+        except Exception as exc:  # pylint: disable=broad-except
+            log_inference_exception(
+                self._logger,
+                logging.ERROR,
+                "inference.triton_connect_error",
+                "Triton connection attempt failed.",
+                exc,
+                triton_url=self._url,
+                max_in_flight=self._max_in_flight,
+                connect_latency_ms=round((perf_counter() - connect_started_at) * 1000.0, 3),
+            )
+            raise
+
+        log_inference_event(
+            self._logger,
+            logging.INFO,
+            "inference.triton_connected",
+            "Connected to Triton inference server.",
+            triton_url=self._url,
+            max_in_flight=self._max_in_flight,
+            connect_latency_ms=round((perf_counter() - connect_started_at) * 1000.0, 3),
+        )
 
     async def close(self) -> None:
         """Close the underlying gRPC channel."""
+
         if self._client is not None:
             await self._client.close()
             self._client = None
+            log_inference_event(
+                self._logger,
+                logging.INFO,
+                "inference.triton_closed",
+                "Closed Triton inference client.",
+                triton_url=self._url,
+            )
 
     async def infer(
         self,
@@ -47,12 +96,24 @@ class TritonInferenceClient:
 
         Args:
             model_name: Triton model repository name.
-            inputs: dict mapping input name → numpy array.
+            inputs: dict mapping input name to numpy array.
 
         Returns:
-            dict mapping output name → numpy array from Triton response.
+            dict mapping output name to numpy array from Triton response.
         """
+
         import tritonclient.grpc.aio as triton_grpc  # pylint: disable=import-outside-toplevel
+
+        request_started_at = perf_counter()
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.triton_request_started",
+            "Submitting Triton inference request.",
+            triton_url=self._url,
+            model_name=model_name,
+            inputs=summarize_named_arrays(inputs),
+        )
 
         triton_inputs = []
         for name, array in inputs.items():
@@ -60,10 +121,35 @@ class TritonInferenceClient:
             inp.set_data_from_numpy(array)
             triton_inputs.append(inp)
 
-        async with self._semaphore:
-            response = await self._client.infer(model_name=model_name, inputs=triton_inputs)
+        try:
+            async with self._semaphore:
+                response = await self._client.infer(model_name=model_name, inputs=triton_inputs)
+        except Exception as exc:  # pylint: disable=broad-except
+            log_inference_exception(
+                self._logger,
+                logging.ERROR,
+                "inference.triton_request_failed",
+                "Triton inference request failed.",
+                exc,
+                triton_url=self._url,
+                model_name=model_name,
+                inputs=summarize_named_arrays(inputs),
+                request_latency_ms=round((perf_counter() - request_started_at) * 1000.0, 3),
+            )
+            raise
 
-        return {
+        outputs = {
             output.name(): response.as_numpy(output.name())
             for output in response.get_output_names()
         }
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.triton_response_received",
+            "Received Triton inference response.",
+            triton_url=self._url,
+            model_name=model_name,
+            outputs=summarize_named_arrays(outputs),
+            request_latency_ms=round((perf_counter() - request_started_at) * 1000.0, 3),
+        )
+        return outputs

@@ -80,7 +80,15 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
     """Create the FastAPI application and wire background runtime services."""
 
     settings = get_settings()
-    configure_logging(settings.log_level, settings.json_logs)
+    configure_logging(
+        settings.log_level,
+        settings.json_logs,
+        enable_file_logging=settings.file_logs_enabled,
+        log_directory=settings.log_directory,
+        log_file_prefix=settings.log_file_prefix,
+        log_file_max_bytes=settings.log_file_max_bytes,
+        log_file_backup_count=settings.log_file_backup_count,
+    )
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):  # pylint: disable=too-many-locals,too-many-statements
@@ -175,6 +183,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             mediamtx_service,
             stream_manager,
             tracking_manager,
+            inference_manager,
             stream_contract_service,
         )
         kafka_consumer = StreamEventConsumer(

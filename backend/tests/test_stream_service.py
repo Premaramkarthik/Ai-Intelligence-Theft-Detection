@@ -63,11 +63,18 @@ class DummyTrackingManager:
 
 
 class DummyInferenceManager:
-    def configure_camera(self, camera_id: str, metadata: dict | None) -> None:
-        del camera_id, metadata
+    async def configure_stream(
+        self,
+        camera_id: str,
+        *,
+        enabled: bool | None = None,
+        strategy: str | None = None,
+    ) -> None:
+        del camera_id, enabled, strategy
 
-    async def warm_camera(self, camera_id: str) -> None:
+    def get_snapshot(self, camera_id: str):
         del camera_id
+        return None
 
 
 @pytest.mark.asyncio
@@ -89,6 +96,7 @@ async def test_start_stream_fails_fast_when_camera_source_is_unreachable() -> No
         mediamtx_service=mediamtx_service,
         stream_manager=stream_manager,
         tracking_manager=tracking_manager,
+        inference_manager=inference_manager,
         contract_service=SimpleNamespace(),
     )
 

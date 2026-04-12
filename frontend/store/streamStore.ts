@@ -5,10 +5,16 @@ import { create } from "zustand";
 import type {
   BackendLifecycleState,
   CameraResponse,
+  InferenceAlertEnvelopeData,
+  InferenceEvent,
+  InferenceStateResponse,
   PlaybackSnapshot,
   StreamCommandState,
   StreamInfoResponse,
   StreamTimelineEvent,
+  TrackingStateResponse,
+  TrackingTrackResponse,
+  TrackingUpdateEnvelopeData,
   WebSocketEnvelope,
 } from "@/types/stream";
 
@@ -22,6 +28,8 @@ interface StreamEntityState {
   playbackProtocol: PlaybackSnapshot["playbackProtocol"];
   playbackMessage: string | null;
   playbackError: string | null;
+  inferenceActiveEvents: InferenceEvent[];
+  recentInferenceAlerts: InferenceEvent[];
   timeline: StreamTimelineEvent[];
 }
 
@@ -65,6 +73,8 @@ function createInitialStreamState(
     playbackProtocol: null,
     playbackMessage: null,
     playbackError: null,
+    inferenceActiveEvents: [],
+    recentInferenceAlerts: [],
     timeline: [],
   };
 }
@@ -136,7 +146,16 @@ function appendTimeline(
 }
 
 function isStreamInfoResponse(value: unknown): value is StreamInfoResponse {
-  return typeof value === "object" && value !== null && "stream_id" in value;
+  if (typeof value !== "object" || value === null || !("stream_id" in value)) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    !("inference" in candidate) ||
+    candidate.inference === null ||
+    isInferenceStateResponse(candidate.inference)
+  );
 }
 
 function isStreamSnapshot(
@@ -148,6 +167,280 @@ function isStreamSnapshot(
     "items" in value &&
     Array.isArray((value as { items: unknown[] }).items)
   );
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isTrackingTrackResponse(value: unknown): value is TrackingTrackResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.track_id === "string" &&
+    (candidate.persistent_id === null || typeof candidate.persistent_id === "string") &&
+    (candidate.class_name === null || typeof candidate.class_name === "string") &&
+    isFiniteNumber(candidate.confidence) &&
+    (candidate.similarity === null || isFiniteNumber(candidate.similarity)) &&
+    isFiniteNumber(candidate.left) &&
+    isFiniteNumber(candidate.top) &&
+    isFiniteNumber(candidate.width) &&
+    isFiniteNumber(candidate.height)
+  );
+}
+
+function isTrackingUpdateEnvelopeData(
+  value: unknown,
+): value is TrackingUpdateEnvelopeData {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    (!("stream_name" in candidate) ||
+      candidate.stream_name === null ||
+      typeof candidate.stream_name === "string") &&
+    (!("annotated_stream_name" in candidate) ||
+      candidate.annotated_stream_name === null ||
+      typeof candidate.annotated_stream_name === "string") &&
+    (!("active_tracks" in candidate) || isFiniteNumber(candidate.active_tracks)) &&
+    (!("tracks" in candidate) ||
+      (Array.isArray(candidate.tracks) &&
+        candidate.tracks.every(isTrackingTrackResponse)))
+  );
+}
+
+function isInferenceStateResponse(value: unknown): value is InferenceStateResponse {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.enabled === "boolean" &&
+    (candidate.strategy === null || typeof candidate.strategy === "string") &&
+    Array.isArray(candidate.available_strategies) &&
+    candidate.available_strategies.every((item) => typeof item === "string") &&
+    typeof candidate.healthy === "boolean" &&
+    (candidate.last_error_message === null ||
+      typeof candidate.last_error_message === "string") &&
+    isFiniteNumber(candidate.queue_depth) &&
+    isFiniteNumber(candidate.active_tracks) &&
+    (candidate.last_result_at === null ||
+      typeof candidate.last_result_at === "string")
+  );
+}
+
+function isInferenceEvent(value: unknown): value is InferenceEvent {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.camera_id === "string" &&
+    typeof candidate.stream_name === "string" &&
+    typeof candidate.persistent_id === "string" &&
+    typeof candidate.local_track_id === "string" &&
+    typeof candidate.strategy === "string" &&
+    isFiniteNumber(candidate.score) &&
+    typeof candidate.alert_level === "string" &&
+    typeof candidate.label === "string" &&
+    typeof candidate.model_name === "string" &&
+    typeof candidate.sampled_at === "string" &&
+    typeof candidate.emitted_at === "string"
+  );
+}
+
+function isInferenceAlertEnvelopeData(
+  value: unknown,
+): value is InferenceAlertEnvelopeData {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.alert_level === "string" &&
+    typeof candidate.persistent_id === "string" &&
+    typeof candidate.camera_id === "string" &&
+    isFiniteNumber(candidate.score) &&
+    typeof candidate.strategy === "string"
+  );
+}
+
+function buildInferenceEventId(event: InferenceEvent): string {
+  return [
+    event.camera_id,
+    event.persistent_id,
+    event.local_track_id,
+    event.emitted_at,
+    event.label,
+    event.model_name,
+    event.score,
+  ].join("|");
+}
+
+function buildInferenceTrackKey(event: InferenceEvent): string {
+  return `${event.persistent_id}|${event.local_track_id}`;
+}
+
+function sortInferenceEvents(events: InferenceEvent[]): InferenceEvent[] {
+  return [...events].sort((left, right) => {
+    return Date.parse(right.emitted_at) - Date.parse(left.emitted_at);
+  });
+}
+
+function upsertActiveInferenceEvent(
+  current: InferenceEvent[],
+  nextEvent: InferenceEvent,
+): InferenceEvent[] {
+  const nextTrackKey = buildInferenceTrackKey(nextEvent);
+  const deduped = current.filter((event) => {
+    return buildInferenceTrackKey(event) !== nextTrackKey;
+  });
+  return sortInferenceEvents([nextEvent, ...deduped]);
+}
+
+function appendRecentInferenceAlert(
+  current: InferenceEvent[],
+  nextEvent: InferenceEvent,
+): InferenceEvent[] {
+  const nextEventId = buildInferenceEventId(nextEvent);
+  return [
+    nextEvent,
+    ...current.filter((event) => buildInferenceEventId(event) !== nextEventId),
+  ].slice(0, MAX_TIMELINE_ITEMS);
+}
+
+function pruneExpiredInferenceEvents(
+  current: InferenceEvent[],
+  cutoffTimestampMs: number,
+): InferenceEvent[] {
+  return current.filter((event) => Date.parse(event.emitted_at) >= cutoffTimestampMs);
+}
+
+function mergeTrackingState(
+  current: TrackingStateResponse | null | undefined,
+  update: TrackingUpdateEnvelopeData,
+): TrackingStateResponse {
+  const tracks = update.tracks ?? [];
+  return {
+    enabled: true,
+    stream_name:
+      update.annotated_stream_name ??
+      update.stream_name ??
+      current?.stream_name ??
+      null,
+    access_urls: current?.access_urls ?? null,
+    is_registered: current?.is_registered ?? true,
+    is_process_alive: current?.is_process_alive ?? true,
+    reconnect_attempts: current?.reconnect_attempts ?? 0,
+    active_tracks: update.active_tracks ?? tracks.length,
+    identity_backend: current?.identity_backend ?? "milvus",
+    last_error_message: current?.last_error_message ?? null,
+    tracks,
+  };
+}
+
+function mergeInferenceState(
+  current: InferenceStateResponse | null | undefined,
+  options: {
+    event?: InferenceEvent;
+    alert?: InferenceAlertEnvelopeData;
+    activeTrackCount?: number;
+  } = {},
+): InferenceStateResponse {
+  const strategy =
+    options.event?.strategy ??
+    options.alert?.strategy ??
+    current?.strategy ??
+    null;
+  return {
+    enabled: true,
+    strategy,
+    available_strategies: current?.available_strategies ?? [],
+    healthy: true,
+    last_error_message: current?.last_error_message ?? null,
+    queue_depth: current?.queue_depth ?? 0,
+    active_tracks: options.activeTrackCount ?? current?.active_tracks ?? 0,
+    last_result_at:
+      options.event?.emitted_at ??
+      current?.last_result_at ??
+      null,
+  };
+}
+
+function applyInferenceEnvelopeToStreams(
+  streams: Record<string, StreamEntityState>,
+  envelope: WebSocketEnvelope,
+): Record<string, StreamEntityState> | null {
+  if (!envelope.camera_id) {
+    return null;
+  }
+
+  const current = streams[envelope.camera_id] ?? createInitialStreamState();
+  const timeline = appendTimeline(current.timeline, {
+    type: envelope.type,
+    topic: envelope.topic,
+    message: envelope.message,
+    timestamp: envelope.timestamp,
+  });
+
+  if (envelope.type === "inference.updated" && isInferenceEvent(envelope.data)) {
+    const nextActiveEvents = upsertActiveInferenceEvent(
+      current.inferenceActiveEvents,
+      envelope.data,
+    );
+    const nextRecentAlerts =
+      envelope.data.alert_level === "normal"
+        ? current.recentInferenceAlerts
+        : appendRecentInferenceAlert(current.recentInferenceAlerts, envelope.data);
+
+    return {
+      ...streams,
+      [envelope.camera_id]: {
+        ...current,
+        streamInfo: current.streamInfo
+          ? {
+              ...current.streamInfo,
+              inference: mergeInferenceState(current.streamInfo.inference, {
+                event: envelope.data,
+                activeTrackCount: nextActiveEvents.length,
+              }),
+            }
+          : current.streamInfo,
+        inferenceActiveEvents: nextActiveEvents,
+        recentInferenceAlerts: nextRecentAlerts,
+        timeline,
+      },
+    };
+  }
+
+  if (envelope.type === "inference.alert" && isInferenceAlertEnvelopeData(envelope.data)) {
+    return {
+      ...streams,
+      [envelope.camera_id]: {
+        ...current,
+        streamInfo: current.streamInfo
+          ? {
+              ...current.streamInfo,
+              inference: mergeInferenceState(current.streamInfo.inference, {
+                alert: envelope.data,
+                activeTrackCount: current.inferenceActiveEvents.length,
+              }),
+            }
+          : current.streamInfo,
+        timeline,
+      },
+    };
+  }
+
+  return null;
 }
 
 
@@ -285,6 +578,50 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
         return { streams: nextStreams };
       }
 
+      if (
+        envelope.camera_id &&
+        envelope.topic === "tracking.updated" &&
+        isTrackingUpdateEnvelopeData(envelope.data)
+      ) {
+        const current = nextStreams[envelope.camera_id] ??
+          createInitialStreamState();
+        const timeline = appendTimeline(current.timeline, {
+          type: envelope.type,
+          topic: envelope.topic,
+          message: envelope.message,
+          timestamp: envelope.timestamp,
+        });
+
+        if (!current.streamInfo) {
+          nextStreams[envelope.camera_id] = {
+            ...current,
+            timeline,
+          };
+          return { streams: nextStreams };
+        }
+
+        nextStreams[envelope.camera_id] = {
+          ...current,
+          streamInfo: {
+            ...current.streamInfo,
+            tracking: mergeTrackingState(
+              current.streamInfo.tracking,
+              envelope.data,
+            ),
+          },
+          timeline,
+        };
+        return { streams: nextStreams };
+      }
+
+      const nextInferenceStreams = applyInferenceEnvelopeToStreams(
+        nextStreams,
+        envelope,
+      );
+      if (nextInferenceStreams) {
+        return { streams: nextInferenceStreams };
+      }
+
       return state;
     }),
   setCommandState: (cameraId, commandState, commandMessage) =>
@@ -335,13 +672,55 @@ export const useStreamStore = create<StreamStoreState>((set) => ({
     }),
   applyInferenceEnvelope: (envelope) =>
     set((state) => {
-      void envelope;
-      return state;
+      const nextStreams = applyInferenceEnvelopeToStreams(state.streams, envelope);
+      if (!nextStreams) {
+        return state;
+      }
+      return { streams: nextStreams };
     }),
   pruneInferenceEvents: (ttlMs) =>
     set((state) => {
-      void ttlMs;
-      return state;
+      const cutoffTimestampMs = Date.now() - ttlMs;
+      let changed = false;
+      const nextStreams = Object.fromEntries(
+        Object.entries(state.streams).map(([cameraId, streamState]) => {
+          const nextActiveEvents = pruneExpiredInferenceEvents(
+            streamState.inferenceActiveEvents,
+            cutoffTimestampMs,
+          );
+          if (nextActiveEvents.length !== streamState.inferenceActiveEvents.length) {
+            changed = true;
+          }
+          return [
+            cameraId,
+            nextActiveEvents.length === streamState.inferenceActiveEvents.length
+              ? streamState
+              : {
+                  ...streamState,
+                  streamInfo: streamState.streamInfo
+                    ? {
+                        ...streamState.streamInfo,
+                        inference: streamState.streamInfo.inference
+                          ? {
+                              ...streamState.streamInfo.inference,
+                              active_tracks: nextActiveEvents.length,
+                            }
+                          : streamState.streamInfo.inference,
+                      }
+                    : streamState.streamInfo,
+                  inferenceActiveEvents: nextActiveEvents,
+                },
+          ];
+        }),
+      ) as Record<string, StreamEntityState>;
+
+      if (!changed) {
+        return state;
+      }
+
+      return {
+        streams: nextStreams,
+      };
     }),
   clearCameraStream: (cameraId) =>
     set((state) => ({

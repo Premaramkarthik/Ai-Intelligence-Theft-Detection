@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   BackendApiError,
+  configureInference,
   getStreamInfo,
   startStream,
   stopStream,
@@ -67,6 +68,7 @@ function buildStartRequest(
     requested_protocol: "webrtc",
     sample_fps: sampleFps ?? 5,
     enable_tracking_events: true,
+    enable_inference: true,
     reason,
   };
 }
@@ -76,6 +78,10 @@ interface UseStreamOptions {
   initialStreamInfo?: StreamInfoResponse | null;
   autoStart?: boolean;
   sampleFps?: number;
+  subscribeToWebSocket?: boolean;
+  syncOnMount?: boolean;
+  playbackEnabled?: boolean;
+  autoEnableInference?: boolean;
 }
 
 export function useStream(
@@ -87,6 +93,7 @@ export function useStream(
   const playbackActivationRef = useRef(false);
   const selectedSourceKeyRef = useRef<string | null>(null);
   const routeSyncRequestRef = useRef(0);
+  const inferenceEnableAttemptedRef = useRef(false);
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null);
   const [sourceSelectionTouched, setSourceSelectionTouched] =
     useState(false);
@@ -121,6 +128,9 @@ export function useStream(
   const activeCommandState = streamState?.commandState ?? "idle";
   const activeCommandMessage = streamState?.commandMessage ?? null;
   const activeTrackingState = activeStream?.tracking ?? null;
+  const activeInferenceState = activeStream?.inference ?? null;
+  const activeInferenceEvents = streamState?.inferenceActiveEvents ?? [];
+  const recentInferenceAlerts = streamState?.recentInferenceAlerts ?? [];
   const trackingAvailable = Boolean(
     activeTrackingState?.enabled &&
     activeTrackingState.access_urls?.webrtc_url &&
@@ -167,7 +177,11 @@ export function useStream(
     return orchestratorRef.current;
   }, [cameraId, setPlaybackSnapshot, videoElement]);
 
-  useWebSocket(cameraId, activeStream?.websocket_url ?? null);
+  useWebSocket(
+    cameraId,
+    activeStream?.websocket_url ?? null,
+    options.subscribeToWebSocket ?? true,
+  );
 
   /**
    * Apply a backend start request without prematurely flagging playback as booted.
@@ -306,17 +320,26 @@ export function useStream(
   }, [cameraId, setPlaybackSnapshot]);
 
   useEffect(() => {
+    if (!(options.syncOnMount ?? true)) {
+      return undefined;
+    }
     void syncRouteEntryState().catch(() => undefined);
     return () => {
       routeSyncRequestRef.current += 1;
     };
   }, [
+    options.syncOnMount,
     syncRouteEntryState,
   ]);
 
   useEffect(() => {
     const orchestrator = ensureOrchestrator();
-    if (!orchestrator || !selectedAccessUrls) {
+    if (!orchestrator || !selectedAccessUrls || options.playbackEnabled === false) {
+      if (orchestrator && options.playbackEnabled === false) {
+        playbackActivationRef.current = false;
+        selectedSourceKeyRef.current = null;
+        void orchestrator.stop();
+      }
       return;
     }
 
@@ -350,8 +373,45 @@ export function useStream(
     activeBackendLifecycle,
     cameraId,
     ensureOrchestrator,
+    options.playbackEnabled,
     playbackViewMode,
     selectedAccessUrls,
+  ]);
+
+  useEffect(() => {
+    if (activeBackendLifecycle === "stopped") {
+      inferenceEnableAttemptedRef.current = false;
+      return;
+    }
+
+    if (!(options.autoEnableInference ?? true)) {
+      return;
+    }
+
+    if (!activeTrackingState?.enabled || !isRunnableBackendState(activeBackendLifecycle)) {
+      return;
+    }
+
+    if (activeInferenceState?.enabled || activeInferenceEvents.length > 0) {
+      inferenceEnableAttemptedRef.current = true;
+      return;
+    }
+
+    if (inferenceEnableAttemptedRef.current) {
+      return;
+    }
+
+    inferenceEnableAttemptedRef.current = true;
+    void configureInference(cameraId, { enabled: true }).catch(() => {
+      inferenceEnableAttemptedRef.current = false;
+    });
+  }, [
+    activeBackendLifecycle,
+    activeInferenceEvents.length,
+    activeInferenceState?.enabled,
+    activeTrackingState?.enabled,
+    cameraId,
+    options.autoEnableInference,
   ]);
 
   const runAction = (work: () => Promise<void>) => {
@@ -365,6 +425,9 @@ export function useStream(
     camera: activeCamera,
     streamInfo: activeStream,
     trackingInfo: activeTrackingState,
+    inferenceInfo: activeInferenceState,
+    activeInferenceEvents,
+    recentInferenceAlerts,
     videoElement,
     playbackViewMode,
     backendLifecycle: activeBackendLifecycle,

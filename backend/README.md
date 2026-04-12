@@ -513,6 +513,13 @@ Runtime settings live in `src/core/config.py` and are loaded from `.env`.
 - `CORS_ORIGINS`
 - `LOG_LEVEL`
 - `JSON_LOGS`
+- `FILE_LOGS_ENABLED`
+- `LOG_DIRECTORY`
+- `LOG_FILE_PREFIX`
+- `LOG_FILE_MAX_BYTES`
+- `LOG_FILE_BACKUP_COUNT`
+
+By default, backend processes write rotating log files under `backend/runtime/logs/<process-name>/`.
 
 ### Database
 

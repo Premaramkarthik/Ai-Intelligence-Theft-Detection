@@ -15,6 +15,7 @@ from src.schemas.stream_responses import (
 )
 from src.services.camera.camera_service import CameraService
 from src.services.presentation.stream_contract_service import StreamContractService
+from src.services.inference.manager import InferenceManager
 from src.services.realtime_video.contracts import MediaMtxStreamEndpoints
 from src.services.realtime_video.mediamtx import normalize_stream_name
 from src.services.realtime_video.mediamtx_service import MediaMtxService
@@ -32,6 +33,7 @@ class StreamService:
         mediamtx_service: MediaMtxService,
         stream_manager: MediaMtxStreamManager,
         tracking_manager: TrackingStreamManager,
+        inference_manager: InferenceManager,
         contract_service: StreamContractService,
     ) -> None:
         """Create the stream control service for MediaMTX-backed playback and extraction."""
@@ -42,6 +44,7 @@ class StreamService:
         self._mediamtx_service = mediamtx_service
         self._stream_manager = stream_manager
         self._tracking_manager = tracking_manager
+        self._inference_manager = inference_manager
         self._contract_service = contract_service
 
     async def start_stream(self, camera_id: str, request: StreamStartRequest) -> StreamInfoResponse:
@@ -92,8 +95,14 @@ class StreamService:
             await self._tracking_manager.start_stream(camera.id, stream_name)
         else:
             await self._tracking_manager.stop_stream(camera.id)
+        inference_requested = bool(tracking_requested and request.enable_inference)
+        await self._inference_manager.configure_stream(
+            camera.id,
+            enabled=inference_requested,
+        )
         worker_snapshot = self._stream_manager.get_snapshot(camera.id)
         tracking_snapshot = self._tracking_manager.get_snapshot(camera.id, stream_name)
+        inference_snapshot = self._inference_manager.get_snapshot(camera.id)
         stream_record = await self._stream_repository.fetch_by_camera_id(camera.id)
         return self._contract_service.build_contract(
             camera,
@@ -102,6 +111,7 @@ class StreamService:
             stream_endpoints,
             tracking_snapshot,
             self._tracking_manager.stream_endpoints(stream_name),
+            inference_snapshot,
         )
 
     async def stop_stream(
@@ -116,8 +126,10 @@ class StreamService:
         stream_endpoints = self._stream_manager.stream_endpoints(stream_name)
         await self._stream_manager.stop_stream(camera_id)
         await self._tracking_manager.stop_stream(camera_id)
+        await self._inference_manager.configure_stream(camera_id, enabled=False)
         worker_snapshot = self._stream_manager.get_snapshot(camera_id)
         tracking_snapshot = self._tracking_manager.get_snapshot(camera.id, stream_name)
+        inference_snapshot = self._inference_manager.get_snapshot(camera.id)
 
         stream_record = await self._stream_repository.update_requested_state(
             camera_id=camera_id,
@@ -136,6 +148,7 @@ class StreamService:
             stream_endpoints,
             tracking_snapshot,
             self._tracking_manager.stream_endpoints(stream_name),
+            inference_snapshot,
         )
 
     async def get_stream_status(self, camera_id: str) -> StreamInfoResponse:
@@ -152,6 +165,7 @@ class StreamService:
             self._stream_manager.stream_endpoints(stream_name),
             self._tracking_manager.get_snapshot(camera_id, stream_name),
             self._tracking_manager.stream_endpoints(stream_name),
+            self._inference_manager.get_snapshot(camera_id),
         )
 
     async def get_stream_info(self, camera_id: str) -> StreamInfoResponse:
@@ -178,6 +192,7 @@ class StreamService:
                 self._stream_manager.stream_endpoints(self._stream_name(camera)),
                 self._tracking_manager.get_snapshot(camera.id, self._stream_name(camera)),
                 self._tracking_manager.stream_endpoints(self._stream_name(camera)),
+                self._inference_manager.get_snapshot(camera.id),
             )
             for camera in cameras
         ]
@@ -195,6 +210,7 @@ class StreamService:
             self._stream_manager.stream_endpoints(self._stream_name(camera)),
             self._tracking_manager.get_snapshot(event.camera_id, self._stream_name(camera)),
             self._tracking_manager.stream_endpoints(self._stream_name(camera)),
+            self._inference_manager.get_snapshot(event.camera_id),
         )
 
     async def build_websocket_event(self, event: StreamEventPayload) -> WebSocketEnvelope:

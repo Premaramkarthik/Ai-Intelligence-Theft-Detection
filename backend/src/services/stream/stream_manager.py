@@ -102,6 +102,11 @@ class StreamManager:
                 reconnect_max_delay_seconds=self._settings.reconnect_max_delay_seconds,
                 log_level=self._settings.log_level,
                 json_logs=self._settings.json_logs,
+                file_logs_enabled=self._settings.file_logs_enabled,
+                log_directory=self._settings.log_directory,
+                log_file_prefix=self._settings.log_file_prefix,
+                log_file_max_bytes=self._settings.log_file_max_bytes,
+                log_file_backup_count=self._settings.log_file_backup_count,
             )
             stop_event = self._context.Event()
             process = self._context.Process(

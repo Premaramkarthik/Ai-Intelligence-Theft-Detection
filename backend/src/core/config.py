@@ -112,6 +112,11 @@ class Settings(BaseSettings):
     tracking_stream_suffix: str = "tracked"
     log_level: str = "INFO"
     json_logs: bool = False
+    file_logs_enabled: bool = True
+    log_directory: Path = BACKEND_ROOT / "runtime" / "logs"
+    log_file_prefix: str = "backend"
+    log_file_max_bytes: int = 10 * 1024 * 1024
+    log_file_backup_count: int = 5
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -150,6 +155,16 @@ class Settings(BaseSettings):
     @classmethod
     def resolve_mediamtx_api_password_file(cls, value: str | Path) -> Path:
         """Resolve the MediaMTX Control API password file relative to the backend root."""
+
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return BACKEND_ROOT / path
+
+    @field_validator("log_directory", mode="before")
+    @classmethod
+    def resolve_log_directory(cls, value: str | Path) -> Path:
+        """Resolve the backend log directory relative to the backend root."""
 
         path = Path(value)
         if path.is_absolute():

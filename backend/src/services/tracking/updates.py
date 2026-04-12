@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -8,6 +9,7 @@ from typing import Any, Protocol
 from src.core.logger.logger import get_logger
 from src.schemas.common import WebSocketEnvelope
 from src.services.inference.contracts import InferenceIngressSample
+from src.services.inference.logging import log_inference_event, summarize_array
 from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.realtime_video.contracts import TrackingTrackSnapshot
 from src.utils.image import crop_ltwh
@@ -153,6 +155,7 @@ class InferenceIngressPublisher:
 
     def __init__(self, ingress: _InferenceIngress) -> None:
         self._ingress = ingress
+        self._logger = get_logger(__name__)
 
     async def publish(
         self,
@@ -164,11 +167,48 @@ class InferenceIngressPublisher:
         frame: Any = None,
     ) -> None:
         del annotated_stream_name
-        if frame is None or not tracks:
+        if frame is None:
+            log_inference_event(
+                self._logger,
+                logging.DEBUG,
+                "inference.input_skipped",
+                "Inference input skipped because frame data was unavailable.",
+                camera_id=camera_id,
+                stream_name=stream_name,
+                total_tracks=len(tracks),
+                reason="missing_frame",
+            )
             return
+        if not tracks:
+            log_inference_event(
+                self._logger,
+                logging.DEBUG,
+                "inference.input_skipped",
+                "Inference input skipped because no tracks were available.",
+                camera_id=camera_id,
+                stream_name=stream_name,
+                total_tracks=0,
+                frame=summarize_array(frame),
+                reason="no_tracks",
+            )
+            return
+
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.input_received",
+            "Inference input received from tracking.",
+            camera_id=camera_id,
+            stream_name=stream_name,
+            total_tracks=len(tracks),
+            frame=summarize_array(frame),
+        )
         now = datetime.now(timezone.utc)
+        dispatched_tracks = 0
+        skipped_tracks_without_persistent_id = 0
         for track in tracks:
             if track.persistent_id is None:
+                skipped_tracks_without_persistent_id += 1
                 continue
             crop = crop_ltwh(frame, track.left, track.top, track.width, track.height)
             sample = InferenceIngressSample(
@@ -188,3 +228,17 @@ class InferenceIngressPublisher:
                 persistent_id_state=track.persistent_id_state,
             )
             self._ingress.ingest_sample(sample)
+            dispatched_tracks += 1
+
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.input_dispatched",
+            "Inference input dispatch completed.",
+            camera_id=camera_id,
+            stream_name=stream_name,
+            total_tracks=len(tracks),
+            dispatched_tracks=dispatched_tracks,
+            skipped_tracks_without_persistent_id=skipped_tracks_without_persistent_id,
+            sampled_at=now.isoformat(),
+        )

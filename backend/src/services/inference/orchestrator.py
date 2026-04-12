@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections import deque
 from datetime import datetime, timezone
+from time import perf_counter
+from typing import Any
 
 from src.core.logger.logger import get_logger
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
@@ -14,6 +18,14 @@ from src.services.inference.contracts import InferenceIngressSample, InferenceWo
 from src.services.inference.decision_engine import DecisionEngine
 from src.services.inference.event_repository import InferenceEventRepository
 from src.services.inference.ingress_scheduler import InferenceIngressScheduler
+from src.services.inference.logging import (
+    log_inference_event,
+    log_inference_exception,
+    summarize_frame_batch,
+    summarize_named_arrays,
+    summarize_sample_batch,
+    was_exception_logged,
+)
 from src.services.inference.triton_client import TritonInferenceClient
 from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.tracking_kafka.service import _InferenceKafkaPublisher
@@ -27,8 +39,8 @@ class InferenceOrchestrator:
     """Drive the end-to-end inference pipeline for one camera stream.
 
     Lifecycle: call ``start()`` once, ``close()`` to shut down cleanly.
-    Strategy switches are applied at the next dispatch cycle — the temporal
-    buffer is NOT flushed on switch (plan §3.4).
+    Strategy switches are applied at the next dispatch cycle; the temporal
+    buffer is not flushed on switch.
     """
 
     def __init__(
@@ -58,12 +70,13 @@ class InferenceOrchestrator:
         self._last_result_at: datetime | None = None
         self._healthy = True
         self._last_error: str | None = None
-        # Strategy may be updated at runtime; use a lock to avoid data races.
         self._strategy_lock = asyncio.Lock()
         self._strategy = config.strategy
+        self._recent_completion_times: deque[float] = deque(maxlen=32)
 
     def get_snapshot_data(self) -> dict[str, object]:
         """Return a snapshot dict compatible with InferenceSnapshot fields."""
+
         return {
             "enabled": True,
             "strategy": self._strategy,
@@ -80,22 +93,39 @@ class InferenceOrchestrator:
         enabled: bool | None = None,
         strategy: str | None = None,
     ) -> None:
-        """Update runtime configuration.  Strategy switch is lock-protected."""
+        """Update runtime configuration. Strategy switch is lock-protected."""
+
+        del enabled
         if strategy is not None:
             async with self._strategy_lock:
+                previous_strategy = self._strategy
                 self._strategy = strategy
-                self._logger.info(
-                    "Inference strategy for camera %s switched to %s",
-                    self._config.camera_id,
-                    strategy,
-                )
+            log_inference_event(
+                self._logger,
+                logging.INFO,
+                "inference.strategy_switched",
+                "Inference strategy switched for camera.",
+                camera_id=self._config.camera_id,
+                previous_strategy=previous_strategy,
+                strategy=strategy,
+            )
 
     def start(self) -> None:
         """Launch the background consume loop."""
+
         self._task = asyncio.create_task(self._run())
+        log_inference_event(
+            self._logger,
+            logging.INFO,
+            "inference.orchestrator_started",
+            "Inference orchestrator started.",
+            camera_id=self._config.camera_id,
+            strategy=self._strategy,
+        )
 
     async def close(self) -> None:
         """Cancel the consume loop and wait for it to finish."""
+
         if self._task is not None:
             self._task.cancel()
             try:
@@ -103,38 +133,193 @@ class InferenceOrchestrator:
             except asyncio.CancelledError:
                 pass
             self._task = None
+            log_inference_event(
+                self._logger,
+                logging.INFO,
+                "inference.orchestrator_stopped",
+                "Inference orchestrator stopped.",
+                camera_id=self._config.camera_id,
+            )
 
     async def _run(self) -> None:
         queue = self._scheduler.queue
         while True:
             try:
                 batch: list[InferenceIngressSample] = await queue.get()
+                log_inference_event(
+                    self._logger,
+                    logging.DEBUG,
+                    "inference.batch_dequeued",
+                    "Inference batch dequeued for processing.",
+                    camera_id=self._config.camera_id,
+                    batch_size=len(batch),
+                    queue_depth=queue.qsize(),
+                )
                 await self._process_batch(batch)
             except asyncio.CancelledError:
                 return
             except Exception as exc:  # pylint: disable=broad-except
                 self._healthy = False
                 self._last_error = str(exc)
-                self._logger.exception(
-                    "Inference orchestrator error for camera %s: %s",
-                    self._config.camera_id,
-                    exc,
-                )
+                if was_exception_logged(exc):
+                    log_inference_event(
+                        self._logger,
+                        logging.ERROR,
+                        "inference.orchestrator_error",
+                        "Inference orchestrator error.",
+                        camera_id=self._config.camera_id,
+                        error=str(exc),
+                        error_type=exc.__class__.__name__,
+                    )
+                else:
+                    log_inference_exception(
+                        self._logger,
+                        logging.ERROR,
+                        "inference.orchestrator_error",
+                        "Inference orchestrator error.",
+                        exc,
+                        camera_id=self._config.camera_id,
+                    )
 
     async def _process_batch(self, batch: list[InferenceIngressSample]) -> None:
         if not batch:
             return
 
-        sample = batch[-1]  # latest sample carries the most recent metadata
+        batch_started_at = perf_counter()
+        sample = batch[-1]
         async with self._strategy_lock:
             strategy = self._strategy
 
         model_name = strategy
-        crops = [s.crop for s in batch]
-        tensors = self._batch_builder.build(crops, strategy)
+        crops = [entry.crop for entry in batch]
+        batch_summary = summarize_sample_batch(batch)
+        frames_summary = summarize_frame_batch(crops)
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.batch_processing_started",
+            "Processing inference batch.",
+            camera_id=sample.camera_id,
+            stream_name=sample.stream_name,
+            persistent_id=sample.persistent_id,
+            local_track_id=sample.local_track_id,
+            strategy=strategy,
+            model_name=model_name,
+            queue_depth=self._scheduler.queue.qsize(),
+            batch=batch_summary,
+            frames=frames_summary,
+        )
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.model_selected",
+            "Selected inference model for strategy.",
+            camera_id=sample.camera_id,
+            strategy=strategy,
+            model_name=model_name,
+        )
 
-        outputs = await self._triton.infer(model_name, tensors)
-        score = float(outputs["output"].flat[0]) if "output" in outputs else 0.0
+        preprocessing_started_at = perf_counter()
+        try:
+            tensors = self._batch_builder.build(crops, strategy)
+        except Exception as exc:  # pylint: disable=broad-except
+            log_inference_exception(
+                self._logger,
+                logging.ERROR,
+                "inference.preprocessing_failed",
+                "Inference preprocessing failed.",
+                exc,
+                camera_id=sample.camera_id,
+                stream_name=sample.stream_name,
+                persistent_id=sample.persistent_id,
+                local_track_id=sample.local_track_id,
+                strategy=strategy,
+                model_name=model_name,
+                batch=batch_summary,
+                frames=frames_summary,
+            )
+            raise
+
+        preprocessing_latency_ms = (perf_counter() - preprocessing_started_at) * 1000.0
+        tensor_summary = summarize_named_arrays(tensors)
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.preprocessing_complete",
+            "Inference preprocessing completed.",
+            camera_id=sample.camera_id,
+            strategy=strategy,
+            model_name=model_name,
+            preprocessing_latency_ms=round(preprocessing_latency_ms, 3),
+            tensors=tensor_summary,
+        )
+
+        inference_started_at = perf_counter()
+        try:
+            outputs = await self._triton.infer(model_name, tensors)
+        except Exception as exc:  # pylint: disable=broad-except
+            if was_exception_logged(exc):
+                log_inference_event(
+                    self._logger,
+                    logging.ERROR,
+                    "inference.execution_failed",
+                    "Inference execution failed.",
+                    camera_id=sample.camera_id,
+                    stream_name=sample.stream_name,
+                    persistent_id=sample.persistent_id,
+                    local_track_id=sample.local_track_id,
+                    strategy=strategy,
+                    model_name=model_name,
+                    error=str(exc),
+                    error_type=exc.__class__.__name__,
+                )
+            else:
+                log_inference_exception(
+                    self._logger,
+                    logging.ERROR,
+                    "inference.execution_failed",
+                    "Inference execution failed.",
+                    exc,
+                    camera_id=sample.camera_id,
+                    stream_name=sample.stream_name,
+                    persistent_id=sample.persistent_id,
+                    local_track_id=sample.local_track_id,
+                    strategy=strategy,
+                    model_name=model_name,
+                )
+            raise
+
+        inference_latency_ms = (perf_counter() - inference_started_at) * 1000.0
+        output_summary = summarize_named_arrays(outputs)
+        if "output" not in outputs:
+            log_inference_event(
+                self._logger,
+                logging.WARNING,
+                "inference.output_missing",
+                "Inference response missing expected output tensor.",
+                camera_id=sample.camera_id,
+                strategy=strategy,
+                model_name=model_name,
+                outputs=output_summary,
+            )
+            score = 0.0
+        else:
+            try:
+                score = float(outputs["output"].flat[0])
+            except Exception as exc:  # pylint: disable=broad-except
+                log_inference_exception(
+                    self._logger,
+                    logging.ERROR,
+                    "inference.output_parse_failed",
+                    "Failed to parse inference output tensor.",
+                    exc,
+                    camera_id=sample.camera_id,
+                    strategy=strategy,
+                    model_name=model_name,
+                    outputs=output_summary,
+                )
+                raise
+
         alert_level = self._decision.classify(score)
         label = alert_level
         emitted_at = _utc_now()
@@ -157,10 +342,73 @@ class InferenceOrchestrator:
             emitted_at=emitted_at,
         )
 
-        tasks = [self._broadcast_ws(payload), self._publish_kafka(payload)]
+        delivery_started_at = perf_counter()
+        task_specs: list[tuple[str, Any]] = [
+            ("websocket", self._broadcast_ws(payload)),
+            ("kafka", self._publish_kafka(payload)),
+        ]
         if alert_level != "normal":
-            tasks.append(self._persist(payload))
-        await asyncio.gather(*tasks, return_exceptions=True)
+            task_specs.append(("persistence", self._persist(payload)))
+        results = await asyncio.gather(
+            *(coroutine for _, coroutine in task_specs),
+            return_exceptions=True,
+        )
+        delivery_latency_ms = (perf_counter() - delivery_started_at) * 1000.0
+
+        sink_failures: list[dict[str, str]] = []
+        for (sink_name, _), result in zip(task_specs, results):
+            if isinstance(result, Exception):
+                sink_failures.append(
+                    {
+                        "sink": sink_name,
+                        "error": str(result),
+                        "error_type": result.__class__.__name__,
+                    },
+                )
+        if sink_failures:
+            log_inference_event(
+                self._logger,
+                logging.WARNING,
+                "inference.delivery_failed",
+                "One or more inference delivery steps failed.",
+                camera_id=sample.camera_id,
+                stream_name=sample.stream_name,
+                persistent_id=sample.persistent_id,
+                local_track_id=sample.local_track_id,
+                strategy=strategy,
+                model_name=model_name,
+                sink_failures=sink_failures,
+            )
+
+        completed_at = perf_counter()
+        total_latency_ms = (completed_at - batch_started_at) * 1000.0
+        sample_age_ms = max((emitted_at - sample.sampled_at).total_seconds() * 1000.0, 0.0)
+        inference_request_fps = self._record_completion(completed_at)
+        log_inference_event(
+            self._logger,
+            logging.INFO,
+            "inference.completed",
+            "Inference batch completed.",
+            camera_id=sample.camera_id,
+            stream_name=sample.stream_name,
+            persistent_id=sample.persistent_id,
+            local_track_id=sample.local_track_id,
+            strategy=strategy,
+            model_name=model_name,
+            batch_size=len(batch),
+            active_tracks=len(self._active_tracks),
+            preprocessing_latency_ms=round(preprocessing_latency_ms, 3),
+            inference_latency_ms=round(inference_latency_ms, 3),
+            delivery_latency_ms=round(delivery_latency_ms, 3),
+            total_latency_ms=round(total_latency_ms, 3),
+            sample_age_ms=round(sample_age_ms, 3),
+            inference_request_fps=round(inference_request_fps, 3),
+            score=score,
+            alert_level=alert_level,
+            label=label,
+            outputs=output_summary,
+            sink_failures=sink_failures,
+        )
 
     async def _broadcast_ws(self, payload: InferenceKafkaEventPayload) -> None:
         envelope = WebSocketEnvelope(
@@ -193,10 +441,18 @@ class InferenceOrchestrator:
         try:
             await self._kafka.publish(payload.model_dump(mode="json"))
         except Exception as exc:  # pylint: disable=broad-except
-            self._logger.warning(
-                "Kafka inference publish failed for camera %s: %s",
-                self._config.camera_id,
-                exc,
+            log_inference_event(
+                self._logger,
+                logging.WARNING,
+                "inference.kafka_publish_failed",
+                "Kafka inference publish failed.",
+                camera_id=self._config.camera_id,
+                persistent_id=payload.persistent_id,
+                local_track_id=payload.local_track_id,
+                strategy=payload.strategy,
+                model_name=payload.model_name,
+                error=str(exc),
+                error_type=exc.__class__.__name__,
             )
 
     async def _persist(self, payload: InferenceKafkaEventPayload) -> None:
@@ -213,3 +469,12 @@ class InferenceOrchestrator:
             sampled_at=payload.sampled_at,
             emitted_at=payload.emitted_at,
         )
+
+    def _record_completion(self, completed_at: float) -> float:
+        self._recent_completion_times.append(completed_at)
+        if len(self._recent_completion_times) < 2:
+            return 0.0
+        elapsed = self._recent_completion_times[-1] - self._recent_completion_times[0]
+        if elapsed <= 0.0:
+            return 0.0
+        return (len(self._recent_completion_times) - 1) / elapsed

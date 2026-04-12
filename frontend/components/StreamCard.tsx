@@ -1,30 +1,26 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 
+import { TrackingCanvasOverlay } from "@/components/InferenceCanvasOverlay";
+import { PlayerOverlay } from "@/components/PlayerOverlay";
 import { StatusBadge } from "@/components/StatusBadge";
+import { VideoPlayer } from "@/components/VideoPlayer";
+import { useStream } from "@/hooks/useStream";
 import type {
   BackendLifecycleState,
   CameraResponse,
   StreamCommandState,
-  WorkerStateResponse,
+  StreamInfoResponse,
 } from "@/types/stream";
 
 interface StreamCardProps {
   camera: CameraResponse;
-  backendStatus: BackendLifecycleState;
-  commandState: StreamCommandState;
-  commandMessage: string | null;
-  backendErrorMessage: string | null;
-  worker: WorkerStateResponse | null;
-  onStart: () => void;
-  onStop: () => void;
+  initialStreamInfo: StreamInfoResponse | null;
   onDelete: () => void;
 }
 
-/**
- * Decide whether a stream can accept a start action from the dashboard.
- */
 function canStartStream(
   backendStatus: BackendLifecycleState,
   commandState: StreamCommandState,
@@ -35,9 +31,6 @@ function canStartStream(
   );
 }
 
-/**
- * Decide whether a stream can accept a stop action from the dashboard.
- */
 function canStopStream(
   backendStatus: BackendLifecycleState,
   commandState: StreamCommandState,
@@ -45,16 +38,10 @@ function canStopStream(
   return commandState === "idle" && !["stopped", "stopping"].includes(backendStatus);
 }
 
-/**
- * Decide whether a camera can be deleted without conflicting with another active command.
- */
 function canDeleteCamera(commandState: StreamCommandState): boolean {
   return commandState === "idle";
 }
 
-/**
- * Render intent-aware button copy from the current control-plane command state.
- */
 function getActionLabel(
   action: "start" | "stop" | "delete",
   commandState: StreamCommandState,
@@ -66,9 +53,6 @@ function getActionLabel(
     if (commandState === "restarting") {
       return "Reconnecting...";
     }
-    if (commandState === "refreshing") {
-      return "Refreshing...";
-    }
     return "Start";
   }
 
@@ -76,111 +60,195 @@ function getActionLabel(
     return commandState === "deleting" ? "Deleting..." : "Delete";
   }
 
-  if (commandState === "stopping") {
-    return "Stopping...";
-  }
-  return "Stop";
+  return commandState === "stopping" ? "Stopping..." : "Stop";
 }
 
 export function StreamCard({
   camera,
-  backendStatus,
-  commandState,
-  commandMessage,
-  backendErrorMessage,
-  worker,
-  onStart,
-  onStop,
+  initialStreamInfo,
   onDelete,
 }: StreamCardProps) {
-  const canStart = canStartStream(backendStatus, commandState);
-  const canStop = canStopStream(backendStatus, commandState);
+  const tileRef = useRef<HTMLElement | null>(null);
+  const [isVisible, setIsVisible] = useState(true);
+  const {
+    streamInfo,
+    trackingInfo,
+    inferenceInfo,
+    activeInferenceEvents,
+    recentInferenceAlerts,
+    videoElement,
+    backendLifecycle,
+    commandState,
+    commandMessage,
+    playbackState,
+    playbackProtocol,
+    playbackMessage,
+    playbackError,
+    videoRef,
+    retryPlayback,
+    start,
+    stop,
+  } = useStream(camera.id, {
+    initialCamera: camera,
+    initialStreamInfo,
+    autoStart: false,
+    sampleFps: 5,
+    subscribeToWebSocket: false,
+    syncOnMount: false,
+    playbackEnabled: isVisible,
+    autoEnableInference: true,
+  });
+
+  useEffect(() => {
+    const node = tileRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") {
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsVisible(entry?.isIntersecting ?? true);
+      },
+      {
+        threshold: 0.35,
+        rootMargin: "200px 0px",
+      },
+    );
+    observer.observe(node);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const backendErrorMessage = streamInfo?.last_error_message ?? null;
+  const canStart = canStartStream(backendLifecycle, commandState);
+  const canStop = canStopStream(backendLifecycle, commandState);
   const canDelete = canDeleteCamera(commandState);
+  const latestAlert = recentInferenceAlerts[0] ?? null;
+  const activeTrackCount = trackingInfo?.tracks.length ?? 0;
+  const liveInferenceCount = activeInferenceEvents.length;
 
   return (
-    <article className="card-enter group overflow-hidden rounded-[28px] border border-white/8 bg-[linear-gradient(160deg,rgba(17,32,42,0.92),rgba(10,16,22,0.92))] shadow-[0_24px_90px_rgba(0,0,0,0.34)] transition-all duration-300 ease-out hover:-translate-y-1 hover:border-cyan-300/20 hover:shadow-[0_28px_120px_rgba(0,0,0,0.42)]">
-      <div className="border-b border-white/6 bg-[radial-gradient(circle_at_top_left,_rgba(45,212,191,0.16),_transparent_38%),radial-gradient(circle_at_top_right,_rgba(251,191,36,0.12),_transparent_32%)] px-5 py-5">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-slate-400">
-              {camera.location ?? "Unassigned location"}
-            </p>
-            <h3 className="text-2xl font-semibold text-slate-50">
-              {camera.name}
-            </h3>
-            <p className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Camera ID {camera.id}
-            </p>
-            <p className="text-sm text-slate-400">{camera.rtsp_url_preview}</p>
-          </div>
-          <StatusBadge label={backendStatus} status={backendStatus} />
+    <article
+      ref={tileRef}
+      className="overflow-hidden rounded-[24px] border border-white/10 bg-slate-950 shadow-[0_20px_70px_rgba(0,0,0,0.28)]"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/8 px-4 py-4">
+        <div className="min-w-0">
+          <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
+            {camera.location ?? "Unassigned location"}
+          </p>
+          <h3 className="truncate text-xl font-semibold text-slate-50">
+            {camera.name}
+          </h3>
+          <p className="mt-1 truncate text-sm text-slate-400">{camera.rtsp_url_preview}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <StatusBadge label={backendLifecycle} status={backendLifecycle} />
+          <StatusBadge label={playbackState} status={playbackState} />
         </div>
       </div>
-      <div className="space-y-5 px-5 py-5">
-        <dl className="grid grid-cols-2 gap-4 text-sm text-slate-300">
-          <div className="rounded-2xl border border-white/6 bg-slate-950/55 p-4">
-            <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Source
-            </dt>
-            <dd className="mt-2 font-medium text-slate-100">{camera.source_mode}</dd>
-          </div>
-          <div className="rounded-2xl border border-white/6 bg-slate-950/55 p-4">
-            <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Transport
-            </dt>
-            <dd className="mt-2 font-medium text-slate-100">{camera.transport}</dd>
-          </div>
-        </dl>
-        <dl className="grid grid-cols-3 gap-3 text-sm text-slate-300">
-          <div className="rounded-2xl border border-white/6 bg-slate-950/55 p-4">
-            <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
+
+      <div className="px-4 pt-4">
+        <VideoPlayer
+          videoRef={videoRef}
+          overlay={(
+            <>
+              <TrackingCanvasOverlay
+                enabled={Boolean(trackingInfo?.enabled)}
+                videoElement={videoElement}
+                tracks={trackingInfo?.tracks ?? []}
+                inferenceEvents={activeInferenceEvents}
+              />
+              <PlayerOverlay
+                backendLifecycle={backendLifecycle}
+                commandState={commandState}
+                commandMessage={commandMessage}
+                backendErrorMessage={backendErrorMessage}
+                playbackState={playbackState}
+                playbackProtocol={playbackProtocol}
+                playbackMessage={playbackMessage}
+                playbackError={playbackError}
+                onRetry={retryPlayback}
+              />
+            </>
+          )}
+        />
+      </div>
+
+      <div className="space-y-4 px-4 py-4">
+        <dl className="grid grid-cols-4 gap-3 text-sm">
+          <div className="rounded-2xl border border-white/8 bg-slate-900/70 px-3 py-3">
+            <dt className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
               FPS
             </dt>
             <dd className="mt-2 font-medium text-slate-100">
-              {(worker?.current_fps ?? 0).toFixed(1).replace(/\.0$/, "")}
+              {(streamInfo?.worker.current_fps ?? 0).toFixed(1).replace(/\.0$/, "")}
             </dd>
           </div>
-          <div className="rounded-2xl border border-white/6 bg-slate-950/55 p-4">
-            <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Queue
+          <div className="rounded-2xl border border-white/8 bg-slate-900/70 px-3 py-3">
+            <dt className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+              Tracks
             </dt>
-            <dd className="mt-2 font-medium text-slate-100">
-              {(worker?.queue_latency_ms ?? 0).toFixed(1).replace(/\.0$/, "")} ms
-            </dd>
+            <dd className="mt-2 font-medium text-slate-100">{activeTrackCount}</dd>
           </div>
-          <div className="rounded-2xl border border-white/6 bg-slate-950/55 p-4">
-            <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
-              Drops
+          <div className="rounded-2xl border border-white/8 bg-slate-900/70 px-3 py-3">
+            <dt className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+              Inference
+            </dt>
+            <dd className="mt-2 font-medium text-slate-100">{liveInferenceCount}</dd>
+          </div>
+          <div className="rounded-2xl border border-white/8 bg-slate-900/70 px-3 py-3">
+            <dt className="text-[11px] uppercase tracking-[0.16em] text-slate-500">
+              Protocol
             </dt>
             <dd className="mt-2 font-medium text-slate-100">
-              {worker?.dropped_frames ?? 0}
+              {playbackProtocol ?? "pending"}
             </dd>
           </div>
         </dl>
+
+        {latestAlert ? (
+          <div className="rounded-2xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            Latest alert: {latestAlert.label} on track {latestAlert.local_track_id}
+            {" "}
+            ({latestAlert.score.toFixed(2)})
+          </div>
+        ) : null}
+
         {commandMessage ? (
-          <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100 transition-all duration-300 ease-out">
+          <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
             {commandMessage}
           </div>
         ) : null}
+
         {backendErrorMessage ? (
-          <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100 transition-all duration-300 ease-out">
+          <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
             {backendErrorMessage}
           </div>
         ) : null}
+
+        {!streamInfo && backendLifecycle !== "stopped" ? (
+          <div className="rounded-2xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-slate-300">
+            Waiting for the latest stream contract from the backend.
+          </div>
+        ) : null}
+
         <div className="flex flex-wrap gap-3">
           <button
             type="button"
-            onClick={onStart}
+            onClick={start}
             disabled={!canStart}
-            className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 transition-all duration-300 ease-out hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {getActionLabel("start", commandState)}
           </button>
           <button
             type="button"
-            onClick={onStop}
+            onClick={stop}
             disabled={!canStop}
-            className="rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-100 transition-all duration-300 ease-out hover:border-rose-400/40 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-full border border-white/12 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:border-rose-400/40 hover:bg-rose-500/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {getActionLabel("stop", commandState)}
           </button>
@@ -188,16 +256,29 @@ export function StreamCard({
             type="button"
             onClick={onDelete}
             disabled={!canDelete}
-            className="rounded-full border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-100 transition-all duration-300 ease-out hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-full border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-100 transition hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {getActionLabel("delete", commandState)}
           </button>
           <Link
             href={`/camera/${camera.id}`}
-            className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-all duration-300 ease-out hover:bg-cyan-500/20"
+            className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20"
           >
             Open player
           </Link>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+          <span>Transport {camera.transport}</span>
+          <span>Source {camera.source_mode}</span>
+          <span>
+            Queue {(streamInfo?.worker.queue_latency_ms ?? 0).toFixed(1).replace(/\.0$/, "")}
+            {" "}ms
+          </span>
+          <span>Drops {streamInfo?.worker.dropped_frames ?? 0}</span>
+          <span>
+            Inference {inferenceInfo?.enabled ? (inferenceInfo.healthy ? "ready" : "degraded") : "idle"}
+          </span>
         </div>
       </div>
     </article>

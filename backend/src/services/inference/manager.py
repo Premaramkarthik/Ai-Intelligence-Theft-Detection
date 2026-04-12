@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.core.logger.logger import get_logger
@@ -15,6 +16,7 @@ from src.services.inference.contracts import (
 from src.services.inference.decision_engine import DecisionEngine
 from src.services.inference.event_repository import InferenceEventRepository
 from src.services.inference.ingress_scheduler import InferenceIngressScheduler
+from src.services.inference.logging import log_inference_event
 from src.services.inference.orchestrator import InferenceOrchestrator
 from src.services.inference.temporal_buffer import TemporalBufferService
 from src.services.inference.triton_client import TritonInferenceClient
@@ -24,9 +26,9 @@ from src.services.presentation.websocket_manager import WebSocketManager
 class InferenceManager:
     """Manage the lifecycle of per-camera ``InferenceOrchestrator`` instances.
 
-    Mirrors ``TrackingStreamManager`` — cameras are opted in via
+    Mirrors ``TrackingStreamManager``: cameras are opted in via
     ``configure_stream(enabled=True)`` or when ``PATCH /streams/{id}/inference``
-    is called.  Tracking always runs regardless of inference state.
+    is called. Tracking always runs regardless of inference state.
     """
 
     def __init__(
@@ -49,17 +51,29 @@ class InferenceManager:
         self._schedulers: dict[str, InferenceIngressScheduler] = {}
 
     # ------------------------------------------------------------------
-    # Ingress — called by InferenceIngressPublisher from the event loop
+    # Ingress - called by InferenceIngressPublisher from the event loop
     # ------------------------------------------------------------------
 
     def ingest_sample(self, sample: InferenceIngressSample) -> None:
         """Route one tracking crop to the camera's scheduler, if active."""
+
         scheduler = self._schedulers.get(sample.camera_id)
         if scheduler is not None:
             scheduler.ingest(sample)
+            return
+        log_inference_event(
+            self._logger,
+            logging.DEBUG,
+            "inference.ingress_ignored",
+            "Inference sample ignored because the camera has no active scheduler.",
+            camera_id=sample.camera_id,
+            stream_name=sample.stream_name,
+            local_track_id=sample.local_track_id,
+            persistent_id=sample.persistent_id,
+        )
 
     # ------------------------------------------------------------------
-    # Control plane — called by PATCH /streams/{camera_id}/inference
+    # Control plane - called by PATCH /streams/{camera_id}/inference
     # ------------------------------------------------------------------
 
     async def configure_stream(
@@ -71,10 +85,11 @@ class InferenceManager:
     ) -> None:
         """Start, stop, or reconfigure inference for one camera.
 
-        - ``enabled=True``  — starts the orchestrator (no-op if already running).
-        - ``enabled=False`` — stops and removes the orchestrator.
-        - ``strategy``      — live strategy switch; buffer is NOT flushed (§3.4).
+        - ``enabled=True``  - starts the orchestrator (no-op if already running).
+        - ``enabled=False`` - stops and removes the orchestrator.
+        - ``strategy``      - live strategy switch; buffer is not flushed.
         """
+
         if enabled is True and camera_id not in self._orchestrators:
             await self._start_camera(camera_id, strategy or "cnn_transformer")
         elif enabled is False:
@@ -88,6 +103,7 @@ class InferenceManager:
 
     def get_snapshot(self, camera_id: str) -> InferenceSnapshot | None:
         """Return the current ``InferenceSnapshot`` for a camera, or ``None``."""
+
         orchestrator = self._orchestrators.get(camera_id)
         if orchestrator is None:
             return None
@@ -100,6 +116,7 @@ class InferenceManager:
 
     async def close(self) -> None:
         """Stop all running orchestrators and release Triton connections."""
+
         for camera_id in list(self._orchestrators):
             await self._stop_camera(camera_id)
 
@@ -126,11 +143,16 @@ class InferenceManager:
         try:
             await triton.connect()
         except Exception as exc:  # pylint: disable=broad-except
-            self._logger.warning(
-                "Triton connection failed for camera %s — inference will start but "
-                "requests will error until Triton is reachable: %s",
-                camera_id,
-                exc,
+            log_inference_event(
+                self._logger,
+                logging.WARNING,
+                "inference.triton_connect_failed",
+                "Triton connection failed; inference will start but requests will error until Triton is reachable.",
+                camera_id=camera_id,
+                strategy=strategy,
+                triton_url=config.triton_url,
+                error=str(exc),
+                error_type=exc.__class__.__name__,
             )
 
         orchestrator = InferenceOrchestrator(
@@ -147,11 +169,28 @@ class InferenceManager:
         self._schedulers[camera_id] = scheduler
         self._orchestrators[camera_id] = orchestrator
         orchestrator.start()
-        self._logger.info("Inference started for camera %s (strategy=%s)", camera_id, strategy)
+        log_inference_event(
+            self._logger,
+            logging.INFO,
+            "inference.camera_started",
+            "Inference started for camera.",
+            camera_id=camera_id,
+            strategy=strategy,
+            triton_url=config.triton_url,
+            triton_max_in_flight=config.triton_max_in_flight,
+            temporal_buffer_size=config.temporal_buffer_size,
+            ingress_queue_maxsize=config.ingress_queue_maxsize,
+        )
 
     async def _stop_camera(self, camera_id: str) -> None:
         orchestrator = self._orchestrators.pop(camera_id, None)
         self._schedulers.pop(camera_id, None)
         if orchestrator is not None:
             await orchestrator.close()
-            self._logger.info("Inference stopped for camera %s", camera_id)
+            log_inference_event(
+                self._logger,
+                logging.INFO,
+                "inference.camera_stopped",
+                "Inference stopped for camera.",
+                camera_id=camera_id,
+            )

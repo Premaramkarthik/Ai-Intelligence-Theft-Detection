@@ -2,17 +2,23 @@
 
 import { useEffect, useMemo, useRef } from "react";
 
-import type { TrackingTrackResponse } from "@/types/stream";
+import type { InferenceEvent, TrackingTrackResponse } from "@/types/stream";
 
 interface TrackingCanvasOverlayProps {
   enabled: boolean;
   videoElement: HTMLVideoElement | null;
   tracks: TrackingTrackResponse[];
+  inferenceEvents?: InferenceEvent[];
 }
 
-function getTrackColor(): string {
-  // Use a consistent color for tracking
-  return "#34d399"; // Emerald 400
+function getTrackColor(inferenceEvent?: InferenceEvent): string {
+  if (inferenceEvent?.alert_level === "alert") {
+    return "#fb7185";
+  }
+  if (inferenceEvent?.alert_level === "warning") {
+    return "#fbbf24";
+  }
+  return "#34d399";
 }
 
 function getDisplayRect(
@@ -36,12 +42,28 @@ export function TrackingCanvasOverlay({
   enabled,
   videoElement,
   tracks,
+  inferenceEvents = [],
 }: TrackingCanvasOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const activeTracks = useMemo(
-    () => tracks.filter((track) => track.width > 0 && track.height > 0),
-    [tracks],
-  );
+  const latestInferenceByKey = useMemo(() => {
+    const entries = new Map<string, InferenceEvent>();
+    inferenceEvents.forEach((event) => {
+      entries.set(event.persistent_id, event);
+      entries.set(event.local_track_id, event);
+    });
+    return entries;
+  }, [inferenceEvents]);
+  const activeTracks = useMemo(() => {
+    return tracks
+      .filter((track) => track.width > 0 && track.height > 0)
+      .map((track) => ({
+        track,
+        inferenceEvent:
+          (track.persistent_id
+            ? latestInferenceByKey.get(track.persistent_id)
+            : undefined) ?? latestInferenceByKey.get(track.track_id),
+      }));
+  }, [latestInferenceByKey, tracks]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -95,8 +117,8 @@ export function TrackingCanvasOverlay({
         '600 12px "IBM Plex Sans", "Segoe UI", sans-serif';
       context.textBaseline = "middle";
 
-      activeTracks.forEach((track) => {
-        const color = getTrackColor();
+      activeTracks.forEach(({ track, inferenceEvent }) => {
+        const color = getTrackColor(inferenceEvent);
         const left = displayRect.left + (track.left / videoWidth) * displayRect.width;
         const top = displayRect.top + (track.top / videoHeight) * displayRect.height;
         const widthPx = (track.width / videoWidth) * displayRect.width;
@@ -108,7 +130,9 @@ export function TrackingCanvasOverlay({
         context.strokeRect(left, top, widthPx, heightPx);
         context.shadowBlur = 0;
 
-        const badgeText = `${track.track_id} • ${track.class_name ?? "person"} • ${Math.round(track.confidence * 100)}%`;
+        const badgeText = inferenceEvent
+          ? `${track.track_id} | ${inferenceEvent.label} | ${Math.round(inferenceEvent.score * 100)}%`
+          : `${track.track_id} | ${track.class_name ?? "person"} | ${Math.round(track.confidence * 100)}%`;
         const badgeWidth = Math.min(
           context.measureText(badgeText).width + 18,
           Math.max(widthPx, 120),

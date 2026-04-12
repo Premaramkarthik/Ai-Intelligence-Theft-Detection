@@ -140,18 +140,46 @@ export interface TrackingStateResponse {
   tracks: TrackingTrackResponse[];
 }
 
+export interface TrackingUpdateEnvelopeData {
+  stream_name?: string | null;
+  annotated_stream_name?: string | null;
+  active_tracks?: number;
+  tracks?: TrackingTrackResponse[];
+}
+
+export type InferenceAlertLevel = "normal" | "warning" | "alert";
+
+export interface InferenceStateResponse {
+  enabled: boolean;
+  strategy: string | null;
+  available_strategies: string[];
+  healthy: boolean;
+  last_error_message: string | null;
+  queue_depth: number;
+  active_tracks: number;
+  last_result_at: string | null;
+}
+
 export interface InferenceEvent {
   camera_id: string;
-  track_id: string;
-  persistent_id: string | null;
+  stream_name: string;
+  persistent_id: string;
+  local_track_id: string;
+  strategy: string;
+  score: number;
+  alert_level: InferenceAlertLevel;
   label: string;
-  confidence: number;
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-  model: string;
-  timestamp: string;
+  model_name: string;
+  sampled_at: string;
+  emitted_at: string;
+}
+
+export interface InferenceAlertEnvelopeData {
+  alert_level: InferenceAlertLevel;
+  persistent_id: string;
+  camera_id: string;
+  score: number;
+  strategy: string;
 }
 
 export interface StreamInfoResponse {
@@ -173,6 +201,7 @@ export interface StreamInfoResponse {
   last_error_code: string | null;
   last_error_message: string | null;
   tracking: TrackingStateResponse | null;
+  inference: InferenceStateResponse | null;
   worker: WorkerStateResponse;
 }
 
@@ -190,6 +219,7 @@ export interface StartStreamRequest {
   requested_protocol?: StreamProtocol;
   sample_fps?: number;
   enable_tracking_events?: boolean;
+  enable_inference?: boolean;
   reason?: string;
 }
 

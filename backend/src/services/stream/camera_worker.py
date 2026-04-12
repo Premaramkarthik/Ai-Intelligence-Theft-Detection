@@ -41,6 +41,11 @@ class WorkerRuntimeConfig:
     reconnect_max_delay_seconds: float
     log_level: str = "INFO"
     json_logs: bool = False
+    file_logs_enabled: bool = True
+    log_directory: Path = Path("runtime") / "logs"
+    log_file_prefix: str = "backend"
+    log_file_max_bytes: int = 10 * 1024 * 1024
+    log_file_backup_count: int = 5
     restart_count: int = 0
 
 
@@ -51,7 +56,15 @@ class WorkerState:
 
 
 def run_camera_worker_process(config: WorkerRuntimeConfig, stop_event: Any) -> None:
-    configure_logging(config.log_level, config.json_logs)
+    configure_logging(
+        config.log_level,
+        config.json_logs,
+        enable_file_logging=config.file_logs_enabled,
+        log_directory=config.log_directory,
+        log_file_prefix=config.log_file_prefix,
+        log_file_max_bytes=config.log_file_max_bytes,
+        log_file_backup_count=config.log_file_backup_count,
+    )
     asyncio.run(_run_worker(config, stop_event))
 
 

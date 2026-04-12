@@ -8,7 +8,7 @@ interface InferenceDashboardPanelProps {
   primaryAlertLabel: string;
 }
 
-function formatConfidence(value: number): string {
+function formatScore(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
@@ -17,10 +17,10 @@ export function InferenceDashboardPanel({
   recentAlerts,
   primaryAlertLabel,
 }: InferenceDashboardPanelProps) {
-  const activeAlertEvents = activeEvents.filter((event) => event.label !== "normal");
-  const averageConfidence =
+  const activeAlertEvents = activeEvents.filter((event) => event.alert_level !== "normal");
+  const averageScore =
     activeEvents.length > 0
-      ? activeEvents.reduce((sum, event) => sum + event.confidence, 0) / activeEvents.length
+      ? activeEvents.reduce((sum, event) => sum + event.score, 0) / activeEvents.length
       : 0;
   const labelCounts = activeEvents.reduce<Record<string, number>>((accumulator, event) => {
     accumulator[event.label] = (accumulator[event.label] ?? 0) + 1;
@@ -36,11 +36,11 @@ export function InferenceDashboardPanel({
             Behavioral inference
           </p>
           <h2 className="text-2xl font-semibold text-slate-50">
-            Temporal event overlay telemetry
+            Temporal event telemetry
           </h2>
           <p className="max-w-2xl text-sm leading-6 text-slate-400">
-            Live data from the dedicated inference websocket, including active tracks,
-            model labels, and the latest non-normal events.
+            Live inference events received over the stream websocket, grouped by
+            tracked identity and model label.
           </p>
         </div>
         <div className="rounded-2xl border border-white/10 bg-slate-950/70 px-4 py-3 text-sm text-slate-300">
@@ -60,10 +60,10 @@ export function InferenceDashboardPanel({
         </div>
         <div className="rounded-3xl border border-cyan-400/20 bg-cyan-500/10 p-5">
           <p className="text-xs uppercase tracking-[0.18em] text-cyan-100/80">
-            Average confidence
+            Average score
           </p>
           <p className="mt-3 text-4xl font-semibold text-cyan-50">
-            {formatConfidence(averageConfidence)}
+            {formatScore(averageScore)}
           </p>
         </div>
       </div>
@@ -110,7 +110,7 @@ export function InferenceDashboardPanel({
                   <th className="px-5 py-3 font-medium">Camera</th>
                   <th className="px-5 py-3 font-medium">Track</th>
                   <th className="px-5 py-3 font-medium">Label</th>
-                  <th className="px-5 py-3 font-medium">Confidence</th>
+                  <th className="px-5 py-3 font-medium">Score</th>
                   <th className="px-5 py-3 font-medium">Model</th>
                 </tr>
               </thead>
@@ -127,14 +127,14 @@ export function InferenceDashboardPanel({
                 ) : (
                   recentAlerts.map((event, index) => (
                     <tr
-                      key={`${event.camera_id}-${event.track_id}-${event.timestamp}-${index}`}
+                      key={`${event.camera_id}-${event.persistent_id}-${event.emitted_at}-${index}`}
                       className="border-t border-white/5 text-slate-200"
                     >
                       <td className="px-5 py-3">{event.camera_id}</td>
-                      <td className="px-5 py-3">{event.track_id}</td>
+                      <td className="px-5 py-3">{event.local_track_id}</td>
                       <td className="px-5 py-3">{event.label}</td>
-                      <td className="px-5 py-3">{formatConfidence(event.confidence)}</td>
-                      <td className="px-5 py-3">{event.model}</td>
+                      <td className="px-5 py-3">{formatScore(event.score)}</td>
+                      <td className="px-5 py-3">{event.model_name}</td>
                     </tr>
                   ))
                 )}
@@ -154,10 +154,10 @@ export function InferenceDashboardPanel({
               <tr>
                 <th className="px-5 py-3 font-medium">Camera</th>
                 <th className="px-5 py-3 font-medium">Track</th>
-                <th className="px-5 py-3 font-medium">BBox</th>
+                <th className="px-5 py-3 font-medium">Persistent ID</th>
                 <th className="px-5 py-3 font-medium">Label</th>
-                <th className="px-5 py-3 font-medium">Confidence</th>
-                <th className="px-5 py-3 font-medium">Model</th>
+                <th className="px-5 py-3 font-medium">Score</th>
+                <th className="px-5 py-3 font-medium">Strategy</th>
               </tr>
             </thead>
             <tbody>
@@ -173,17 +173,17 @@ export function InferenceDashboardPanel({
               ) : (
                 activeEvents.map((event) => (
                   <tr
-                    key={`${event.camera_id}:${event.track_id}`}
+                    key={`${event.camera_id}:${event.persistent_id}:${event.local_track_id}`}
                     className="border-t border-white/5 text-slate-200"
                   >
                     <td className="px-5 py-3">{event.camera_id}</td>
-                    <td className="px-5 py-3">{event.track_id}</td>
+                    <td className="px-5 py-3">{event.local_track_id}</td>
                     <td className="px-5 py-3 font-mono text-xs text-slate-400">
-                      {event.left},{event.top} · {event.width}×{event.height}
+                      {event.persistent_id}
                     </td>
                     <td className="px-5 py-3">{event.label}</td>
-                    <td className="px-5 py-3">{formatConfidence(event.confidence)}</td>
-                    <td className="px-5 py-3">{event.model}</td>
+                    <td className="px-5 py-3">{formatScore(event.score)}</td>
+                    <td className="px-5 py-3">{event.strategy}</td>
                   </tr>
                 ))
               )}

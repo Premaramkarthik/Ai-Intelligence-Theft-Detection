@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { StreamCard } from "@/components/StreamCard";
-import { deleteCamera, startStream, stopStream } from "@/lib/api";
+import { deleteCamera } from "@/lib/api";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import {
   buildGrafanaDashboardUrl,
@@ -24,7 +24,6 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
   const deferredQuery = useDeferredValue(query);
 
   const hydrateCameras = useStreamStore((state) => state.hydrateCameras);
-  const upsertStreamInfo = useStreamStore((state) => state.upsertStreamInfo);
   const setCommandState = useStreamStore((state) => state.setCommandState);
   const clearCommandState = useStreamStore((state) => state.clearCommandState);
   const removeCamera = useStreamStore((state) => state.removeCamera);
@@ -62,47 +61,6 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
   });
 
   /**
-   * Start a camera from the dashboard while keeping the card controls in sync with backend commands.
-   */
-  const handleStart = async (cameraId: string) => {
-    setCommandState(
-      cameraId,
-      "starting",
-      "Sending start request to the backend control plane.",
-    );
-    try {
-      const streamInfo = await startStream(cameraId, {
-        requested_protocol: "webrtc",
-        sample_fps: 5,
-        enable_tracking_events: true,
-        reason: "dashboard_start_request",
-      });
-      upsertStreamInfo(streamInfo);
-    } catch {
-      clearCommandState(cameraId);
-    }
-  };
-
-  /**
-   * Stop a camera from the dashboard without allowing repeated clicks during shutdown.
-   */
-  const handleStop = async (cameraId: string) => {
-    setCommandState(
-      cameraId,
-      "stopping",
-      "Sending stop request to the backend control plane.",
-    );
-    try {
-      const streamInfo = await stopStream(cameraId, {
-        reason: "dashboard_stop_request",
-      });
-      upsertStreamInfo(streamInfo);
-    } catch {
-      clearCommandState(cameraId);
-    }
-  };
-
-  /**
    * Delete a camera from the dashboard after explicit operator confirmation.
    */
   const handleDelete = async (cameraId: string, cameraName: string) => {
@@ -124,20 +82,36 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
     }
   };
 
+  const liveCameraCount = filteredCameras.filter((camera) => {
+    const status =
+      streams[camera.id]?.streamInfo?.status ??
+      camera.stream_status ??
+      "stopped";
+    return ["starting", "running", "reconnecting"].includes(status);
+  }).length;
+
+  const totalActiveTracks = filteredCameras.reduce((sum, camera) => {
+    return sum + (streams[camera.id]?.streamInfo?.tracking?.active_tracks ?? 0);
+  }, 0);
+
+  const totalActiveInference = filteredCameras.reduce((sum, camera) => {
+    return sum + (streams[camera.id]?.inferenceActiveEvents.length ?? 0);
+  }, 0);
+
   return (
     <section className="screen-enter space-y-6">
-      <div className="flex flex-col gap-4 rounded-[32px] border border-white/8 bg-[linear-gradient(140deg,rgba(17,32,42,0.94),rgba(9,18,24,0.90)),radial-gradient(circle_at_top_right,rgba(45,212,191,0.16),transparent_28%),radial-gradient(circle_at_bottom_left,rgba(251,191,36,0.10),transparent_24%)] p-6 shadow-[0_30px_120px_rgba(0,0,0,0.38)] lg:flex-row lg:items-end lg:justify-between">
+      <div className="flex flex-col gap-4 rounded-[24px] border border-white/10 bg-slate-950/80 p-5 shadow-[0_18px_60px_rgba(0,0,0,0.24)] lg:flex-row lg:items-end lg:justify-between">
         <div className="space-y-2">
-          <p className="text-xs uppercase tracking-[0.26em] text-cyan-300">
-            Sentinel operations deck
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">
+            Dashboard
           </p>
-          <h1 className="text-4xl font-semibold text-slate-50">
-            Live surveillance control plane
+          <h1 className="text-3xl font-semibold text-slate-50">
+            Live camera streams
           </h1>
-          <p className="max-w-2xl text-base leading-7 text-slate-300">
-            Raw playback, tracked playback, worker health, and observability links
-            stay in one operator-first workspace so camera issues can be triaged
-            without hopping between tools.
+          <p className="max-w-2xl text-sm leading-6 text-slate-400">
+            WebRTC is preferred for low-latency playback, HLS stays available as
+            fallback, and tracker plus inference overlays are rendered directly
+            on the raw feed.
           </p>
         </div>
         <div className="w-full max-w-sm space-y-3">
@@ -163,7 +137,7 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
               href={buildGrafanaDashboardUrl()}
               target="_blank"
               rel="noreferrer"
-              className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition-all duration-300 ease-out hover:bg-cyan-500/20"
+              className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20"
             >
               View Grafana
             </a>
@@ -171,7 +145,7 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
               href={buildPrometheusTargetsUrl()}
               target="_blank"
               rel="noreferrer"
-              className="rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-100 transition-all duration-300 ease-out hover:border-cyan-300/30 hover:bg-white/5"
+              className="rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:border-cyan-300/30 hover:bg-white/5"
             >
               View Prometheus
             </a>
@@ -179,24 +153,35 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
         </div>
       </div>
 
-      <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-3">
+        <div className="rounded-[20px] border border-white/10 bg-slate-950/80 px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Visible cameras</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-50">{filteredCameras.length}</p>
+        </div>
+        <div className="rounded-[20px] border border-white/10 bg-slate-950/80 px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Live streams</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-50">{liveCameraCount}</p>
+        </div>
+        <div className="rounded-[20px] border border-white/10 bg-slate-950/80 px-4 py-4">
+          <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
+            Active overlays
+          </p>
+          <p className="mt-2 text-3xl font-semibold text-slate-50">
+            {totalActiveTracks + totalActiveInference}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-2 2xl:grid-cols-3">
         {filteredCameras.map((camera) => {
           const streamEntity = streams[camera.id];
           const streamInfo = streamEntity?.streamInfo;
-          const backendStatus =
-            streamInfo?.status ?? camera.stream_status ?? "stopped";
 
           return (
             <StreamCard
               key={camera.id}
               camera={camera}
-              backendStatus={backendStatus}
-              commandState={streamEntity?.commandState ?? "idle"}
-              commandMessage={streamEntity?.commandMessage ?? null}
-              backendErrorMessage={streamInfo?.last_error_message ?? null}
-              worker={streamInfo?.worker ?? null}
-              onStart={() => void handleStart(camera.id)}
-              onStop={() => void handleStop(camera.id)}
+              initialStreamInfo={streamInfo ?? null}
               onDelete={() => void handleDelete(camera.id, camera.name)}
             />
           );

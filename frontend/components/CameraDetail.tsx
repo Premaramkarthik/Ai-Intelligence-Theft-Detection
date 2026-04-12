@@ -103,6 +103,9 @@ export function CameraDetail({
     camera,
     streamInfo,
     trackingInfo,
+    inferenceInfo,
+    activeInferenceEvents,
+    recentInferenceAlerts,
     videoElement,
     playbackViewMode,
     backendLifecycle,
@@ -234,6 +237,7 @@ export function CameraDetail({
                   enabled={overlayEligible && trackingOverlayEnabled}
                   videoElement={videoElement}
                   tracks={trackingInfo?.tracks ?? []}
+                  inferenceEvents={activeInferenceEvents}
                 />
                 <PlayerOverlay
                   backendLifecycle={backendLifecycle}
@@ -412,6 +416,88 @@ export function CameraDetail({
                 {trackingInfo?.enabled
                   ? "Tracking is enabled. Person IDs will appear here when detections are active."
                   : "Tracking is not active for this stream yet."}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-[28px] border border-white/8 bg-[linear-gradient(160deg,rgba(17,32,42,0.92),rgba(9,18,24,0.92))] p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-50">Inference</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  Live labels attached to tracked identities.
+                </p>
+              </div>
+              <StatusBadge
+                label={`${activeInferenceEvents.length} live`}
+                status={
+                  inferenceInfo?.enabled && inferenceInfo.healthy
+                    ? "running"
+                    : activeInferenceEvents.length > 0
+                      ? "degraded"
+                      : "stopped"
+                }
+              />
+            </div>
+
+            <dl className="mt-4 grid grid-cols-3 gap-3 text-sm text-slate-300">
+              <div className="rounded-2xl border border-white/8 bg-slate-900/60 px-4 py-3">
+                <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Strategy
+                </dt>
+                <dd className="mt-2 font-medium text-slate-100">
+                  {inferenceInfo?.strategy ?? "Not enabled"}
+                </dd>
+              </div>
+              <div className="rounded-2xl border border-white/8 bg-slate-900/60 px-4 py-3">
+                <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Active tracks
+                </dt>
+                <dd className="mt-2 font-medium text-slate-100">
+                  {activeInferenceEvents.length}
+                </dd>
+              </div>
+              <div className="rounded-2xl border border-white/8 bg-slate-900/60 px-4 py-3">
+                <dt className="text-xs uppercase tracking-[0.18em] text-slate-500">
+                  Recent alerts
+                </dt>
+                <dd className="mt-2 font-medium text-slate-100">
+                  {recentInferenceAlerts.length}
+                </dd>
+              </div>
+            </dl>
+
+            {recentInferenceAlerts.length ? (
+              <div className="mt-4 space-y-3">
+                {recentInferenceAlerts.slice(0, 5).map((event) => (
+                  <div
+                    key={`${event.persistent_id}-${event.emitted_at}`}
+                    className="rounded-2xl border border-white/8 bg-slate-900/60 px-4 py-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-100">
+                          {event.label}
+                        </p>
+                        <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">
+                          Track {event.local_track_id}
+                        </p>
+                      </div>
+                      <div className="text-right text-sm text-slate-300">
+                        <p>Score {event.score.toFixed(2)}</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {new Date(event.emitted_at).toLocaleTimeString()}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-slate-900/40 px-4 py-5 text-sm text-slate-400">
+                {inferenceInfo?.enabled
+                  ? "Inference is enabled. Labels will appear here as tracked identities are processed."
+                  : "Inference is not active for this stream yet."}
               </div>
             )}
           </div>

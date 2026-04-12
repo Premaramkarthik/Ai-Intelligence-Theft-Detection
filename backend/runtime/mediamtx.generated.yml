@@ -74,6 +74,12 @@ pathDefaults:
   overridePublisher: false
 
 paths:
+  cam_8eee428e11da:
+    source: "rtsp://admin:admin123@192.168.1.158:554/subStream8"
+  cam_8eee428e11da_tracked:
+    source: publisher
+    sourceOnDemand: false
+    overridePublisher: true
   cam_d5bc64c4466e:
     source: "rtsp://admin:admin123@192.168.1.158:554/subStream9"
   cam_d5bc64c4466e_tracked:
