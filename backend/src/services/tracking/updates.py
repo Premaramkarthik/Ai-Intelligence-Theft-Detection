@@ -137,6 +137,9 @@ class WebSocketTrackingUpdatePublisher:
 class _InferenceIngress(Protocol):
     """Structural protocol satisfied by ``InferenceManager.ingest_sample``."""
 
+    def is_camera_enabled(self, camera_id: str) -> bool:
+        """Return whether inference ingress is currently active for a camera."""
+
     def ingest_sample(self, sample: InferenceIngressSample) -> None:
         """Dispatch one sample into the inference ingress pipeline."""
 
@@ -167,6 +170,18 @@ class InferenceIngressPublisher:
         frame: Any = None,
     ) -> None:
         del annotated_stream_name
+        if not self._ingress.is_camera_enabled(camera_id):
+            log_inference_event(
+                self._logger,
+                logging.DEBUG,
+                "inference.input_skipped",
+                "Inference input skipped because the camera has no active inference worker.",
+                camera_id=camera_id,
+                stream_name=stream_name,
+                total_tracks=len(tracks),
+                reason="camera_inference_disabled",
+            )
+            return
         if frame is None:
             log_inference_event(
                 self._logger,

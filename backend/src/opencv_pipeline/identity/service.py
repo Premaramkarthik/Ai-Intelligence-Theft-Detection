@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter
 
+from src.core.logger.logger import get_logger
 from src.opencv_pipeline.contracts import (
     IdentityEventType,
     IdentityLifecycleEvent,
@@ -47,6 +48,7 @@ class IdentityAssignmentService:
         self._identity_store = identity_store
         self._identity_ttl_seconds = identity_ttl_seconds
         self._track_assignments: dict[tuple[str, str], _TrackAssignmentState] = {}
+        self._logger = get_logger(__name__)
 
     def ensure_ready(self) -> None:
         """Ensure the backing Milvus collection exists."""
@@ -82,7 +84,19 @@ class IdentityAssignmentService:
             lifecycle_events.extend(self._apply_matches(indexed_tracks, matches))
 
         lifecycle_events.extend(self.expire_stale())
-        return lifecycle_events, (perf_counter() - started_at) * 1000.0
+        latency_ms = (perf_counter() - started_at) * 1000.0
+        self._logger.debug(
+            "Identity assignment completed.",
+            extra={
+                "structured": {
+                    "event": "identity.assignment_completed",
+                    "request_count": len(requests),
+                    "event_count": len(lifecycle_events),
+                    "latency_ms": round(latency_ms, 3),
+                }
+            },
+        )
+        return lifecycle_events, latency_ms
 
     def expire_stale(self, reference_time: datetime | None = None) -> list[IdentityLifecycleEvent]:
         """Expire stale local-track assignments that have exceeded the TTL."""
@@ -116,6 +130,17 @@ class IdentityAssignmentService:
             )
         for key in stale_keys:
             self._track_assignments.pop(key, None)
+        if expired:
+            self._logger.debug(
+                "Expired stale identity assignments.",
+                extra={
+                    "structured": {
+                        "event": "identity.expired",
+                        "expired_count": len(expired),
+                        "active_assignment_count": len(self._track_assignments),
+                    }
+                },
+            )
         return expired
 
     def remove_camera(
@@ -152,6 +177,17 @@ class IdentityAssignmentService:
                     world_x=state.world_x,
                     world_y=state.world_y,
                 )
+            )
+        if removed:
+            self._logger.info(
+                "Removed camera identity assignments.",
+                extra={
+                    "structured": {
+                        "event": "identity.camera_removed",
+                        "camera_id": camera_id,
+                        "expired_count": len(removed),
+                    }
+                },
             )
         return removed
 

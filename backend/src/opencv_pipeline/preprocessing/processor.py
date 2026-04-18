@@ -34,11 +34,17 @@ class FramePreprocessor:
         """Convert a raw frame into the shared processed-frame contract."""
 
         raw_bgr = packet.frame_bgr if frame_bgr is None else frame_bgr
-        working_bgr = cv2.resize(
-            raw_bgr,
-            (self._target_width, self._target_height),
-            interpolation=cv2.INTER_LINEAR,
-        )
+        if (
+            raw_bgr.shape[1] == self._target_width
+            and raw_bgr.shape[0] == self._target_height
+        ):
+            working_bgr = raw_bgr.copy()
+        else:
+            working_bgr = cv2.resize(
+                raw_bgr,
+                (self._target_width, self._target_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
         rgb = cv2.cvtColor(working_bgr, cv2.COLOR_BGR2RGB)
         gray = cv2.cvtColor(working_bgr, cv2.COLOR_BGR2GRAY)
         normalized_rgb = rgb.astype(np.float32) / 255.0

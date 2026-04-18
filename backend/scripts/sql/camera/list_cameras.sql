@@ -1,6 +1,7 @@
 SELECT
     c.*,
     COALESCE(s.status, 'stopped') AS stream_status,
+    COALESCE(s.metadata, '{}'::jsonb) AS stream_metadata,
     COUNT(*) OVER() AS total_count
 FROM cameras AS c
 LEFT JOIN stream_state AS s

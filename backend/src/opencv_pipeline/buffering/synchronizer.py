@@ -25,7 +25,16 @@ class MultiCameraSynchronizer:
     def submit(self, packet: FramePacket) -> SynchronizedFrameBundle | None:
         """Submit one frame and return a bundle if all cameras are aligned."""
 
-        self._latest[packet.camera_id] = _CameraClockState(packet=packet)
+        previous_state = self._latest.get(packet.camera_id)
+        emitted_sequence = (
+            previous_state.emitted_sequence if previous_state is not None else -1
+        )
+        if previous_state is not None and previous_state.packet is not packet:
+            previous_state.packet.release()
+        self._latest[packet.camera_id] = _CameraClockState(
+            packet=packet,
+            emitted_sequence=emitted_sequence,
+        )
         if any(camera_id not in self._latest for camera_id in self._camera_ids):
             return None
 
@@ -58,9 +67,19 @@ class MultiCameraSynchronizer:
     def remove_camera(self, camera_id: str) -> None:
         """Discard synchronization state for a camera that is no longer active."""
 
-        self._latest.pop(camera_id, None)
+        state = self._latest.pop(camera_id, None)
+        if state is not None:
+            state.packet.release()
         self._camera_ids = tuple(
             active_camera_id
             for active_camera_id in self._camera_ids
             if active_camera_id != camera_id
         )
+
+    def close(self) -> None:
+        """Release all retained packets and reset synchronization state."""
+
+        for state in self._latest.values():
+            state.packet.release()
+        self._latest.clear()
+        self._camera_ids = ()

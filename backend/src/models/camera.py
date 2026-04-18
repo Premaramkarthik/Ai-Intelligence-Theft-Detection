@@ -64,6 +64,7 @@ class CameraRecord:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     stream_status: StreamStatus | None = None
+    stream_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

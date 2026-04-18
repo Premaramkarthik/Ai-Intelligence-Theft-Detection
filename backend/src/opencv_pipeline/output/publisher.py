@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 from datetime import datetime
 from typing import Any
 
 import cv2
 from pydantic import BaseModel, Field
 
+from src.core.logger.logger import get_logger
 from src.opencv_pipeline.contracts import IdentityLifecycleEvent, MotionSummary, PipelineOutput
 from src.schemas.common import utc_now
 from src.services.tracking.contracts import TrackingTrackSnapshot
@@ -105,6 +107,8 @@ class OutputDispatcher:
         annotated_stream_suffix: str = "tracked",
         include_previews: bool = False,
         jpeg_quality: int = 70,
+        display_enabled: bool = False,
+        display_window_prefix: str = "OpenCV Pipeline",
     ) -> None:
         self._tracking_update_publisher = tracking_update_publisher
         self._frame_publisher = frame_publisher
@@ -112,6 +116,9 @@ class OutputDispatcher:
         self._annotated_stream_suffix = annotated_stream_suffix
         self._include_previews = include_previews
         self._jpeg_quality = jpeg_quality
+        self._display_enabled = display_enabled
+        self._display_window_prefix = display_window_prefix
+        self._logger = get_logger(__name__)
 
     async def publish(self, output: PipelineOutput) -> None:
         """Publish one processed frame's tracking, frame, and identity events."""
@@ -120,31 +127,35 @@ class OutputDispatcher:
         packet = processed_frame.packet
         annotated_stream_name = f"{packet.stream_name}_{self._annotated_stream_suffix}"
 
-        await self._tracking_update_publisher.publish(
-            camera_id=packet.camera_id,
-            stream_name=packet.stream_name,
-            annotated_stream_name=annotated_stream_name,
-            tracks=[
-                TrackingTrackSnapshot(
-                    track_id=track.track_id,
-                    persistent_id=track.persistent_id,
-                    class_name=track.class_name,
-                    confidence=track.confidence,
-                    similarity=track.similarity,
-                    left=track.left,
-                    top=track.top,
-                    width=track.width,
-                    height=track.height,
-                    sampled_at=packet.captured_at,
-                    age_frames=track.age_frames,
-                    consecutive_hits=track.consecutive_hits,
-                    frames_since_update=track.frames_since_update,
-                    persistent_id_state=track.persistent_id_state.value,
-                )
-                for track in output.tracks
-            ],
-            frame=processed_frame.working_bgr,
-        )
+        tracking_snapshot = [
+            TrackingTrackSnapshot(
+                track_id=track.track_id,
+                persistent_id=track.persistent_id,
+                class_name=track.class_name,
+                confidence=track.confidence,
+                similarity=track.similarity,
+                left=track.left,
+                top=track.top,
+                width=track.width,
+                height=track.height,
+                sampled_at=packet.captured_at,
+                age_frames=track.age_frames,
+                consecutive_hits=track.consecutive_hits,
+                frames_since_update=track.frames_since_update,
+                persistent_id_state=track.persistent_id_state.value,
+            )
+            for track in output.tracks
+        ]
+        tasks = [
+            self._tracking_update_publisher.publish(
+                camera_id=packet.camera_id,
+                stream_name=packet.stream_name,
+                annotated_stream_name=annotated_stream_name,
+                tracks=tracking_snapshot,
+                frame=processed_frame.working_bgr,
+            ),
+            self.publish_identity_events(output.identity_events),
+        ]
 
         if self._frame_publisher is not None:
             payload = CameraFrameKafkaEventPayload(
@@ -164,9 +175,17 @@ class OutputDispatcher:
                     else None
                 ),
             )
-            await self._frame_publisher.publish(payload.model_dump(mode="json"))
+            tasks.append(self._frame_publisher.publish(payload.model_dump(mode="json")))
 
-        await self.publish_identity_events(output.identity_events)
+        self._render_preview(packet.camera_id, packet.stream_name, output.annotated_bgr)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                self._logger.warning(
+                    "OpenCV output publish failed for camera %s: %s",
+                    packet.camera_id,
+                    result,
+                )
 
     async def publish_identity_events(
         self,
@@ -174,10 +193,11 @@ class OutputDispatcher:
     ) -> None:
         """Publish identity lifecycle events independently from frame outputs."""
 
-        if self._identity_event_publisher is None:
+        if self._identity_event_publisher is None or not events:
             return
-        for event in events:
-            await self._identity_event_publisher.publish(
+
+        tasks = [
+            self._identity_event_publisher.publish(
                 IdentityKafkaEventPayload(
                     event=event.event_type.value,
                     occurred_at=event.occurred_at,
@@ -196,6 +216,44 @@ class OutputDispatcher:
                     world_y=event.world_y,
                 ).model_dump(mode="json")
             )
+            for event in events
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for event, result in zip(events, results):
+            if isinstance(result, Exception):
+                self._logger.warning(
+                    "Identity event publish failed for camera %s track %s: %s",
+                    event.camera_id,
+                    event.local_track_id,
+                    result,
+                )
+
+    def close(self) -> None:
+        """Release local preview windows when display mode is enabled."""
+
+        if not self._display_enabled:
+            return
+        try:
+            cv2.destroyAllWindows()
+        except cv2.error as exc:
+            self._logger.debug("OpenCV preview window cleanup failed: %s", exc)
+
+    def _render_preview(self, camera_id: str, stream_name: str, frame_bgr: Any) -> None:
+        """Render the annotated stream locally through OpenCV HighGUI."""
+
+        if not self._display_enabled:
+            return
+        window_name = f"{self._display_window_prefix}: {stream_name} ({camera_id})"
+        try:
+            cv2.imshow(window_name, frame_bgr)
+            cv2.waitKey(1)
+        except cv2.error as exc:
+            self._logger.warning(
+                "OpenCV preview rendering failed for camera %s: %s",
+                camera_id,
+                exc,
+            )
+            self._display_enabled = False
 
 
 def _motion_payload(motion: MotionSummary) -> dict[str, float | bool]:

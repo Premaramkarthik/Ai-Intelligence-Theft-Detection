@@ -192,7 +192,7 @@ class InferenceOrchestrator:
         async with self._strategy_lock:
             strategy = self._strategy
 
-        model_name = strategy
+        model_name = _resolve_model_name(strategy)
         crops = [entry.crop for entry in batch]
         batch_summary = summarize_sample_batch(batch)
         frames_summary = summarize_frame_batch(crops)
@@ -220,6 +220,11 @@ class InferenceOrchestrator:
             strategy=strategy,
             model_name=model_name,
         )
+
+        if not await self._triton.ensure_connected():
+            self._healthy = False
+            self._last_error = f"Triton server at {self._config.triton_url} is not reachable."
+            return
 
         preprocessing_started_at = perf_counter()
         try:
@@ -412,7 +417,8 @@ class InferenceOrchestrator:
         """Map Triton output scores back to the samples they describe."""
 
         sample = batch[-1]
-        if "output" not in outputs:
+        output_tensor_name = _resolve_output_tensor_name(strategy)
+        if output_tensor_name not in outputs:
             log_inference_event(
                 self._logger,
                 logging.WARNING,
@@ -421,12 +427,13 @@ class InferenceOrchestrator:
                 camera_id=sample.camera_id,
                 strategy=strategy,
                 model_name=model_name,
+                expected_output_tensor=output_tensor_name,
                 outputs=output_summary,
             )
             return [(sample, 0.0)]
 
         try:
-            scores = _extract_scalar_scores(outputs["output"], expected_count=len(batch))
+            scores = _extract_scalar_scores(outputs[output_tensor_name], expected_count=len(batch))
         except Exception as exc:  # pylint: disable=broad-except
             log_inference_exception(
                 self._logger,
@@ -553,3 +560,19 @@ def _extract_scalar_scores(output: np.ndarray, *, expected_count: int) -> list[f
         "Expected Triton output tensor 'output' to contain either one scalar score "
         f"or {expected_count} scalar scores; got shape={list(array.shape)}."
     )
+
+
+def _resolve_model_name(strategy: str) -> str:
+    """Map worker strategy names onto Triton repository model names."""
+
+    if strategy == "vjepa_probe":
+        return "vjepa_finetune"
+    return strategy
+
+
+def _resolve_output_tensor_name(strategy: str) -> str:
+    """Return the expected Triton output tensor for the selected strategy."""
+
+    if strategy == "vjepa_probe":
+        return "logits"
+    return "output"

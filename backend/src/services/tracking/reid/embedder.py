@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import cv2
@@ -10,9 +9,10 @@ import numpy as np
 import torch
 from torchvision.transforms import transforms
 
+from src.core.logger.logger import get_logger
 from src.services.tracking.reid.mobilenetv2_backbone import MobileNetV2Bottle
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 INPUT_WIDTH = 224
 DEFAULT_WEIGHTS_PATH = (
     Path(__file__).resolve().parent / "weights" / "mobilenetv2_bottleneck_wts.pt"
@@ -104,6 +104,18 @@ class TrackingReIdEmbedder:
                     np.asarray(embedding, dtype=np.float32).reshape(-1)
                     for embedding in output.cpu().data.numpy()
                 )
+        LOGGER.debug(
+            "Tracking re-id embedder batch completed.",
+            extra={
+                "structured": {
+                    "event": "body_inference.embedder_batch_completed",
+                    "image_chip_count": len(image_chips),
+                    "embedding_count": len(embeddings),
+                    "gpu_enabled": self._gpu,
+                    "half_precision": self._half,
+                }
+            },
+        )
         return embeddings
 
     def _preprocess(self, image: np.ndarray) -> torch.Tensor:

@@ -17,5 +17,8 @@ WITH inserted AS (
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     RETURNING *
 )
-SELECT inserted.*, NULL::text AS stream_status
+SELECT
+    inserted.*,
+    NULL::text AS stream_status,
+    '{}'::jsonb AS stream_metadata
 FROM inserted;

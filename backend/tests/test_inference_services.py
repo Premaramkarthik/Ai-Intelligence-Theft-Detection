@@ -59,7 +59,7 @@ def _make_sample(
 def _make_config(**overrides: object) -> InferenceWorkerConfig:
     defaults: dict[str, object] = {
         "camera_id": "cam_1",
-        "strategy": "cnn_transformer",
+        "strategy": "vjepa_probe",
         "temporal_buffer_size": 4,  # keep small for tests
         "dispatch_min_consecutive_hits": 4,
         "dispatch_min_crop_width": 32,
@@ -182,15 +182,15 @@ class TestBatchBuilder:
         builder = BatchBuilder()
         crops = [np.zeros((64, 32, 3), dtype=np.uint8) for _ in range(16)]
         tensors = builder.build(crops, "cnn_transformer")
-        # BCTHW: (1, C, T, H, W) = (1, 3, 16, 224, 224)
-        assert tensors["input"].shape == (1, 3, 16, 224, 224)
+        # BTCHW: (1, T, C, H, W) = (1, 16, 3, 224, 224)
+        assert tensors["input"].shape == (1, 16, 3, 224, 224)
 
     def test_vjepa_probe_shape(self) -> None:
         builder = BatchBuilder()
         crops = [np.zeros((64, 32, 3), dtype=np.uint8) for _ in range(16)]
         tensors = builder.build(crops, "vjepa_probe")
-        # BTCHW: (1, T, C, H, W) = (1, 16, 3, 224, 224)
-        assert tensors["input"].shape == (1, 16, 3, 224, 224)
+        # BTCHW: (1, T, C, H, W) = (1, 16, 3, 256, 256)
+        assert tensors["pixel_values_videos"].shape == (1, 16, 3, 256, 256)
 
     def test_pixel_values_normalised(self) -> None:
         builder = BatchBuilder()
@@ -295,6 +295,7 @@ async def test_inference_ingress_publisher_skips_tracks_without_persistent_id() 
     from src.services.tracking.updates import InferenceIngressPublisher
 
     ingress = MagicMock()
+    ingress.is_camera_enabled.return_value = True
     publisher = InferenceIngressPublisher(ingress)
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -325,6 +326,7 @@ async def test_inference_ingress_publisher_enqueues_assigned_track() -> None:
     from src.services.tracking.updates import InferenceIngressPublisher
 
     ingress = MagicMock()
+    ingress.is_camera_enabled.return_value = True
     publisher = InferenceIngressPublisher(ingress)
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -362,6 +364,7 @@ async def test_inference_ingress_publisher_no_op_without_frame() -> None:
     from src.services.tracking.updates import InferenceIngressPublisher
 
     ingress = MagicMock()
+    ingress.is_camera_enabled.return_value = True
     publisher = InferenceIngressPublisher(ingress)
 
     track = TrackingTrackSnapshot(
@@ -387,10 +390,48 @@ async def test_inference_ingress_publisher_no_op_without_frame() -> None:
     ingress.ingest_sample.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_inference_ingress_publisher_skips_disabled_camera() -> None:
+    from src.services.tracking.contracts import TrackingTrackSnapshot
+    from src.services.tracking.updates import InferenceIngressPublisher
+
+    ingress = MagicMock()
+    ingress.is_camera_enabled.return_value = False
+    publisher = InferenceIngressPublisher(ingress)
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    track = TrackingTrackSnapshot(
+        track_id="t1",
+        persistent_id="person_1",
+        class_name="person",
+        confidence=0.9,
+        similarity=0.85,
+        left=10,
+        top=10,
+        width=64,
+        height=128,
+        persistent_id_state="assigned",
+        consecutive_hits=10,
+        frames_since_update=0,
+    )
+    await publisher.publish(
+        camera_id="cam_1",
+        stream_name="s",
+        annotated_stream_name="s_ann",
+        tracks=[track],
+        frame=frame,
+    )
+
+    ingress.ingest_sample.assert_not_called()
+
+
 class _FakeTriton:
     def __init__(self, outputs: dict[str, np.ndarray]) -> None:
         self.outputs = outputs
         self.closed = False
+
+    async def ensure_connected(self) -> bool:
+        return True
 
     async def infer(
         self,
@@ -407,7 +448,7 @@ class _FakeTriton:
 def _make_orchestrator(outputs: dict[str, np.ndarray]):
     from src.services.inference.orchestrator import InferenceOrchestrator
 
-    config = _make_config(temporal_buffer_size=3)
+    config = _make_config(temporal_buffer_size=3, strategy="cnn_transformer")
     scheduler = InferenceIngressScheduler(
         config,
         TemporalBufferService(

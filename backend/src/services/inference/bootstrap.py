@@ -44,4 +44,5 @@ def create_inference_runtime_services(
         kafka_publisher=kafka_publisher,
         metrics_recorder=metrics_recorder,
         triton_url=settings.triton_url,
+        triton_reconnect_interval_seconds=settings.triton_reconnect_interval_seconds,
     )

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Request, WebSocket
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from starlette.websockets import WebSocketDisconnect
 
 from src.schemas.common import ApiResponse, WebSocketEnvelope
@@ -18,7 +18,13 @@ class InferencePatchRequest(BaseModel):
     """Patch payload for enabling or reconfiguring inference on a camera."""
 
     enabled: bool | None = None
-    strategy: str | None = None
+    strategy: Literal["vjepa_probe", "cnn_transformer"] | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> "InferencePatchRequest":
+        if self.enabled is None and self.strategy is None:
+            raise ValueError("At least one of enabled or strategy must be provided.")
+        return self
 
 
 @router.patch(
@@ -31,15 +37,26 @@ async def patch_inference(
     request: Request,
     payload: InferencePatchRequest,
 ) -> dict[str, Any]:
-    inference_manager = request.app.state.container.inference_manager
-    await inference_manager.configure_stream(
+    container = request.app.state.container
+    await container.camera_service.get_camera_record(camera_id)
+    stream_record = await container.stream_control_service.configure_inference(
         camera_id,
         enabled=payload.enabled,
         strategy=payload.strategy,
     )
+    inference_metadata = stream_record.metadata.get("inference")
+    if not isinstance(inference_metadata, dict):
+        inference_metadata = {}
     return build_success_payload(
         "Inference configuration updated.",
-        {"camera_id": camera_id, "enabled": payload.enabled, "strategy": payload.strategy},
+        {
+            "camera_id": camera_id,
+            "enabled": inference_metadata.get("enabled"),
+            "strategy": inference_metadata.get("strategy"),
+            "worker_refresh_interval_seconds": (
+                container.settings.opencv_pipeline_inference_control_refresh_interval_seconds
+            ),
+        },
     )
 
 

@@ -484,6 +484,7 @@ Purpose:
 
 Used paths include:
 - `runtime/logs/` for rotating file logs
+- `runtime/logs/subsystems/` for dedicated rotating subsystem logs such as inference, person detection, tracker, body inference, Milvus identity, and streaming
 - `runtime/calibration/` for optional camera calibration JSON
 - `runtime/milvus/` when running Milvus-related services in Docker Compose
 
@@ -840,6 +841,8 @@ At minimum, a working environment needs:
 - `LOG_FILE_PREFIX`
 - `LOG_FILE_MAX_BYTES`
 - `LOG_FILE_BACKUP_COUNT`
+- `SUBSYSTEM_LOGS_ENABLED`
+- `SUBSYSTEM_LOG_DIRECTORY`
 
 ## 12. Dependencies
 
@@ -1041,6 +1044,13 @@ The backend defines application metrics for:
 Logging is configured through `src/core/logger/logger.py` and supports:
 - standard or JSON logs
 - rotating file logs under `runtime/logs/`
+- dedicated rotating subsystem logs under `runtime/logs/subsystems/`:
+  - `streaming/`
+  - `person_detection/`
+  - `tracker/`
+  - `body_inference/`
+  - `milvus/`
+  - `inference/`
 
 ### 14.4 Dashboards and monitoring assets
 

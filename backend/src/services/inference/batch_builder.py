@@ -7,17 +7,17 @@ from typing import Any
 import numpy as np
 
 
-# Target spatial size shared by both strategies.
-_CROP_H = 224
-_CROP_W = 224
+_CNN_TEMPORAL_WINDOW = 16
+_CNN_CROP_H = 224
+_CNN_CROP_W = 224
+_VJEPA_TEMPORAL_WINDOW = 16
+_VJEPA_CROP_H = 256
+_VJEPA_CROP_W = 256
 
-# V-JEPA expects (B, T, C, H, W); CNN-transformer expects (B, C, T, H, W).
-_VJEPA_FRAME_DIM = 16
-_CNN_FRAME_DIM = 16
 
+def _resize_crop(crop: Any, *, h: int, w: int) -> np.ndarray:
+    """Resize a HWC uint8 ndarray to ``(h, w, 3)`` and normalise to FP32."""
 
-def _resize_crop(crop: Any, h: int = _CROP_H, w: int = _CROP_W) -> np.ndarray:
-    """Resize a HWC uint8 ndarray to (h, w, 3) via simple nearest-neighbour."""
     import cv2  # pylint: disable=import-outside-toplevel
 
     resized: np.ndarray = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -29,8 +29,10 @@ def _resize_crop(crop: Any, h: int = _CROP_H, w: int = _CROP_W) -> np.ndarray:
 class BatchBuilder:
     """Build normalised Triton input tensors from a list of frame crops.
 
-    cnn_transformer input shape: (1, C, T, H, W) — BCTHW
-    vjepa_probe input shape:     (1, T, C, H, W) — BTCHW
+    Current model contracts in ``backend/model_repository/triton``:
+    - ``cnn_transformer`` expects ``input`` shaped ``(1, 16, 3, 224, 224)``
+    - ``vjepa_probe`` maps to ``vjepa_finetune`` and expects
+      ``pixel_values_videos`` shaped ``(1, 16, 3, 256, 256)``
     """
 
     def build(
@@ -38,22 +40,39 @@ class BatchBuilder:
         frames: list[Any],
         strategy: str,
     ) -> dict[str, np.ndarray]:
-        """Return a dict mapping Triton input name → numpy array.
-
-        Args:
-            frames: list of HWC uint8 numpy arrays (length == temporal window).
-            strategy: "cnn_transformer" or "vjepa_probe".
-
-        Returns:
-            {"input": np.ndarray} with the expected spatial-temporal shape.
-        """
-        resized = np.stack([_resize_crop(f) for f in frames], axis=0)  # (T, H, W, C)
+        """Return the named Triton tensors for ``strategy``."""
 
         if strategy == "vjepa_probe":
-            # BTCHW: (1, T, C, H, W)
-            tensor = resized.transpose(0, 3, 1, 2)[np.newaxis]  # (1, T, C, H, W)
-        else:
-            # BCTHW: (1, C, T, H, W)
-            tensor = resized.transpose(3, 0, 1, 2)[np.newaxis]  # (1, C, T, H, W)
+            tensor = self._build_vjepa_tensor(frames)
+            return {"pixel_values_videos": tensor}
 
+        tensor = self._build_cnn_transformer_tensor(frames)
         return {"input": tensor}
+
+    def _build_cnn_transformer_tensor(self, frames: list[Any]) -> np.ndarray:
+        """Build the CNN transformer tensor as ``(1, T, C, H, W)``."""
+
+        resized = np.stack(
+            [_resize_crop(frame, h=_CNN_CROP_H, w=_CNN_CROP_W) for frame in frames],
+            axis=0,
+        )  # (T, H, W, C)
+        if resized.shape[0] != _CNN_TEMPORAL_WINDOW:
+            raise ValueError(
+                "cnn_transformer expects exactly "
+                f"{_CNN_TEMPORAL_WINDOW} frames, got {resized.shape[0]}."
+            )
+        return resized.transpose(0, 3, 1, 2)[np.newaxis]  # (1, T, C, H, W)
+
+    def _build_vjepa_tensor(self, frames: list[Any]) -> np.ndarray:
+        """Build the VJEPA tensor as ``(1, T, C, H, W)``."""
+
+        resized = np.stack(
+            [_resize_crop(frame, h=_VJEPA_CROP_H, w=_VJEPA_CROP_W) for frame in frames],
+            axis=0,
+        )  # (T, H, W, C)
+        if resized.shape[0] != _VJEPA_TEMPORAL_WINDOW:
+            raise ValueError(
+                f"vjepa_probe expects exactly {_VJEPA_TEMPORAL_WINDOW} frames, "
+                f"got {resized.shape[0]}."
+            )
+        return resized.transpose(0, 3, 1, 2)[np.newaxis]  # (1, T, C, H, W)

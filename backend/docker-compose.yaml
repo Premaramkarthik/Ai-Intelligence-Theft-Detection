@@ -57,7 +57,7 @@ services:
 
   triton:
     image: nvcr.io/nvidia/tritonserver:24.08-py3
-    command: ["tritonserver", "--model-repository=/models/triton", "--log-verbose=1", "--allow-grpc=true", "--allow-http=true", "--metrics-port=8002"]
+    command: ["tritonserver", "--model-repository=/models/triton", "--model-control-mode=explicit", "--load-model=vjepa_finetune", "--load-model=cnn_transformer", "--disable-auto-complete-config", "--backend-config=onnxruntime,default-max-batch-size=0", "--log-verbose=1", "--allow-grpc=true", "--allow-http=true", "--metrics-port=8002"]
     ports:
       - "8000:8000"
       - "8001:8001"

@@ -13,7 +13,9 @@ from src.core.logger.logger import get_logger
 from src.services.inference.logging import (
     log_inference_event,
     log_inference_exception,
+    mark_exception_logged,
     summarize_named_arrays,
+    was_exception_logged,
 )
 
 
@@ -25,19 +27,56 @@ class TritonInferenceClient:
         max_in_flight: maximum number of concurrent outstanding requests.
     """
 
-    def __init__(self, url: str, max_in_flight: int = 8) -> None:
+    def __init__(
+        self,
+        url: str,
+        max_in_flight: int = 8,
+        reconnect_interval_seconds: float = 5.0,
+    ) -> None:
         self._url = url
         self._max_in_flight = max_in_flight
+        self._reconnect_interval_seconds = max(0.5, reconnect_interval_seconds)
         self._semaphore = asyncio.Semaphore(max_in_flight)
         self._client: Any = None  # tritonclientutils.InferenceServerClient at runtime
+        self._connect_lock = asyncio.Lock()
+        self._last_connect_attempt_at: float | None = None
+        self._last_connect_error: str | None = None
         self._logger = get_logger(__name__)
 
     async def connect(self) -> None:
         """Create the gRPC channel and verify server liveness."""
 
+        async with self._connect_lock:
+            await self._connect_locked()
+
+    async def ensure_connected(self) -> bool:
+        """Return ``True`` when Triton is currently connected or reconnect succeeds."""
+
+        if self._client is not None:
+            return True
+
+        async with self._connect_lock:
+            if self._client is not None:
+                return True
+            now = perf_counter()
+            if (
+                self._last_connect_attempt_at is not None
+                and now - self._last_connect_attempt_at < self._reconnect_interval_seconds
+            ):
+                return False
+            try:
+                await self._connect_locked()
+            except Exception:
+                return False
+            return self._client is not None
+
+    async def _connect_locked(self) -> None:
+        """Create the gRPC channel and verify server liveness under the connect lock."""
+
         import tritonclient.grpc.aio as triton_grpc  # pylint: disable=import-outside-toplevel
 
         connect_started_at = perf_counter()
+        self._last_connect_attempt_at = connect_started_at
         log_inference_event(
             self._logger,
             logging.INFO,
@@ -47,10 +86,13 @@ class TritonInferenceClient:
             max_in_flight=self._max_in_flight,
         )
         try:
-            self._client = triton_grpc.InferenceServerClient(url=self._url)
-            if not await self._client.is_server_live():
+            client = triton_grpc.InferenceServerClient(url=self._url)
+            if not await client.is_server_live():
                 raise RuntimeError(f"Triton server at {self._url} is not live")
         except Exception as exc:  # pylint: disable=broad-except
+            await self._safe_close_client_locally(locals().get("client"))
+            self._client = None
+            self._last_connect_error = str(exc)
             log_inference_exception(
                 self._logger,
                 logging.ERROR,
@@ -63,6 +105,8 @@ class TritonInferenceClient:
             )
             raise
 
+        self._client = client
+        self._last_connect_error = None
         log_inference_event(
             self._logger,
             logging.INFO,
@@ -104,6 +148,14 @@ class TritonInferenceClient:
 
         import tritonclient.grpc.aio as triton_grpc  # pylint: disable=import-outside-toplevel
 
+        if not await self.ensure_connected():
+            exc = RuntimeError(
+                f"Triton server at {self._url} is unavailable; "
+                f"last_error={self._last_connect_error or 'connect_backoff_active'}"
+            )
+            mark_exception_logged(exc)
+            raise exc
+
         request_started_at = perf_counter()
         log_inference_event(
             self._logger,
@@ -125,17 +177,33 @@ class TritonInferenceClient:
             async with self._semaphore:
                 response = await self._client.infer(model_name=model_name, inputs=triton_inputs)
         except Exception as exc:  # pylint: disable=broad-except
-            log_inference_exception(
-                self._logger,
-                logging.ERROR,
-                "inference.triton_request_failed",
-                "Triton inference request failed.",
-                exc,
-                triton_url=self._url,
-                model_name=model_name,
-                inputs=summarize_named_arrays(inputs),
-                request_latency_ms=round((perf_counter() - request_started_at) * 1000.0, 3),
-            )
+            if self._is_connection_error(exc):
+                await self._reset_client()
+            if was_exception_logged(exc):
+                log_inference_event(
+                    self._logger,
+                    logging.ERROR,
+                    "inference.triton_request_failed",
+                    "Triton inference request failed.",
+                    triton_url=self._url,
+                    model_name=model_name,
+                    inputs=summarize_named_arrays(inputs),
+                    error=str(exc),
+                    error_type=exc.__class__.__name__,
+                    request_latency_ms=round((perf_counter() - request_started_at) * 1000.0, 3),
+                )
+            else:
+                log_inference_exception(
+                    self._logger,
+                    logging.ERROR,
+                    "inference.triton_request_failed",
+                    "Triton inference request failed.",
+                    exc,
+                    triton_url=self._url,
+                    model_name=model_name,
+                    inputs=summarize_named_arrays(inputs),
+                    request_latency_ms=round((perf_counter() - request_started_at) * 1000.0, 3),
+                )
             raise
 
         outputs = {
@@ -153,3 +221,28 @@ class TritonInferenceClient:
             request_latency_ms=round((perf_counter() - request_started_at) * 1000.0, 3),
         )
         return outputs
+
+    async def _reset_client(self) -> None:
+        """Drop the active client so the next request attempts a reconnect."""
+
+        client = self._client
+        self._client = None
+        await self._safe_close_client_locally(client)
+
+    async def _safe_close_client_locally(self, client: Any) -> None:
+        """Close a transient client instance without raising cleanup errors."""
+
+        if client is None:
+            return
+        try:
+            await client.close()
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    @staticmethod
+    def _is_connection_error(exc: BaseException) -> bool:
+        message = str(exc).lower()
+        return any(
+            token in message
+            for token in ("unavailable", "connection refused", "failed to connect", "connectex")
+        )

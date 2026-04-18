@@ -95,6 +95,7 @@ class VideoCaptureWorker:
                 frame_grabbed, frame = self._capture.read()
                 if not frame_grabbed or frame is None:
                     raise RuntimeError("blank frame grabbed")
+                frame = self._normalize_frame(frame)
                 self._last_error = None
                 packet = FramePacket(
                     camera_id=self._source.camera_id,
@@ -121,6 +122,25 @@ class VideoCaptureWorker:
                     self._capture = None
                 time.sleep(delay_seconds)
                 delay_seconds = min(delay_seconds * 2.0, self._retry_max_delay_seconds)
+
+    def _normalize_frame(self, frame) -> object:
+        """Normalize capture output for downstream buffering and preprocessing."""
+
+        target_width = int(self._source.target_width)
+        target_height = int(self._source.target_height)
+        if (
+            target_width > 0
+            and target_height > 0
+            and (frame.shape[1] != target_width or frame.shape[0] != target_height)
+        ):
+            frame = cv2.resize(
+                frame,
+                (target_width, target_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        if not frame.flags.c_contiguous:
+            frame = frame.copy()
+        return frame
 
     def _open_capture(self) -> cv2.VideoCapture:
         capture = cv2.VideoCapture(

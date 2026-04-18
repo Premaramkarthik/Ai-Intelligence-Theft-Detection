@@ -50,9 +50,10 @@ class InferenceWorkerConfig:
     """Immutable configuration for one camera's inference orchestrator."""
 
     camera_id: str
-    strategy: str = "cnn_transformer"           # "cnn_transformer" | "vjepa_probe"
+    strategy: str = "vjepa_probe"               # "cnn_transformer" | "vjepa_probe"
     triton_url: str = "localhost:8001"
     triton_max_in_flight: int = 8               # per-strategy bounded concurrency
+    triton_reconnect_interval_seconds: float = 5.0
     temporal_buffer_size: int = 16
     dispatch_min_consecutive_hits: int = 4
     dispatch_min_crop_width: int = 32

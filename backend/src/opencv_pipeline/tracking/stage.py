@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.core.logger.logger import get_logger
 from src.opencv_pipeline.contracts import Detection, TrackedObject
 from src.services.tracking.contracts import PersonDetection
 from src.services.tracking.trackers.bytetrack import RoboflowByteTrackPersonTracker
@@ -27,6 +28,7 @@ class ByteTrackStage:
         self._minimum_iou_threshold = minimum_iou_threshold
         self._high_conf_det_threshold = high_conf_det_threshold
         self._trackers: dict[str, RoboflowByteTrackPersonTracker] = {}
+        self._logger = get_logger(__name__)
 
     def update(
         self,
@@ -48,22 +50,52 @@ class ByteTrackStage:
                 high_conf_det_threshold=self._high_conf_det_threshold,
             )
             self._trackers[camera_id] = tracker
+            self._logger.info(
+                "Tracker initialised for camera stream.",
+                extra={
+                    "structured": {
+                        "event": "tracker.initialized",
+                        "camera_id": camera_id,
+                        "stream_name": stream_name,
+                        "frame_rate": self._frame_rate,
+                        "lost_track_buffer": self._lost_track_buffer,
+                        "track_activation_threshold": self._track_activation_threshold,
+                        "minimum_consecutive_frames": self._minimum_consecutive_frames,
+                        "minimum_iou_threshold": self._minimum_iou_threshold,
+                        "high_conf_det_threshold": self._high_conf_det_threshold,
+                    }
+                },
+            )
 
-        tracked_people = tracker.update(
-            [
-                PersonDetection(
-                    left=detection.left,
-                    top=detection.top,
-                    width=detection.width,
-                    height=detection.height,
-                    confidence=detection.confidence,
-                    class_name=detection.class_name,
-                )
-                for detection in detections
-                if detection.class_name == "person"
-            ]
-        )
-        return [
+        person_detections = [
+            PersonDetection(
+                left=detection.left,
+                top=detection.top,
+                width=detection.width,
+                height=detection.height,
+                confidence=detection.confidence,
+                class_name=detection.class_name,
+            )
+            for detection in detections
+            if detection.class_name == "person"
+        ]
+        try:
+            tracked_people = tracker.update(person_detections)
+        except Exception:
+            self._logger.exception(
+                "Tracker update failed.",
+                extra={
+                    "structured": {
+                        "event": "tracker.update_failed",
+                        "camera_id": camera_id,
+                        "stream_name": stream_name,
+                        "input_detections": len(detections),
+                        "person_detections": len(person_detections),
+                    }
+                },
+            )
+            raise
+        tracked_objects = [
             TrackedObject(
                 camera_id=camera_id,
                 stream_name=stream_name,
@@ -80,9 +112,33 @@ class ByteTrackStage:
             )
             for tracked_person in tracked_people
         ]
+        self._logger.debug(
+            "Tracker update completed.",
+            extra={
+                "structured": {
+                    "event": "tracker.update_completed",
+                    "camera_id": camera_id,
+                    "stream_name": stream_name,
+                    "input_detections": len(detections),
+                    "person_detections": len(person_detections),
+                    "active_tracks": len(tracked_objects),
+                }
+            },
+        )
+        return tracked_objects
 
     def remove_camera(self, camera_id: str) -> None:
         """Discard tracker state when a camera is removed from the runtime."""
 
-        self._trackers.pop(camera_id, None)
+        removed = self._trackers.pop(camera_id, None)
+        if removed is not None:
+            self._logger.info(
+                "Tracker state removed for camera.",
+                extra={
+                    "structured": {
+                        "event": "tracker.removed",
+                        "camera_id": camera_id,
+                    }
+                },
+            )
 

@@ -39,6 +39,7 @@ class InferenceManager:
         metrics_recorder: MetricsRecorder | None = None,
         triton_url: str = "localhost:8001",
         triton_max_in_flight: int = 8,
+        triton_reconnect_interval_seconds: float = 5.0,
     ) -> None:
         self._event_repository = event_repository
         self._websocket_manager = websocket_manager
@@ -46,6 +47,7 @@ class InferenceManager:
         self._metrics = metrics_recorder or NullMetricsRecorder()
         self._triton_url = triton_url
         self._triton_max_in_flight = triton_max_in_flight
+        self._triton_reconnect_interval_seconds = triton_reconnect_interval_seconds
         self._logger = get_logger(__name__)
         self._orchestrators: dict[str, InferenceOrchestrator] = {}
         self._schedulers: dict[str, InferenceIngressScheduler] = {}
@@ -91,7 +93,7 @@ class InferenceManager:
         """
 
         if enabled is True and camera_id not in self._orchestrators:
-            await self._start_camera(camera_id, strategy or "cnn_transformer")
+            await self._start_camera(camera_id, strategy or "vjepa_probe")
         elif enabled is False:
             await self.remove_camera(camera_id)
         elif strategy is not None and camera_id in self._orchestrators:
@@ -109,6 +111,11 @@ class InferenceManager:
             return None
         data = orchestrator.get_snapshot_data()
         return InferenceSnapshot(camera_id=camera_id, **data)
+
+    def is_camera_enabled(self, camera_id: str) -> bool:
+        """Return ``True`` when a camera currently has an active scheduler."""
+
+        return camera_id in self._schedulers
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -135,6 +142,7 @@ class InferenceManager:
             strategy=strategy,
             triton_url=self._triton_url,
             triton_max_in_flight=self._triton_max_in_flight,
+            triton_reconnect_interval_seconds=self._triton_reconnect_interval_seconds,
         )
         buffer = TemporalBufferService(
             window_size=config.temporal_buffer_size,
@@ -144,6 +152,7 @@ class InferenceManager:
         triton = TritonInferenceClient(
             url=config.triton_url,
             max_in_flight=config.triton_max_in_flight,
+            reconnect_interval_seconds=config.triton_reconnect_interval_seconds,
         )
         try:
             await triton.connect()
@@ -152,7 +161,7 @@ class InferenceManager:
                 self._logger,
                 logging.WARNING,
                 "inference.triton_connect_failed",
-                "Triton connection failed; inference will start but requests will error until Triton is reachable.",
+                "Triton connection failed; inference will stay idle and retry automatically until Triton is reachable.",
                 camera_id=camera_id,
                 strategy=strategy,
                 triton_url=config.triton_url,

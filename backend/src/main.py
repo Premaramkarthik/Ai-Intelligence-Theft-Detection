@@ -32,7 +32,9 @@ from src.services.camera.camera_validator import CameraValidator
 from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.inference.bootstrap import create_inference_runtime_services
 from src.services.inference.manager import InferenceManager
+from src.services.stream.stream_control_service import StreamControlService
 from src.services.stream.kafka_event_consumer import StreamEventConsumer
+from src.services.stream.stream_state_repository import StreamStateRepository
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
 from src.utils.migration_runner import apply_pending_migrations
 
@@ -51,6 +53,7 @@ class ApplicationContainer:  # pylint: disable=too-many-instance-attributes
     settings: Settings
     database: Database
     camera_service: CameraService
+    stream_control_service: StreamControlService
     tracking_kafka_producer: TrackingKafkaProducerService
     inference_manager: InferenceManager
     websocket_manager: WebSocketManager
@@ -73,6 +76,8 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         log_file_prefix=settings.log_file_prefix,
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
+        enable_subsystem_file_logging=settings.subsystem_logs_enabled,
+        subsystem_log_directory=settings.subsystem_log_directory,
     )
 
     @asynccontextmanager
@@ -84,6 +89,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
                 await apply_pending_migrations(connection)
 
         camera_repository = CameraRepository(database)
+        stream_state_repository = StreamStateRepository(database)
         camera_validator = CameraValidator(settings)
         metrics_recorder = (
             PrometheusMetrics()
@@ -111,6 +117,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             camera_repository,
             camera_validator,
         )
+        stream_control_service = StreamControlService(stream_state_repository)
         websocket_manager = WebSocketManager(metrics_recorder=metrics_recorder)
 
         # Build the shared Kafka producer first so both inference and tracking
@@ -149,6 +156,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             settings=settings,
             database=database,
             camera_service=camera_service,
+            stream_control_service=stream_control_service,
             tracking_kafka_producer=tracking_kafka_producer,
             inference_manager=inference_manager,
             websocket_manager=websocket_manager,

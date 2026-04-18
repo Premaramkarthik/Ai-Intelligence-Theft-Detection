@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -71,6 +71,40 @@ class FramePacket:
     width: int
     height: int
     metadata: dict[str, Any] = field(default_factory=dict)
+    _release: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+    _released: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def with_frame(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        release: Callable[[], None] | None = None,
+    ) -> "FramePacket":
+        """Clone this packet with updated frame storage and optional cleanup hook."""
+
+        return FramePacket(
+            camera_id=self.camera_id,
+            stream_name=self.stream_name,
+            sequence_number=self.sequence_number,
+            captured_at=self.captured_at,
+            monotonic_ns=self.monotonic_ns,
+            frame_bgr=frame_bgr,
+            width=frame_bgr.shape[1] if width is None else width,
+            height=frame_bgr.shape[0] if height is None else height,
+            metadata=dict(self.metadata),
+            _release=release,
+        )
+
+    def release(self) -> None:
+        """Release any external resources associated with the packet frame."""
+
+        if self._released:
+            return
+        self._released = True
+        if self._release is not None:
+            self._release()
 
 
 @dataclass(slots=True)

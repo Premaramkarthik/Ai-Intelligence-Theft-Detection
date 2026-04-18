@@ -9,7 +9,7 @@ from time import perf_counter_ns
 
 from src.core.config import Settings
 from src.core.logger.logger import get_logger
-from src.models.camera import CameraRecord, CameraStatus
+from src.models.camera import CameraRecord
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
 from src.opencv_pipeline.buffering.frame_buffer import FrameBuffer
 from src.opencv_pipeline.buffering.synchronizer import MultiCameraSynchronizer
@@ -58,6 +58,13 @@ class OpenCvPipelineRuntime:
         self._frame_buffer = FrameBuffer(
             maxsize=settings.opencv_pipeline_frame_buffer_size,
             drop_policy=settings.opencv_pipeline_drop_policy,
+            use_shared_memory=settings.opencv_pipeline_shared_memory_enabled,
+            frame_shape=(
+                settings.opencv_pipeline_target_height,
+                settings.opencv_pipeline_target_width,
+                3,
+            ),
+            shared_memory_slots=settings.opencv_pipeline_shared_memory_slots,
         )
         self._calibration_service = CalibrationService()
         self._preprocessor = FramePreprocessor(
@@ -121,8 +128,11 @@ class OpenCvPipelineRuntime:
             annotated_stream_suffix=settings.tracking_stream_suffix,
             include_previews=settings.opencv_pipeline_publish_frame_previews,
             jpeg_quality=settings.opencv_pipeline_preview_jpeg_quality,
+            display_enabled=settings.opencv_pipeline_display_enabled,
+            display_window_prefix=settings.opencv_pipeline_display_window_prefix,
         )
         self._active_cameras: dict[str, _ActiveCamera] = {}
+        self._camera_inference_controls: dict[str, tuple[bool, str]] = {}
         self._last_frame_seen_at: dict[str, datetime] = {}
         self._synchronizer = MultiCameraSynchronizer([], settings.opencv_pipeline_sync_tolerance_ms)
         self._sync_camera_ids: tuple[str, ...] = ()
@@ -152,12 +162,23 @@ class OpenCvPipelineRuntime:
         for camera_id in list(self._active_cameras):
             await self._remove_camera(camera_id)
         self._identity_service.close()
+        self._synchronizer.close()
+        self._sync_camera_ids = ()
+
+    def close(self) -> None:
+        """Release runtime-owned buffering resources."""
+
+        self._dispatcher.close()
+        self._synchronizer.close()
+        self._sync_camera_ids = ()
+        self._frame_buffer.close()
 
     async def run_forever(self) -> None:
         """Run the pipeline until ``stop()`` is called."""
 
         await self.start()
         refresh_started_at = utc_now()
+        inference_control_refresh_started_at = utc_now()
         try:
             while self._running:
                 if not self._active_cameras:
@@ -168,9 +189,17 @@ class OpenCvPipelineRuntime:
                 ).total_seconds() >= self._settings.opencv_pipeline_refresh_all_cameras_interval_seconds:
                     await self.refresh_cameras()
                     refresh_started_at = now
+                if (
+                    now - inference_control_refresh_started_at
+                ).total_seconds() >= (
+                    self._settings.opencv_pipeline_inference_control_refresh_interval_seconds
+                ):
+                    await self.sync_inference_controls()
+                    inference_control_refresh_started_at = now
 
                 packet = await self._frame_buffer.get()
                 if packet.camera_id not in self._active_cameras:
+                    packet.release()
                     continue
 
                 self._last_frame_seen_at[packet.camera_id] = packet.captured_at
@@ -186,22 +215,24 @@ class OpenCvPipelineRuntime:
     async def refresh_cameras(self) -> None:
         """Refresh active cameras from PostgreSQL and start/stop workers as needed."""
 
-        camera_records = await self._camera_service.list_all_camera_records()
+        camera_records = await self._camera_service.list_active_camera_records()
         target_sources = {
             camera.id: self._build_source_config(camera)
             for camera in camera_records
-            if camera.status == CameraStatus.active
         }
+        topology_changed = False
 
         for camera_id in list(self._active_cameras):
             if camera_id in target_sources:
                 if self._active_cameras[camera_id].source == target_sources[camera_id]:
                     continue
+            topology_changed = True
             await self._remove_camera(camera_id)
 
         for camera_id, source in target_sources.items():
             if camera_id in self._active_cameras:
                 continue
+            topology_changed = True
             worker = VideoCaptureWorker(
                 source,
                 self._frame_buffer,
@@ -214,15 +245,19 @@ class OpenCvPipelineRuntime:
             )
             worker.start()
             self._active_cameras[camera_id] = _ActiveCamera(source=source, worker=worker)
-            if self._settings.opencv_pipeline_enable_behavior_inference:
-                await self._inference_manager.configure_stream(
-                    camera_id,
-                    enabled=True,
-                    strategy=self._settings.opencv_pipeline_inference_strategy,
-                )
             self._load_calibration_profile(source)
 
-        self._refresh_sync_group(utc_now(), None)
+        await self._sync_inference_controls(camera_records)
+        if topology_changed:
+            self._refresh_sync_group(utc_now(), None)
+
+    async def sync_inference_controls(self) -> None:
+        """Refresh per-camera inference settings without rebuilding capture topology."""
+
+        if not self._active_cameras:
+            return
+        camera_records = await self._camera_service.list_active_camera_records()
+        await self._sync_inference_controls(camera_records)
 
     async def _remove_camera(self, camera_id: str) -> None:
         active_camera = self._active_cameras.pop(camera_id, None)
@@ -236,6 +271,7 @@ class OpenCvPipelineRuntime:
         self._calibration_service.remove_camera(camera_id)
         self._synchronizer.remove_camera(camera_id)
         self._last_frame_seen_at.pop(camera_id, None)
+        self._camera_inference_controls.pop(camera_id, None)
         identity_events = self._identity_service.remove_camera(camera_id)
         if identity_events:
             try:
@@ -254,6 +290,101 @@ class OpenCvPipelineRuntime:
             discarded_frames,
             len(identity_events),
         )
+
+    async def _sync_inference_controls(self, camera_records: list[CameraRecord]) -> None:
+        """Apply persisted per-camera inference settings to active worker cameras."""
+
+        if not self._settings.opencv_pipeline_enable_behavior_inference:
+            for camera_id in list(self._camera_inference_controls):
+                await self._inference_manager.remove_camera(camera_id)
+                self._camera_inference_controls.pop(camera_id, None)
+            return
+
+        active_camera_ids = set(self._active_cameras)
+        records_by_camera_id = {
+            camera.id: camera for camera in camera_records if camera.id in active_camera_ids
+        }
+        for camera_id in list(self._camera_inference_controls):
+            if camera_id not in records_by_camera_id:
+                self._camera_inference_controls.pop(camera_id, None)
+
+        for camera_id, camera in records_by_camera_id.items():
+            enabled = self._resolve_camera_inference_enabled(camera)
+            strategy = self._resolve_camera_inference_strategy(camera)
+            current = self._camera_inference_controls.get(camera_id)
+
+            if not enabled:
+                if current is not None:
+                    await self._inference_manager.remove_camera(camera_id)
+                    self._camera_inference_controls.pop(camera_id, None)
+                    self._logger.info(
+                        "OpenCV pipeline inference disabled for camera %s via stream controls.",
+                        camera_id,
+                    )
+                continue
+
+            if current is None:
+                await self._inference_manager.configure_stream(
+                    camera_id,
+                    enabled=True,
+                    strategy=strategy,
+                )
+                self._camera_inference_controls[camera_id] = (True, strategy)
+                self._logger.info(
+                    "OpenCV pipeline inference enabled for camera %s with strategy=%s.",
+                    camera_id,
+                    strategy,
+                )
+                continue
+
+            _enabled, current_strategy = current
+            if current_strategy == strategy:
+                continue
+            await self._inference_manager.configure_stream(
+                camera_id,
+                strategy=strategy,
+            )
+            self._camera_inference_controls[camera_id] = (True, strategy)
+            self._logger.info(
+                "OpenCV pipeline inference strategy updated for camera %s: %s -> %s",
+                camera_id,
+                current_strategy,
+                strategy,
+            )
+
+    def _resolve_camera_inference_enabled(self, camera: CameraRecord) -> bool:
+        """Return whether inference should run for this camera."""
+
+        inference_metadata = self._extract_inference_metadata(camera)
+        raw_enabled = inference_metadata.get("enabled")
+        if isinstance(raw_enabled, bool):
+            return raw_enabled
+        return True
+
+    def _resolve_camera_inference_strategy(self, camera: CameraRecord) -> str:
+        """Return the strategy configured for a camera, defaulting to settings."""
+
+        inference_metadata = self._extract_inference_metadata(camera)
+        raw_strategy = inference_metadata.get("strategy")
+        if raw_strategy in {"vjepa_probe", "cnn_transformer"}:
+            return str(raw_strategy)
+        if raw_strategy is not None:
+            self._logger.warning(
+                "Unsupported inference strategy %r for camera %s; falling back to %s.",
+                raw_strategy,
+                camera.id,
+                self._settings.opencv_pipeline_inference_strategy,
+            )
+        return self._settings.opencv_pipeline_inference_strategy
+
+    @staticmethod
+    def _extract_inference_metadata(camera: CameraRecord) -> dict[str, object]:
+        """Return the nested ``stream_state.metadata.inference`` object when present."""
+
+        inference_metadata = camera.stream_metadata.get("inference")
+        if isinstance(inference_metadata, dict):
+            return inference_metadata
+        return {}
 
     async def _process_bundle(self, bundle) -> None:
         prepared_frames = []
@@ -304,6 +435,7 @@ class OpenCvPipelineRuntime:
         reid_latency_ms = await self._reidentifier.enrich_tracks(tracked_assignments)
         identity_events, identity_latency_ms = await self._identity_service.assign(tracked_assignments)
 
+        outputs: list[PipelineOutput] = []
         for processed_frame, motion_summary, detections, tracks in zip(
             prepared_frames,
             motion_summaries,
@@ -332,7 +464,7 @@ class OpenCvPipelineRuntime:
                 identity_latency_ms=identity_latency_ms,
             )
             output.annotated_bgr = self._annotator.annotate(output)
-            await self._dispatcher.publish(output)
+            outputs.append(output)
             self._metrics.observe_frame_processing_latency(
                 processed_frame.packet.camera_id,
                 output.pipeline_latency_ms,
@@ -349,6 +481,19 @@ class OpenCvPipelineRuntime:
                 processed_frame.packet.camera_id,
                 len(tracks),
             )
+
+        if outputs:
+            publish_results = await asyncio.gather(
+                *(self._dispatcher.publish(output) for output in outputs),
+                return_exceptions=True,
+            )
+            for output, result in zip(outputs, publish_results):
+                if isinstance(result, Exception):
+                    self._logger.warning(
+                        "OpenCV pipeline output dispatch failed for camera %s: %s",
+                        output.processed_frame.packet.camera_id,
+                        result,
+                    )
 
         published_event_keys = {
             (event.camera_id, event.local_track_id, event.event_type.value, event.occurred_at)
@@ -420,6 +565,7 @@ class OpenCvPipelineRuntime:
         healthy_camera_ids_tuple = tuple(healthy_camera_ids)
         if healthy_camera_ids_tuple == self._sync_camera_ids:
             return
+        self._synchronizer.close()
         self._sync_camera_ids = healthy_camera_ids_tuple
         self._synchronizer = MultiCameraSynchronizer(
             list(healthy_camera_ids_tuple),

@@ -11,7 +11,7 @@ from src.core.exceptions.camera.camera_exceptions import (
     CameraValidationException,
 )
 from src.core.logger.logger import get_logger
-from src.models.camera import CameraRecord, ValidationStatus
+from src.models.camera import CameraRecord, CameraStatus, ValidationStatus
 from src.schemas.camera_requests import CameraListQuery, CreateCameraRequest, UpdateCameraRequest
 from src.schemas.camera_responses import CameraResponse, CameraValidationResponse
 from src.schemas.common import PaginatedItems, PaginationMeta
@@ -84,12 +84,20 @@ class CameraService:
         )
 
     async def list_all_camera_records(self) -> list[CameraRecord]:
+        return await self._list_camera_records(status=None)
+
+    async def list_active_camera_records(self) -> list[CameraRecord]:
+        """Return all cameras currently marked as active."""
+
+        return await self._list_camera_records(status=CameraStatus.active.value)
+
+    async def _list_camera_records(self, status: str | None) -> list[CameraRecord]:
         page = 1
         page_size = 100
         cameras: list[CameraRecord] = []
         while True:
             page_cameras, total_items = await self._repository.list(
-                status=None,
+                status=status,
                 search=None,
                 limit=page_size,
                 offset=(page - 1) * page_size,

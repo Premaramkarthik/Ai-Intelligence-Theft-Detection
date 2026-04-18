@@ -17,7 +17,10 @@ WITH updated AS (
     WHERE id = $1
     RETURNING *
 )
-SELECT updated.*, COALESCE(s.status, 'stopped') AS stream_status
+SELECT
+    updated.*,
+    COALESCE(s.status, 'stopped') AS stream_status,
+    COALESCE(s.metadata, '{}'::jsonb) AS stream_metadata
 FROM updated
 LEFT JOIN stream_state AS s
     ON s.camera_id = updated.id;

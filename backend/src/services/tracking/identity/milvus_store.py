@@ -15,6 +15,7 @@ from uuid import uuid4
 import numpy as np
 from pymilvus import DataType, MilvusClient
 
+from src.core.logger.logger import get_logger
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
 from src.utils.async_blocking import run_blocking_in_daemon_thread
 
@@ -78,6 +79,7 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         self._max_concurrent_batches = max(1, max_concurrent_batches)
         self._batch_semaphore: asyncio.Semaphore | None = None
         self._semaphore_initialized = False
+        self._logger = get_logger(__name__)
 
     def ensure_ready(self) -> None:
         """Create the collection and indexes if they do not already exist."""
@@ -90,6 +92,18 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
             self._mark_unhealthy(exc)
             raise
         self._mark_healthy()
+        self._logger.info(
+            "Milvus identity store ready.",
+            extra={
+                "structured": {
+                    "event": "milvus.ready",
+                    "uri": self._uri,
+                    "collection_name": self._collection_name,
+                    "embedding_dimension": self._embedding_dimension,
+                    "search_limit": self._search_limit,
+                }
+            },
+        )
 
     def resolve_identity(
         self,
@@ -164,6 +178,22 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
             camera_id,
             matched_existing,
         )
+        self._logger.debug(
+            "Milvus identity resolved and stored.",
+            extra={
+                "structured": {
+                    "event": "milvus.identity_resolved",
+                    "camera_id": camera_id,
+                    "stream_name": stream_name,
+                    "local_track_id": local_track_id,
+                    "identity_id": identity_id,
+                    "matched_existing": matched_existing,
+                    "similarity": round(similarity, 6),
+                    "latency_ms": round((perf_counter() - lookup_started_at) * 1000.0, 3),
+                    "stored_records": 1,
+                }
+            },
+        )
         return IdentityMatch(
             identity_id=identity_id,
             matched_existing=matched_existing,
@@ -212,6 +242,19 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
             self._mark_unhealthy(exc)
             raise
         self._mark_healthy()
+        self._logger.debug(
+            "Milvus identity refreshed.",
+            extra={
+                "structured": {
+                    "event": "milvus.identity_refreshed",
+                    "camera_id": camera_id,
+                    "stream_name": stream_name,
+                    "local_track_id": local_track_id,
+                    "identity_id": identity_id,
+                    "stored_records": 1,
+                }
+            },
+        )
 
     async def batch_resolve(
         self,
@@ -257,6 +300,7 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         # Limit concurrent Milvus calls while running the synchronous client in
         # a worker thread.  Search and upsert stay in one worker invocation so
         # tests and production workers do not rely on multiple executor hops.
+        started_at = perf_counter()
         try:
             async with semaphore:
                 results = await run_blocking_in_daemon_thread(
@@ -270,6 +314,21 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
             raise
 
         self._mark_healthy()
+        matched_existing_count = sum(1 for result in results if result.matched_existing)
+        self._logger.debug(
+            "Milvus batch resolve completed.",
+            extra={
+                "structured": {
+                    "event": "milvus.batch_resolved",
+                    "request_count": len(requests),
+                    "stored_records": len(requests),
+                    "matched_existing_count": matched_existing_count,
+                    "new_identity_count": len(results) - matched_existing_count,
+                    "latency_ms": round((perf_counter() - started_at) * 1000.0, 3),
+                    "collection_name": self._collection_name,
+                }
+            },
+        )
         return results
 
     def _locked_batch_resolve(
@@ -301,6 +360,16 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                 collection_name=self._collection_name,
                 data=upsert_payloads,
                 timeout=self._timeout_seconds,
+            )
+            self._logger.debug(
+                "Milvus batch upsert completed.",
+                extra={
+                    "structured": {
+                        "event": "milvus.batch_stored",
+                        "collection_name": self._collection_name,
+                        "stored_records": len(upsert_payloads),
+                    }
+                },
             )
             return results
 
@@ -481,9 +550,21 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         )
 
     def _mark_healthy(self) -> None:
+        recovered = not self._healthy
         self._healthy = True
         self._last_error = None
         self._metrics_recorder.set_dependency_health("milvus_identity_store", True)
+        if recovered:
+            self._logger.info(
+                "Milvus identity store recovered.",
+                extra={
+                    "structured": {
+                        "event": "milvus.recovered",
+                        "uri": self._uri,
+                        "collection_name": self._collection_name,
+                    }
+                },
+            )
 
     def _mark_unhealthy(self, exc: Exception) -> None:
         with self._lock:
@@ -496,6 +577,19 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         self._healthy = False
         self._last_error = str(exc)
         self._metrics_recorder.set_dependency_health("milvus_identity_store", False)
+        self._logger.error(
+            "Milvus identity store marked unhealthy.",
+            exc_info=(type(exc), exc, exc.__traceback__),
+            extra={
+                "structured": {
+                    "event": "milvus.unhealthy",
+                    "uri": self._uri,
+                    "collection_name": self._collection_name,
+                    "error": str(exc),
+                    "error_type": exc.__class__.__name__,
+                }
+            },
+        )
 
 
 def _normalize_embedding(embedding: np.ndarray, expected_dimension: int) -> np.ndarray:

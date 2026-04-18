@@ -54,3 +54,29 @@ async def test_frame_buffer_discard_camera_removes_only_that_camera() -> None:
     assert retained.camera_id == "cam_2"
     assert retained.sequence_number == 2
     assert buffer.empty() is True
+
+
+async def test_frame_buffer_shared_memory_drop_oldest_reuses_slot() -> None:
+    buffer = FrameBuffer(
+        maxsize=1,
+        drop_policy=DropPolicy.drop_oldest,
+        use_shared_memory=True,
+        frame_shape=(8, 8, 3),
+        shared_memory_slots=1,
+    )
+
+    try:
+        first = _packet(1)
+        first.frame_bgr.fill(7)
+        second = _packet(2)
+        second.frame_bgr.fill(9)
+
+        assert buffer.publish(first) is True
+        assert buffer.publish(second) is True
+
+        latest = await buffer.get()
+        assert latest.sequence_number == 2
+        assert int(latest.frame_bgr[0, 0, 0]) == 9
+        latest.release()
+    finally:
+        buffer.close()

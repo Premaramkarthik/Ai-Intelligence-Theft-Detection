@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     metrics_port: int = 9109
     metrics_collection_interval_seconds: float = 5.0
     triton_url: str = "localhost:8001"
+    triton_reconnect_interval_seconds: float = 5.0
 
     validation_timeout_seconds: int = 8
     tracking_enabled_by_default: bool = True
@@ -94,6 +95,8 @@ class Settings(BaseSettings):
     log_file_prefix: str = "backend"
     log_file_max_bytes: int = 10 * 1024 * 1024
     log_file_backup_count: int = 5
+    subsystem_logs_enabled: bool = True
+    subsystem_log_directory: Path = BACKEND_ROOT / "runtime" / "logs" / "subsystems"
 
     opencv_pipeline_enabled: bool = True
     opencv_pipeline_target_width: int = 1280
@@ -101,21 +104,26 @@ class Settings(BaseSettings):
     opencv_pipeline_target_fps: float = 10.0
     opencv_pipeline_frame_buffer_size: int = 128
     opencv_pipeline_drop_policy: str = "drop_oldest"
+    opencv_pipeline_shared_memory_enabled: bool = True
+    opencv_pipeline_shared_memory_slots: int = 32
     opencv_pipeline_sync_tolerance_ms: float = 40.0
     opencv_pipeline_batch_size: int = 8
     opencv_pipeline_capture_retry_initial_delay_seconds: float = 0.5
     opencv_pipeline_capture_retry_max_delay_seconds: float = 5.0
     opencv_pipeline_preview_jpeg_quality: int = 70
     opencv_pipeline_publish_frame_previews: bool = False
+    opencv_pipeline_display_enabled: bool = False
+    opencv_pipeline_display_window_prefix: str = "OpenCV Pipeline"
     opencv_pipeline_low_light_threshold: float = 40.0
     opencv_pipeline_detection_model_path: Path = BACKEND_ROOT / "yolo26n.pt"
     opencv_pipeline_detection_confidence: float = 0.4
     opencv_pipeline_detection_class_ids: list[int] = Field(default_factory=lambda: [0])
     opencv_pipeline_identity_ttl_seconds: float = 30.0
     opencv_pipeline_refresh_all_cameras_interval_seconds: float = 30.0
+    opencv_pipeline_inference_control_refresh_interval_seconds: float = 5.0
     opencv_pipeline_calibration_directory: Path = BACKEND_ROOT / "runtime" / "calibration"
     opencv_pipeline_enable_behavior_inference: bool = True
-    opencv_pipeline_inference_strategy: str = "cnn_transformer"
+    opencv_pipeline_inference_strategy: str = "vjepa_probe"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -140,7 +148,7 @@ class Settings(BaseSettings):
             return False
         raise ValueError("debug must be a boolean-like value.")
 
-    @field_validator("log_directory", mode="before")
+    @field_validator("log_directory", "subsystem_log_directory", mode="before")
     @classmethod
     def resolve_log_directory(cls, value: str | Path) -> Path:
         """Resolve the backend log directory relative to the backend root."""

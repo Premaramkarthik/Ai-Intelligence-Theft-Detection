@@ -48,3 +48,28 @@ def test_multi_camera_synchronizer_discards_removed_camera_state() -> None:
 
     assert bundle is not None
     assert [packet.camera_id for packet in bundle.packets] == ["cam_2"]
+
+
+def test_multi_camera_synchronizer_releases_replaced_packets() -> None:
+    released: list[int] = []
+
+    def _tracked_packet(sequence_number: int) -> FramePacket:
+        return FramePacket(
+            camera_id="cam_1",
+            stream_name="cam_1",
+            sequence_number=sequence_number,
+            captured_at=datetime.now(timezone.utc),
+            monotonic_ns=sequence_number,
+            frame_bgr=np.zeros((8, 8, 3), dtype=np.uint8),
+            width=8,
+            height=8,
+            _release=lambda sequence_number=sequence_number: released.append(sequence_number),
+        )
+
+    synchronizer = MultiCameraSynchronizer(["cam_1"], tolerance_ms=15.0)
+
+    assert synchronizer.submit(_tracked_packet(1)) is not None
+    assert synchronizer.submit(_tracked_packet(2)) is not None
+    synchronizer.remove_camera("cam_1")
+
+    assert released == [1, 2]

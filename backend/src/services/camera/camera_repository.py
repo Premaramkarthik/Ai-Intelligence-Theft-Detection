@@ -165,4 +165,5 @@ class CameraRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             stream_status=StreamStatus(row["stream_status"]) if row["stream_status"] else None,
+            stream_metadata=row["stream_metadata"] or {},
         )
