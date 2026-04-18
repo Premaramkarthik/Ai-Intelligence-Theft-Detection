@@ -40,10 +40,14 @@ class FramePreprocessor:
         ):
             working_bgr = raw_bgr.copy()
         else:
+            is_downscale = (
+                raw_bgr.shape[1] >= self._target_width
+                and raw_bgr.shape[0] >= self._target_height
+            )
             working_bgr = cv2.resize(
                 raw_bgr,
                 (self._target_width, self._target_height),
-                interpolation=cv2.INTER_LINEAR,
+                interpolation=cv2.INTER_AREA if is_downscale else cv2.INTER_LINEAR,
             )
         rgb = cv2.cvtColor(working_bgr, cv2.COLOR_BGR2RGB)
         gray = cv2.cvtColor(working_bgr, cv2.COLOR_BGR2GRAY)

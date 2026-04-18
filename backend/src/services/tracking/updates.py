@@ -107,6 +107,9 @@ class WebSocketTrackingUpdatePublisher:
                 message="Tracking update available.",
                 camera_id=camera_id,
                 data={
+                    "event": "tracking.updated",
+                    "emitted_at": datetime.now(timezone.utc).isoformat(),
+                    "camera_id": camera_id,
                     "stream_name": stream_name,
                     "annotated_stream_name": annotated_stream_name,
                     "active_tracks": len(tracks),

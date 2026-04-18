@@ -1,8 +1,5 @@
-import { CameraDetail } from "@/components/CameraDetail";
-import { getCamera } from "@/lib/api";
-import type { CameraResponse } from "@/types/camera";
-
-export const dynamic = "force-dynamic";
+import { AppShell } from "@/components/layout/app-shell";
+import { CameraDetailScreen } from "@/modules/cameras/components/camera-detail-screen";
 
 interface CameraPageProps {
   params: Promise<{ id: string }>;
@@ -11,18 +8,12 @@ interface CameraPageProps {
 export default async function CameraPage({ params }: CameraPageProps) {
   const { id } = await params;
 
-  let initialCamera: CameraResponse | null = null;
-
-  try {
-    initialCamera = await getCamera(id);
-  } catch {
-    initialCamera = null;
-  }
-
   return (
-    <CameraDetail
-      cameraId={id}
-      initialCamera={initialCamera}
-    />
+    <AppShell
+      title="Camera Detail"
+      description="Focused live view for one camera with backend-linked validation and inference controls."
+    >
+      <CameraDetailScreen cameraId={id} />
+    </AppShell>
   );
 }

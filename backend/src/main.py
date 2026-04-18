@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -14,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.core.config import Settings, get_settings
 from src.core.db import Database
 from src.core.exceptions.handler import register_exception_handlers
-from src.core.logger.logger import configure_logging
+from src.core.logger.logger import configure_logging, get_logger
 from src.observability.http_middleware import HttpMetricsMiddleware
 from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.observability.metrics_server import MetricsServer
@@ -23,9 +24,12 @@ from src.observability.runtime_metrics import (
     RuntimeMetricsDependencies,
 )
 from src.observability.system_metrics import SystemMetricsCollector
+from src.models.camera import CameraStatus, RTSPTransport
+from src.opencv_pipeline.runtime import OpenCvPipelineRuntime
 from src.routes.camera_routes import router as camera_router
 from src.routes.health_routes import router as health_router
 from src.routes.stream_routes import router as stream_router
+from src.schemas.camera_requests import CreateCameraRequest, UpdateCameraRequest
 from src.services.camera.camera_repository import CameraRepository
 from src.services.camera.camera_service import CameraService
 from src.services.camera.camera_validator import CameraValidator
@@ -56,12 +60,69 @@ class ApplicationContainer:  # pylint: disable=too-many-instance-attributes
     stream_control_service: StreamControlService
     tracking_kafka_producer: TrackingKafkaProducerService
     inference_manager: InferenceManager
+    opencv_pipeline: OpenCvPipelineRuntime
     websocket_manager: WebSocketManager
     stream_event_consumer: StreamEventConsumer | None
     metrics_server: MetricsServer | None
     system_metrics_collector: SystemMetricsCollector | None
     runtime_metrics_collector: RuntimeMetricsCollector | None
     started_at_epoch: float
+
+
+_BOOTSTRAP_METADATA_SOURCE = "src.main"
+_BOOTSTRAP_TAGS = ["bootstrap", "opencv_pipeline", "rtsp"]
+
+
+async def _bootstrap_rtsp_camera(camera_service: CameraService, settings: Settings) -> None:
+    """Upsert the env-configured RTSP camera so the pipeline has a camera to process."""
+
+    rtsp_url = settings.opencv_pipeline_rtsp_url
+    if not rtsp_url:
+        return
+
+    logger = get_logger(__name__)
+    camera_name = settings.opencv_pipeline_rtsp_camera_name or "OpenCV Pipeline Camera"
+    metadata = {"bootstrap_source": _BOOTSTRAP_METADATA_SOURCE, "bootstrap_mode": "direct_rtsp_url"}
+
+    cameras = await camera_service.list_all_camera_records()
+    existing = next(
+        (c for c in cameras if c.direct_rtsp_url == rtsp_url),
+        None,
+    ) or next(
+        (c for c in cameras if c.metadata.get("bootstrap_source") == _BOOTSTRAP_METADATA_SOURCE),
+        None,
+    )
+
+    if existing is None:
+        created = await camera_service.create_camera(
+            CreateCameraRequest(
+                name=camera_name,
+                direct_rtsp_url=rtsp_url,
+                transport=RTSPTransport.tcp,
+                status=CameraStatus.active,
+                metadata=metadata,
+                tags=list(_BOOTSTRAP_TAGS),
+            )
+        )
+        logger.info("Bootstrapped RTSP camera: camera_id=%s name=%s", created.id, created.name)
+        return
+
+    updates: dict[str, object] = {}
+    if existing.status != CameraStatus.active:
+        updates["status"] = CameraStatus.active
+    if existing.metadata.get("bootstrap_source") == _BOOTSTRAP_METADATA_SOURCE:
+        if existing.direct_rtsp_url != rtsp_url:
+            updates["direct_rtsp_url"] = rtsp_url
+        if existing.name != camera_name:
+            updates["name"] = camera_name
+        merged = {**existing.metadata, **metadata}
+        if merged != existing.metadata:
+            updates["metadata"] = merged
+    if updates:
+        updated = await camera_service.update_camera(existing.id, UpdateCameraRequest(**updates))
+        logger.info("Updated bootstrap RTSP camera: camera_id=%s", updated.id)
+    else:
+        logger.info("Using existing RTSP camera: camera_id=%s", existing.id)
 
 
 def create_application() -> FastAPI:  # pylint: disable=too-many-statements
@@ -77,7 +138,6 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
         enable_subsystem_file_logging=settings.subsystem_logs_enabled,
-        subsystem_log_directory=settings.subsystem_log_directory,
     )
 
     @asynccontextmanager
@@ -107,11 +167,6 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
                 registry=metrics_recorder.registry,
             )
             metrics_server.start()
-            system_metrics_collector = SystemMetricsCollector(
-                metrics=metrics_recorder,
-                interval_seconds=settings.metrics_collection_interval_seconds,
-            )
-            await system_metrics_collector.start()
         application.state.metrics_recorder = metrics_recorder
         camera_service = CameraService(
             camera_repository,
@@ -134,6 +189,25 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             tracking_kafka_producer,
             metrics_recorder,
         )
+        await _bootstrap_rtsp_camera(camera_service, settings)
+        opencv_pipeline = OpenCvPipelineRuntime(
+            settings,
+            camera_service,
+            tracking_kafka_producer,
+            inference_manager,
+            metrics_recorder,
+            websocket_manager=websocket_manager,
+        )
+        pipeline_task = asyncio.create_task(opencv_pipeline.run_forever())
+
+        if settings.metrics_enabled:
+            system_metrics_collector = SystemMetricsCollector(
+                metrics=metrics_recorder,
+                frame_queue=opencv_pipeline.frame_buffer,
+                interval_seconds=settings.metrics_collection_interval_seconds,
+            )
+            await system_metrics_collector.start()
+
         stream_event_consumer = StreamEventConsumer(
             settings,
             stream_service=None,
@@ -159,6 +233,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             stream_control_service=stream_control_service,
             tracking_kafka_producer=tracking_kafka_producer,
             inference_manager=inference_manager,
+            opencv_pipeline=opencv_pipeline,
             websocket_manager=websocket_manager,
             stream_event_consumer=stream_event_consumer,
             metrics_server=metrics_server,
@@ -169,6 +244,11 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         try:
             yield
         finally:
+            await opencv_pipeline.stop()
+            pipeline_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pipeline_task
+            opencv_pipeline.close()
             await inference_manager.close()
             if stream_event_consumer is not None:
                 await stream_event_consumer.stop()

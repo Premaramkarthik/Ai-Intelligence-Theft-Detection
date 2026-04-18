@@ -1,23 +1,18 @@
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import shutil
 import tempfile
+from pathlib import Path
 
 from src.core.logger.logger import configure_logging
 
 
-def _read_all_logs(directory: Path) -> str:
-    return "\n".join(path.read_text(encoding="utf-8") for path in directory.rglob("*.log"))
-
-
-def test_configure_logging_writes_subsystem_logs_to_dedicated_folders() -> None:
+def test_configure_logging_writes_subsystem_logs_to_flat_files() -> None:
     workspace_temp_root = Path.cwd() / "runtime" / "test-logs"
     workspace_temp_root.mkdir(parents=True, exist_ok=True)
     temp_directory = Path(tempfile.mkdtemp(dir=workspace_temp_root))
     log_directory = temp_directory / "logs"
-    subsystem_directory = log_directory / "subsystems"
     configure_logging(
         "DEBUG",
         False,
@@ -25,7 +20,6 @@ def test_configure_logging_writes_subsystem_logs_to_dedicated_folders() -> None:
         log_directory=log_directory,
         log_file_prefix="backend",
         enable_subsystem_file_logging=True,
-        subsystem_log_directory=subsystem_directory,
     )
 
     logging.getLogger("src.services.tracking.updates").info(
@@ -47,9 +41,14 @@ def test_configure_logging_writes_subsystem_logs_to_dedicated_folders() -> None:
             flush()
 
     try:
-        inference_logs = _read_all_logs(subsystem_directory / "inference")
-        detection_logs = _read_all_logs(subsystem_directory / "person_detection")
-        milvus_logs = _read_all_logs(subsystem_directory / "milvus")
+        all_logs = (log_directory / "all.log").read_text(encoding="utf-8")
+        inference_logs = (log_directory / "inference.log").read_text(encoding="utf-8")
+        detection_logs = (log_directory / "person_detection.log").read_text(encoding="utf-8")
+        milvus_logs = (log_directory / "milvus.log").read_text(encoding="utf-8")
+
+        assert "Inference sample received." in all_logs
+        assert "Person detection batch completed." in all_logs
+        assert "Milvus batch resolve completed." in all_logs
 
         assert "Inference sample received." in inference_logs
         assert "Person detection batch completed." in detection_logs

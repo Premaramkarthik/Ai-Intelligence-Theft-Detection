@@ -10,7 +10,7 @@ When this file is run directly, the local annotated cv2 preview is enabled by
 default so the RTSP stream can be inspected visually without extra config.
 """
 
-# python main.py --rtsp-url "rtsp://admin:admin123@192.168.1.158:554/subStream10" --camera-name "Front Gate"
+# python main.py --rtsp-url "rtsp://admin:admin123@192.168.1.158:554/subStream1" --camera-name "Front Gate"
 
 from __future__ import annotations
 
@@ -329,7 +329,6 @@ async def _run(options: WorkerLaunchOptions) -> None:
         log_file_max_bytes=settings.log_file_max_bytes,
         log_file_backup_count=settings.log_file_backup_count,
         enable_subsystem_file_logging=settings.subsystem_logs_enabled,
-        subsystem_log_directory=settings.subsystem_log_directory,
     )
     logger = get_logger(__name__)
     logger.info(
@@ -382,6 +381,7 @@ async def _run(options: WorkerLaunchOptions) -> None:
         tracking_kafka_producer,
         inference_manager,
         metrics_recorder,
+        websocket_manager=websocket_manager,
     )
 
     try:
@@ -400,7 +400,10 @@ async def _run(options: WorkerLaunchOptions) -> None:
             await system_metrics_collector.start()
 
         logger.info(
-            "OpenCV worker ready. Press Ctrl+C to stop the worker and close cv2 windows."
+            "OpenCV worker ready. "
+            "Live display shows: bounding boxes, persistent ID, confidence, "
+            "and inference label/score/alert-level when Triton results arrive. "
+            "Press Ctrl+C to stop."
         )
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()

@@ -3,7 +3,21 @@
     "allow": [
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(rm -rf /c/Users/hvred/OneDrive/Documents/GitHub/pipeline_opencv/frontend/components/design-system)",
+      "Bash(rm -rf /c/Users/hvred/OneDrive/Documents/GitHub/pipeline_opencv/frontend/components/shared)",
+      "Bash(rm -f /c/Users/hvred/OneDrive/Documents/GitHub/pipeline_opencv/frontend/components/RouteSkeleton.tsx)",
+      "Bash(rm -f /c/Users/hvred/OneDrive/Documents/GitHub/pipeline_opencv/frontend/components/DashboardGrid.tsx)",
+      "Bash(rm -f /c/Users/hvred/OneDrive/Documents/GitHub/pipeline_opencv/frontend/components/CameraDetail.tsx)",
+      "Bash(sort -t- -k4 -rn)",
+      "Bash(pip install *)",
+      "Bash(python -c \"from src.services.webrtc.track import OpenCvVideoTrack; from src.services.webrtc.manager import WebRTCSessionManager; print\\('OK'\\)\")",
+      "Bash(python -c \"import sys; print\\(sys.executable\\); import av; print\\(av.__version__\\)\")",
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(.venv/Scripts/pip.exe install *)",
+      "Bash(\"C:\\\\Users\\\\hvred\\\\OneDrive\\\\Documents\\\\GitHub\\\\pipeline_opencv\\\\backend\\\\.venv\\\\Scripts\\\\python.exe\" -m pip install av aiortc)",
+      "Bash(\"C:\\\\Users\\\\hvred\\\\OneDrive\\\\Documents\\\\GitHub\\\\pipeline_opencv\\\\backend\\\\.venv\\\\Scripts\\\\python.exe\" -m ensurepip)",
+      "Bash(\".venv\\\\Scripts\\\\python.exe\" -c \"from src.services.webrtc.track import OpenCvVideoTrack; from src.services.webrtc.manager import WebRTCSessionManager; print\\('OK'\\)\")"
     ]
   }
 }

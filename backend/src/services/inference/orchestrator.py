@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from collections.abc import Callable
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
@@ -55,6 +56,7 @@ class InferenceOrchestrator:
         websocket_manager: WebSocketManager,
         kafka_publisher: Any | None,
         metrics_recorder: MetricsRecorder | None = None,
+        result_callback: Callable[[str, str, str, float, str], None] | None = None,
     ) -> None:
         self._config = config
         self._scheduler = scheduler
@@ -65,6 +67,7 @@ class InferenceOrchestrator:
         self._ws = websocket_manager
         self._kafka = kafka_publisher
         self._metrics = metrics_recorder or NullMetricsRecorder()
+        self._result_callback = result_callback
         self._logger = get_logger(__name__)
         self._task: asyncio.Task[None] | None = None
         self._active_tracks: set[str] = set()
@@ -328,6 +331,16 @@ class InferenceOrchestrator:
             )
         self._last_result_at = emitted_at
         self._healthy = True
+
+        if self._result_callback is not None:
+            for payload in payloads:
+                self._result_callback(
+                    payload.camera_id,
+                    payload.local_track_id,
+                    payload.label,
+                    payload.score,
+                    payload.alert_level,
+                )
 
         delivery_started_at = perf_counter()
         delivery_results = await asyncio.gather(

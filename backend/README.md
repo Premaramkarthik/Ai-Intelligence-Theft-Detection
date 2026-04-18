@@ -1,64 +1,44 @@
 # Backend
 
-This backend is a Python 3.10+ realtime video-processing and control system split into two executable runtimes:
-
-1. FastAPI control plane (`src/main.py`), which exposes REST and WebSocket interfaces, manages cameras, validates RTSP sources, connects to PostgreSQL, and bridges Kafka events to browser clients.
-2. OpenCV edge worker (`main.py`), which continuously reads active cameras from PostgreSQL, runs the OpenCV tracking pipeline, resolves identities with Milvus, optionally forwards crops into Triton-backed behavior inference, and publishes structured events to Kafka.
-
-The implementation is not a generic microservice mesh; it is a tightly-coupled event-driven backend with shared configuration, shared schema definitions, and shared infrastructure dependencies.
-
-This document describes the system as it exists in the current codebase.
+This backend is a Python 3.10+ realtime video-processing and control system. It runs as a **single FastAPI process** that embeds the OpenCV pipeline directly in its lifespan. A standalone OpenCV worker script (`main.py`) is also available for local development with a cv2 preview window, but it is not required for production.
 
 ## 1. What the backend does
 
-At a high level, the backend:
-
 - stores camera inventory and state in PostgreSQL
-- validates RTSP cameras with `ffprobe` or a PyAV fallback when PyAV is separately installed
-- runs an OpenCV-based multi-camera processing pipeline for active cameras
+- validates RTSP cameras with `ffprobe` or a PyAV fallback
+- runs an embedded OpenCV multi-camera processing pipeline for active cameras
 - detects people with YOLO
 - tracks them locally with ByteTrack
 - extracts ReID embeddings and resolves global identities through Milvus
+- draws per-track overlays: bounding box, persistent ID, confidence, and — once Triton results arrive — inference label, score, and alert level
 - optionally forwards identity-qualified crops into a Triton-backed behavior inference pipeline
 - publishes tracking, frame, identity, and inference events to Kafka
-- consumes Kafka events in the API process and rebroadcasts them to WebSocket clients
-- exposes health endpoints for the API runtime and Prometheus metrics for both the API and worker runtimes
+- consumes Kafka events in the same process and rebroadcasts them to WebSocket clients
+- exposes health endpoints and Prometheus metrics
 
 ## 2. Runtime model
 
-There are two main Python processes in this repository.
+### 2.1 FastAPI control plane with embedded pipeline
 
-### 2.1 FastAPI control plane
+Entrypoint: `backend/src/main.py`
 
-Entrypoint:
-- `backend/src/main.py`
+This is the only process you need to run in production. On startup it:
 
-Responsibilities:
-- build the FastAPI app
-- connect to PostgreSQL
-- optionally apply SQL migrations on startup
-- construct camera CRUD services
-- construct the shared Kafka producer service
-- construct the inference manager
-- start the Kafka-to-WebSocket `StreamEventConsumer`
-- expose HTTP endpoints and the realtime WebSocket endpoint
-- expose Prometheus metrics and health endpoints
+1. connects to PostgreSQL and optionally applies migrations
+2. starts the shared Kafka producer service
+3. creates the inference manager
+4. bootstraps an optional env-configured RTSP camera (`OPENCV_PIPELINE_RTSP_URL`)
+5. starts `OpenCvPipelineRuntime` as a background asyncio task
+6. starts the Kafka-to-WebSocket `StreamEventConsumer`
+7. exposes HTTP, WebSocket, and Prometheus endpoints
 
-### 2.2 OpenCV edge worker
+On shutdown the pipeline, inference manager, Kafka producer, and consumer are all stopped cleanly in the FastAPI lifespan `finally` block.
 
-Entrypoint:
-- `backend/main.py`
+### 2.2 Standalone OpenCV dev worker (optional)
 
-Responsibilities:
-- connect to PostgreSQL
-- optionally apply SQL migrations on startup
-- start the shared Kafka producer service
-- construct the inference manager for crop-based behavior inference
-- load active cameras from PostgreSQL
-- spawn one capture worker per active camera
-- run the full OpenCV processing pipeline
-- publish tracking, frame, identity, and inference events
-- expose Prometheus metrics for the worker process
+Entrypoint: `backend/main.py`
+
+A self-contained script for local inspection. It runs the same `OpenCvPipelineRuntime` with the cv2 annotated preview window enabled by default, connects to its own DB and Kafka producer, and accepts CLI flags for RTSP bootstrap, display, and inference strategy. It is **not** the production entry point — it is a development and debugging tool.
 
 ## 3. High-level architecture
 
@@ -70,13 +50,21 @@ flowchart LR
         CN[RTSP Camera N]
     end
 
-    subgraph Worker[OpenCV edge worker - backend/main.py]
-        CAP[VideoCaptureWorker per camera]
-        BUF[FrameBuffer]
-        SYNC[MultiCameraSynchronizer]
-        PIPE[Preprocess + Calibration + Stabilization + Motion + Detection + Tracking + ReID + Identity]
-        OUT[OutputDispatcher]
-        ING[InferenceIngressPublisher]
+    subgraph Server[FastAPI server - src/main.py]
+        subgraph Pipeline[OpenCvPipelineRuntime - background task]
+            CAP[VideoCaptureWorker per camera]
+            BUF[FrameBuffer]
+            SYNC[MultiCameraSynchronizer]
+            PIPE[Preprocess + Calibration + Stabilization + Motion + Detection + Tracking + ReID + Identity]
+            ANN[FrameAnnotator + InferenceOverlayCache]
+            OUT[OutputDispatcher]
+            ING[InferenceIngressPublisher]
+        end
+        REST[REST API]
+        WS[WebSocketManager]
+        CON[StreamEventConsumer]
+        IM[InferenceManager]
+        MET[/Prometheus metrics/]
     end
 
     subgraph Infra[Shared infrastructure]
@@ -84,15 +72,6 @@ flowchart LR
         K[(Kafka)]
         M[(Milvus)]
         T[Triton Inference Server]
-        MET1[/Prometheus metrics/]
-    end
-
-    subgraph API[FastAPI control plane - src/main.py]
-        REST[REST API]
-        WS[WebSocketManager]
-        CON[StreamEventConsumer]
-        IM[InferenceManager]
-        MET2[/Prometheus metrics/]
     end
 
     UI[Frontend / operator clients]
@@ -100,33 +79,32 @@ flowchart LR
     C1 --> CAP
     C2 --> CAP
     CN --> CAP
-    CAP --> BUF --> SYNC --> PIPE --> OUT
+    CAP --> BUF --> SYNC --> PIPE --> ANN --> OUT
     PIPE --> M
     OUT --> K
     OUT --> ING --> IM --> T
     IM --> K
     IM --> PG
+    IM -.->|result callback| ANN
 
-    PG --> API
-    PG --> Worker
+    PG --> Pipeline
     K --> CON --> WS --> UI
     REST --> UI
-    API --> MET2
-    Worker --> MET1
+    Server --> MET
 ```
 
-Important characteristics of the current implementation:
+Key characteristics:
 
 - PostgreSQL is the source of truth for camera inventory.
-- Kafka is the event backbone between the worker and the API process.
-- Milvus is used by the tracking identity layer, not by the FastAPI layer directly.
-- Triton is used by the inference manager after tracking/identity assignment, not by the YOLO detector inside the OpenCV pipeline.
-- The API process and the worker both create an `InferenceManager`, but only the worker naturally feeds it with tracking crops during normal pipeline execution.
-- The API exposes `PATCH /streams/{camera_id}/inference`, but that route currently affects the API process's local `InferenceManager` instance only; the worker still auto-configures inference during camera refresh based on worker settings.
+- Kafka is the event backbone from pipeline output to WebSocket clients.
+- Milvus is used by the tracking identity layer.
+- Triton is used by the inference manager after identity assignment.
+- The `InferenceOverlayCache` receives results via a direct callback from the inference orchestrator — no Kafka round-trip — so labels appear on the cv2 window and annotated frame previews immediately.
+- One process handles HTTP, WebSocket, pipeline processing, Kafka production, and Kafka consumption.
 
 ## 4. Component-level architecture
 
-### 4.1 Control plane internals
+### 4.1 FastAPI control plane internals
 
 ```mermaid
 flowchart TD
@@ -140,6 +118,7 @@ flowchart TD
     IM[InferenceManager]
     WS[WebSocketManager]
     KCON[StreamEventConsumer]
+    PIPE[OpenCvPipelineRuntime]
     MET[PrometheusMetrics / collectors]
     ROUTES[Routes: /health /cameras /streams]
 
@@ -149,13 +128,14 @@ flowchart TD
     CAMSVC --> VAL
     APP --> KPROD
     APP --> IM
+    APP --> PIPE
     APP --> WS
     APP --> KCON --> WS
     APP --> MET
     APP --> ROUTES
 ```
 
-### 4.2 OpenCV worker internals
+### 4.2 OpenCV pipeline internals
 
 ```mermaid
 flowchart TD
@@ -163,14 +143,15 @@ flowchart TD
     CAP[VideoCaptureWorker per camera]
     FB[FrameBuffer]
     SYNC[MultiCameraSynchronizer]
-    PRE[FramePreprocessor]
+    PRE[FramePreprocessor - INTER_AREA downscale]
     CAL[CalibrationService]
-    STAB[OpticalFlowStabilizer]
+    STAB[OpticalFlowStabilizer - skips near-identity warps]
     MOT[MotionAnalyzer]
     DET[YOLOBatchDetector]
     TRK[ByteTrackStage]
     REID[BodyReIdentifier]
     ID[IdentityAssignmentService]
+    CACHE[InferenceOverlayCache]
     ANN[FrameAnnotator]
     OUT[OutputDispatcher]
     K[(Kafka)]
@@ -181,14 +162,16 @@ flowchart TD
     ID --> MIL
     OUT --> K
     OUT --> INF
+    INF -.->|result_callback| CACHE
+    CACHE --> ANN
 ```
 
 ## 5. Source tree and subsystem ownership
 
 ```text
 backend/
-├── main.py                         # OpenCV worker entrypoint
-├── src/main.py                     # FastAPI app entrypoint
+├── main.py                         # standalone OpenCV dev worker (optional, not production)
+├── src/main.py                     # FastAPI + embedded pipeline entrypoint (production)
 ├── src/core/                       # settings, database, logging, exception wiring
 ├── src/routes/                     # HTTP and WebSocket routes
 ├── src/services/
@@ -215,278 +198,165 @@ backend/
 ### 6.1 Core platform services
 
 #### `src/core/config.py`
-Single configuration source for both runtimes.
+Single configuration source.
 
 Notable behavior:
 - loads `.env` from the backend root
 - resolves relative paths against `backend/`
 - normalizes comma-separated CORS origins
 - parses list-like detection class IDs
-- exposes migration and SQL directories used by the database layer
 
 #### `src/core/db.py`
 Async PostgreSQL wrapper around `asyncpg`.
 
-Responsibilities:
-- create pooled connections
-- register JSON/JSONB codecs
-- load SQL from `scripts/sql`
-- expose `fetch`, `fetchrow`, `fetchval`, and `execute` helpers
-- provide a simple `ping()` used by health endpoints
+#### `src/core/logger/logger.py`
+Configures rotating file logging with flat output — no process subdirectories or PID suffixes.
+
+Log files written to `LOG_DIRECTORY` (default `runtime/logs/`):
+
+| File | Contents |
+| --- | --- |
+| `all.log` | every log record (requires `FILE_LOGS_ENABLED=true`) |
+| `inference.log` | `src.services.inference.*` + `inference.*` structured events |
+| `milvus.log` | `src.opencv_pipeline.identity.*` + `src.services.tracking.identity.*` |
+| `person_detection.log` | `src.opencv_pipeline.detection.*` + `person_detection.*` structured events |
+| `streaming.log` | `src.opencv_pipeline.runtime`, ingestion, output, buffering, preprocessing, motion, stabilization, calibration |
+| `tracker.log` | `src.opencv_pipeline.tracking.*` + `src.services.tracking.trackers.*` |
+| `body_inference.log` | ReID stage logs |
+
+Subsystem files are written only when `SUBSYSTEM_LOGS_ENABLED=true`. `SUBSYSTEM_LOG_DIRECTORY` is no longer a separate setting — all files land in `LOG_DIRECTORY`.
 
 #### `src/utils/migration_runner.py`
-Applies numbered SQL migrations from `scripts/migrations` and records them in `schema_migrations`.
+Applies numbered SQL migrations from `scripts/migrations`.
 
 ### 6.2 Camera management services
 
 #### `CameraRepository`
-Maps SQL files to `CameraRecord` objects.
-
-Current operations:
-- insert camera
-- fetch by id
-- list paginated cameras with total count
-- update camera
-- delete camera
-- update validation status
+Maps SQL files to `CameraRecord` objects. Operations: insert, fetch by id, paginated list, update, delete, update validation status.
 
 #### `CameraService`
-Business logic over the repository.
-
-Responsibilities:
-- generate camera ids (`cam_<12 hex chars>`)
-- merge update payloads with persisted records
-- enforce that a camera has either `direct_rtsp_url` or `host + path`
-- convert models into API-friendly `CameraResponse`
-- validate camera reachability through `CameraValidator`
-- expose `list_all_camera_records()` for the worker refresh loop
+Business logic over the repository. Generates camera IDs (`cam_<12 hex chars>`), enforces RTSP source constraint, delegates validation to `CameraValidator`.
 
 #### `CameraValidator`
-RTSP validation implementation.
-
-Validation path:
-1. build RTSP URL from camera fields
-2. try `ffprobe`
-3. if `ffprobe` is unavailable or not executable, fall back to PyAV when `av` is installed in the runtime environment
-4. map known errors into stable machine-readable codes such as:
-   - `RTSP_REACHABLE`
-   - `RTSP_AUTH_FAILED`
-   - `RTSP_TIMEOUT`
-   - `RTSP_HOST_UNREACHABLE`
-   - `RTSP_UNREACHABLE`
-5. persist last validation status and message back to PostgreSQL through `CameraService`
+RTSP validation: `ffprobe` → PyAV fallback → stable machine-readable result codes (`RTSP_REACHABLE`, `RTSP_AUTH_FAILED`, `RTSP_TIMEOUT`, `RTSP_HOST_UNREACHABLE`, `RTSP_UNREACHABLE`).
 
 ### 6.3 Kafka services
 
 #### `TrackingKafkaProducerService`
-Shared Kafka producer lifecycle wrapper.
-
-Responsibilities:
-- start a single idempotent `AIOKafkaProducer`
-- publish tracking updates through `KafkaTrackingUpdatePublisher`
-- create generic JSON publishers for frame, identity, and inference topics
-- surface producer health through `health_snapshot()`
-
-Important implementation detail:
-- when Kafka is disabled or unavailable, the producer service degrades to null publishers instead of crashing the whole runtime.
+Shared Kafka producer lifecycle wrapper. Degrades to null publishers when Kafka is disabled or unavailable.
 
 #### `StreamEventConsumer`
-FastAPI-side Kafka consumer.
-
-Responsibilities:
-- subscribe to:
-  - `camera.tracking.updates`
-  - `camera.ai_results`
-  - `camera.frames`
-  - `identity.events`
-- deserialize JSON payloads
-- wrap each message in a `WebSocketEnvelope`
-- rebroadcast it via `WebSocketManager`
-- report health and failure counts through metrics
+Subscribes to `camera.tracking.updates`, `camera.ai_results`, `camera.frames`, `identity.events` and rebroadcasts each message to `WebSocketManager`.
 
 ### 6.4 Presentation service
 
 #### `WebSocketManager`
-Connection registry plus broadcast fanout.
-
-Notable behavior:
-- supports optional camera-scoped subscriptions through `camera_id` query param
-- snapshots active sockets under a lock, then broadcasts concurrently outside the lock
-- removes stale connections after failures
-- records websocket connection and send metrics
+Connection registry with concurrent broadcast. Supports optional camera-scoped subscriptions via `camera_id` query param.
 
 ### 6.5 Inference services
 
-The inference subsystem is assembled in `src/services/inference/bootstrap.py` and coordinated by `InferenceManager`.
-
 #### `InferenceManager`
-Top-level lifecycle owner for per-camera `InferenceOrchestrator` instances.
+Lifecycle owner for per-camera `InferenceOrchestrator` instances.
 
-Responsibilities:
-- lazily start orchestrators when inference is enabled for a camera
-- route crop samples into the correct camera scheduler
-- support runtime reconfiguration of inference strategy
-- stop and remove per-camera inference state
+New: supports `set_result_callback(fn)` — the pipeline runtime registers a callback here so inference results are fed directly into `InferenceOverlayCache` without a Kafka round-trip.
 
 #### `InferenceIngressPublisher`
-Bridge from tracking output into inference input.
-
-Responsibilities:
-- receive the current frame and track snapshots
-- skip tracks without a persistent identity
-- crop person patches from the frame
-- create `InferenceIngressSample` values
-- push samples into `InferenceManager.ingest_sample()`
-
-#### `InferenceIngressScheduler`
-Not fully described here line-by-line, but it is the queueing and dispatch gate between ingress and the orchestrator. It enforces queue limits and quality thresholds before a crop reaches Triton.
+Bridge from tracking output into inference input. Crops person patches and pushes `InferenceIngressSample` objects to the manager.
 
 #### `InferenceOrchestrator`
-Per-camera asynchronous inference loop.
-
-Responsibilities:
-- dequeue batches from the scheduler
-- build model tensors with `BatchBuilder`
-- call Triton through `TritonInferenceClient`
-- convert output tensors into scalar scores
-- classify scores with `DecisionEngine`
-- broadcast results to WebSocket clients
-- publish results to Kafka (`camera.ai_results`)
-- persist only non-normal results through `InferenceEventRepository`
-- maintain health and snapshot state for the camera
+Per-camera async inference loop. After scoring, calls `result_callback(camera_id, local_track_id, label, score, alert_level)` before dispatching to Kafka and WebSocket, so the cv2 overlay updates immediately.
 
 #### `InferenceEventRepository`
 Persists non-normal inference events to PostgreSQL.
 
-Important implementation note:
-- the repository currently writes columns such as `stream_name`, `local_track_id`, `strategy`, `score`, `alert_level`, and `sampled_at`
-- the checked-in migration `004_create_inference_events_table.sql` still defines an older schema with fields such as `track_id`, `confidence`, bounding box columns, and `created_at`
-- maintainers should align the migration/schema with the repository before relying on inference-event persistence in a fresh environment
+> **Known maintenance item:** the checked-in migration `004_create_inference_events_table.sql` defines an older schema; align it with the active repository write shape before relying on inference-event persistence.
 
 ### 6.6 OpenCV pipeline stages
 
-The worker runtime in `src/opencv_pipeline/runtime.py` wires the following stages.
+The pipeline is wired in `src/opencv_pipeline/runtime.py`.
 
 #### `VideoCaptureWorker` (`ingestion/`)
-- owns capture for one camera
-- reconnects with exponential backoff
-- emits `FramePacket` objects into the shared frame buffer
+Owns capture for one camera with exponential-backoff reconnect.
 
 #### `FrameBuffer` (`buffering/`)
-- bounded queue shared across cameras
-- supports configured drop policy (`drop_oldest`, `drop_newest`, `block`)
-- exposes queue depth for observability
-- can discard buffered frames for removed cameras
+Bounded queue shared across cameras with configurable drop policy.
 
 #### `MultiCameraSynchronizer` (`buffering/`)
-- groups frames from healthy cameras into synchronized bundles
-- uses monotonic timestamps and a configurable tolerance window
-- is rebuilt dynamically when cameras drop out or recover so a dead camera does not stall the whole bundle pipeline
+Groups frames into synchronized bundles; rebuilt dynamically when cameras drop out.
 
 #### `FramePreprocessor` (`preprocessing/`)
-- resizes frames to the configured worker resolution
-- prepares BGR, RGB, normalized RGB, and grayscale views
-- detects low-light conditions
-- refreshes processed-frame state after calibration/stabilization updates
+Resizes frames using `INTER_AREA` when downscaling (sharper than bilinear for CCTV feeds) and `INTER_LINEAR` when upscaling. Produces BGR, RGB, normalized RGB, and grayscale views.
 
 #### `CalibrationService` (`calibration/`)
-- loads optional per-camera calibration profiles from `runtime/calibration/<camera_id>.json`
-- applies undistortion
-- optionally aligns frames to a world plane with homography
-- supports image-to-world point projection used to enrich track locations
+Loads optional per-camera calibration profiles, applies undistortion, aligns frames to a world plane, projects tracks to world coordinates.
 
 #### `OpticalFlowStabilizer` (`stabilization/`)
-- performs per-camera stabilization using Lucas-Kanade optical flow plus affine estimation
+Lucas-Kanade optical flow plus affine estimation. **Skips the warpAffine call entirely when the estimated transform is near-identity** (translation < 0.5 px, rotation < 0.003 rad), eliminating per-frame interpolation blur on static CCTV mounts. When a warp is applied it uses `INTER_CUBIC` for sharper results.
 
 #### `MotionAnalyzer` (`motion/`)
-- computes motion descriptors using optical flow and foreground estimation
-- produces `MotionSummary` values embedded in frame events and overlays
+Optical flow and foreground estimation producing `MotionSummary` values.
 
 #### `YOLOBatchDetector` (`detection/`)
-- runs batched person detection using the model pointed to by `OPENCV_PIPELINE_DETECTION_MODEL_PATH`
-- currently defaults to class id `0` (person)
+Batched person detection using the configured YOLO model.
 
 #### `ByteTrackStage` (`tracking/`)
-- maintains per-camera local track continuity
-- consumes detector output and produces `TrackedObject` instances
+Per-camera local track continuity using ByteTrack.
 
 #### `BodyReIdentifier` (`reid/`)
-- extracts appearance embeddings for active tracks using `TrackingReIdEmbedder`
+Appearance embeddings via `TrackingReIdEmbedder`.
 
-#### `MilvusIdentityStore` + `IdentityAssignmentService` (`identity/` + `services/tracking/identity/`)
-- resolve local tracks to persistent global identities in a shared Milvus collection
-- emit identity lifecycle events:
-  - `identity.created`
-  - `identity.updated`
-  - `identity.merged`
-  - `identity.expired`
-- expire inactive identities after the configured TTL
+#### `MilvusIdentityStore` + `IdentityAssignmentService`
+Resolve local tracks to persistent global identities. Batch upserts are deduplicated by `identity_id` before being sent to Milvus — prevents `MilvusException code=1100` when multiple tracks in one frame batch match the same person. Original `first_seen_ts` is preserved for matched identities via a `client.get()` prefetch.
+
+Lifecycle events emitted: `identity.created`, `identity.updated`, `identity.merged`, `identity.expired`.
+
+#### `InferenceOverlayCache`
+Dictionary keyed by `(camera_id, local_track_id)` storing the latest `{label, score, alert_level}` per track. Written by the inference orchestrator callback; read by `FrameAnnotator`. Both happen on the asyncio event loop thread so no locking is needed. Entries are evicted when a camera is removed.
 
 #### `FrameAnnotator`
-- draws boxes, ids, confidence values, and motion summary text on the frame
+Draws on each frame:
+- green bounding box per track
+- persistent ID (or local track ID) and detection confidence above the box
+- inference label, score percentage, and alert level below the box (once results arrive from Triton); color-coded: green = normal, yellow = warning, red = alert
+- motion summary line at the top-left
 
 #### `OutputDispatcher`
-Final publication layer for a processed frame.
-
-Responsibilities:
-- publish tracking snapshots to `camera.tracking.updates`
-- optionally publish annotated frame previews to `camera.frames`
-- publish identity lifecycle events to `identity.events`
-- send track/frame data into `InferenceIngressPublisher` when behavior inference is enabled
+Publishes tracking snapshots, frame previews, and identity lifecycle events to Kafka. Renders the annotated frame to the cv2 window when `OPENCV_PIPELINE_DISPLAY_ENABLED=true`.
 
 ## 7. Data model and persistence
 
 ### 7.1 PostgreSQL tables
 
-Current migrations define at least the following tables.
-
 #### `cameras`
-Source of truth for registered cameras.
-
-Key fields:
-- `id`
-- `name`
-- `location`
-- `host`, `port`, `username`, `password`, `path`
-- `direct_rtsp_url`
-- `transport`
-- `status`
-- `metadata` JSONB
-- `tags` text[]
-- `last_validated_at`
-- `last_validation_status`
-- `last_validation_message`
-- timestamps
-
-Important constraint:
-- each row must have either `direct_rtsp_url` or both `host` and `path`
+Source of truth for registered cameras. Key fields: `id`, `name`, `location`, `host`, `port`, `username`, `password`, `path`, `direct_rtsp_url`, `transport`, `status`, `metadata` JSONB, `tags`, validation timestamps. Constraint: each row must have either `direct_rtsp_url` or both `host` and `path`.
 
 #### `stream_state`
-Tracks stream/runtime state, but it is not currently a first-class active subsystem in the current Python control plane. The schema exists and models are present, but the main FastAPI routes in this backend do not currently expose stream-state CRUD.
+Schema exists; not a first-class API surface in the current control plane.
 
 #### `inference_events`
-Exists in migrations, but the schema currently appears out of sync with `InferenceEventRepository`. Treat this area as an active maintenance item.
+Exists in migrations; schema is out of sync with `InferenceEventRepository`. Treat as an active maintenance item.
 
 ### 7.2 Milvus collection
 
-Configured through settings:
-- URI or endpoint/token
-- collection name
-- embedding dimension
-- similarity threshold
-- search limit
-- concurrency limits
+Stores persistent person identities with embeddings. Configured via settings (URI, collection name, dimension, similarity threshold, search limit, concurrency).
 
-Purpose:
-- persistent global identity resolution for person ReID across frames and cameras
+Primary key: `identity_id` (VARCHAR). Batch upserts are deduplicated by this key before each write.
 
 ### 7.3 Runtime files
 
-Used paths include:
-- `runtime/logs/` for rotating file logs
-- `runtime/logs/subsystems/` for dedicated rotating subsystem logs such as inference, person detection, tracker, body inference, Milvus identity, and streaming
-- `runtime/calibration/` for optional camera calibration JSON
-- `runtime/milvus/` when running Milvus-related services in Docker Compose
+```text
+runtime/
+├── logs/
+│   ├── all.log
+│   ├── inference.log
+│   ├── milvus.log
+│   ├── person_detection.log
+│   ├── streaming.log
+│   ├── tracker.log
+│   └── body_inference.log
+├── calibration/        optional per-camera calibration JSON
+└── milvus/             Milvus data when running via Docker Compose
+```
 
 ## 8. End-to-end data flow
 
@@ -515,7 +385,7 @@ sequenceDiagram
     API-->>Client: validation response
 ```
 
-### 8.2 Worker processing flow
+### 8.2 Pipeline processing flow
 
 ```mermaid
 sequenceDiagram
@@ -533,9 +403,9 @@ sequenceDiagram
     B->>S: packet
     S->>P: synchronized bundle
     P->>P: preprocess/calibrate/stabilize/motion/detect/track/reid
-    P->>MI: embedding lookup/upsert
+    P->>MI: embedding lookup/upsert (deduplicated batch)
     MI-->>P: persistent identity assignments
-    P->>O: PipelineOutput
+    P->>O: PipelineOutput with annotated frame
     O->>K: camera.tracking.updates
     O->>K: camera.frames
     O->>K: identity.events
@@ -550,6 +420,7 @@ sequenceDiagram
     participant IM as InferenceManager
     participant IO as InferenceOrchestrator
     participant T as Triton
+    participant CB as InferenceOverlayCache
     participant PG as PostgreSQL
     participant K as Kafka
     participant WS as WebSocket clients
@@ -559,22 +430,24 @@ sequenceDiagram
     IM->>IO: queued batch
     IO->>T: infer(model_name, tensors)
     T-->>IO: output tensor
+    IO->>CB: result_callback(camera_id, track_id, label, score, alert_level)
+    Note over CB: next frame render picks up label
     IO->>WS: inference.updated / inference.alert
     IO->>K: camera.ai_results
     IO->>PG: persist non-normal results only
 ```
 
-### 8.4 API websocket bridge flow
+### 8.4 API WebSocket bridge flow
 
 ```mermaid
 sequenceDiagram
-    participant Worker
+    participant Pipeline
     participant Kafka
     participant API as StreamEventConsumer
     participant WM as WebSocketManager
     participant Browser
 
-    Worker->>Kafka: tracking/frame/identity/inference events
+    Pipeline->>Kafka: tracking/frame/identity/inference events
     Kafka->>API: subscribed topic message
     API->>WM: WebSocketEnvelope
     WM->>Browser: JSON event
@@ -582,344 +455,169 @@ sequenceDiagram
 
 ## 9. Kafka topics and event contracts
 
-### 9.1 Topics actively used by the current Python code
+### 9.1 Active topics
 
 | Topic | Produced by | Consumed by | Purpose |
 | --- | --- | --- | --- |
-| `camera.tracking.updates` | `OutputDispatcher` via `TrackingKafkaProducerService` | `StreamEventConsumer` | per-camera track snapshots |
-| `camera.frames` | `OutputDispatcher` | `StreamEventConsumer` | frame-level metadata, optional preview JPEG |
+| `camera.tracking.updates` | `OutputDispatcher` | `StreamEventConsumer` | per-camera track snapshots |
+| `camera.frames` | `OutputDispatcher` | `StreamEventConsumer` | frame metadata and optional JPEG preview |
 | `identity.events` | `OutputDispatcher` | `StreamEventConsumer` | identity lifecycle events |
 | `camera.ai_results` | `InferenceOrchestrator` | `StreamEventConsumer` | inference scores and alert levels |
 
-### 9.2 Topics prepared in config/compose but not materially used in the current Python implementation
+### 9.2 Reserved topics (not actively used)
 
-These topics are created by `kafka-init` and present in settings, but this repository does not currently contain a matching end-to-end producer/consumer flow for them:
-
-- `camera.status`
-- `camera.events`
-
-They should be treated as reserved or future-use topics unless more code is added.
+`camera.status` and `camera.events` — provisioned in `kafka-init`, no matching producer/consumer in current code.
 
 ### 9.3 Payload shapes
 
-#### `camera.tracking.updates`
-Defined by `TrackingKafkaEventPayload`.
+#### `camera.tracking.updates` — `TrackingKafkaEventPayload`
+`event`, `emitted_at`, `camera_id`, `stream_name`, `annotated_stream_name`, `active_tracks`, `tracks[]` (ids, persistent identity, bbox, score, age, state)
 
-Fields include:
-- `event`
-- `emitted_at`
-- `camera_id`
-- `stream_name`
-- `annotated_stream_name`
-- `active_tracks`
-- `tracks[]` with ids, persistent identity, bbox, score, age, and state
+#### `camera.frames` — `CameraFrameKafkaEventPayload`
+`camera_id`, `stream_name`, `sequence_number`, `captured_at`, frame dimensions, `pipeline_latency_ms`, motion summary, `detections`, `active_tracks`, optional `preview_jpeg_base64`
 
-#### `camera.frames`
-Defined by `CameraFrameKafkaEventPayload`.
+#### `identity.events` — `IdentityKafkaEventPayload`
+`event`, `occurred_at`, `camera_id`, `stream_name`, `local_track_id`, `persistent_id`, `previous_persistent_id`, `matched_existing`, `similarity`, bbox, optional world coordinates
 
-Fields include:
-- `camera_id`
-- `stream_name`
-- `sequence_number`
-- `captured_at`
-- frame dimensions
-- `pipeline_latency_ms`
-- motion summary
-- `detections`
-- `active_tracks`
-- optional `preview_jpeg_base64`
-
-#### `identity.events`
-Defined by `IdentityKafkaEventPayload`.
-
-Fields include:
-- `event`
-- `occurred_at`
-- `camera_id`
-- `stream_name`
-- `local_track_id`
-- `persistent_id`
-- `previous_persistent_id`
-- `matched_existing`
-- `similarity`
-- bbox
-- optional world coordinates
-
-#### `camera.ai_results`
-Defined by `InferenceKafkaEventPayload`.
-
-Fields include:
-- `event`
-- `emitted_at`
-- `camera_id`
-- `stream_name`
-- `persistent_id`
-- `local_track_id`
-- `strategy`
-- `score`
-- `alert_level`
-- `label`
-- `model_name`
-- `sampled_at`
+#### `camera.ai_results` — `InferenceKafkaEventPayload`
+`event`, `emitted_at`, `camera_id`, `stream_name`, `persistent_id`, `local_track_id`, `strategy`, `score`, `alert_level`, `label`, `model_name`, `sampled_at`
 
 ## 10. API structure and integration points
 
 ### 10.1 REST routes
 
 #### Camera routes (`/cameras`)
-
-- `POST /cameras`
-  - create a camera row
-- `GET /cameras`
-  - paginated camera listing with optional filtering
-- `GET /cameras/{camera_id}`
-  - fetch one camera
-- `PUT /cameras/{camera_id}`
-  - update one camera
-- `DELETE /cameras/{camera_id}`
-  - delete one camera and remove associated inference state if present
-- `POST /cameras/{camera_id}/validate`
-  - validate RTSP reachability
+- `POST /cameras` — create a camera
+- `GET /cameras` — paginated list with optional filters
+- `GET /cameras/{camera_id}` — fetch one camera
+- `PUT /cameras/{camera_id}` — update one camera
+- `DELETE /cameras/{camera_id}` — delete camera and remove inference state
+- `POST /cameras/{camera_id}/validate` — validate RTSP reachability
 
 #### Health routes (`/health`)
-
-- `GET /health`
-  - aggregated service health, uptime, DB, Kafka producer, Kafka consumer
-- `GET /health/db`
-  - DB-only health check
+- `GET /health` — aggregated service health (uptime, DB, Kafka producer, Kafka consumer)
+- `GET /health/db` — DB-only health check
 
 #### Stream routes (`/streams`)
-
-- `PATCH /streams/{camera_id}/inference`
-  - start, stop, or reconfigure inference for the API process's local inference manager state for a camera
-- `GET /streams/health`
-  - health of the Kafka stream event consumer bridge
-- `WS /streams/ws/updates`
-  - realtime websocket stream for Kafka-backed events
-  - optional query parameter: `camera_id`
+- `PATCH /streams/{camera_id}/inference` — start, stop, or reconfigure inference
+- `GET /streams/health` — Kafka consumer bridge health
+- `WS /streams/ws/updates` — realtime WebSocket; optional `camera_id` query param
 
 ### 10.2 HTTP response envelope
 
-All REST responses are wrapped in `ApiResponse`:
-
-- `status`: `success` or `error`
-- `message`
-- `data`
-- `error_code` for failures
-- `timestamp`
-- optional `meta`
+All REST responses wrapped in `ApiResponse`: `status`, `message`, `data`, optional `error_code`, `timestamp`, optional `meta`.
 
 ### 10.3 Error handling
 
-`src/core/exceptions/handler.py` registers three layers:
-- `AppException` -> structured application errors
-- `RequestValidationError` -> 422 with validation details
-- generic `Exception` -> 500 with `INTERNAL_SERVER_ERROR`
-
-### 10.4 External integration points
-
-The backend integrates with:
-- PostgreSQL through `asyncpg`
-- Kafka through `aiokafka`
-- Milvus through `pymilvus`
-- Triton through `tritonclient[grpc]`
-- RTSP validation through `ffprobe`, with a PyAV fallback only when `av`/PyAV is installed in the runtime environment
-- Prometheus through `prometheus_client`
+`src/core/exceptions/handler.py`: `AppException` → structured errors, `RequestValidationError` → 422, `Exception` → 500.
 
 ## 11. Configuration reference
 
-Configuration is declared in `src/core/config.py` and loaded from environment variables / `.env`.
-
-### 11.1 Required configuration
-
-At minimum, a working environment needs:
+### 11.1 Required
 
 - `DATABASE_URL`
-- `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` if running the provided Milvus compose stack
-- optionally `TRACKING_DETECTOR_API_KEY` depending on the detector/backend actually used by the installed tracking stack
+- `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` when using the provided Milvus compose stack
 
-### 11.2 Main application settings
+### 11.2 Application
 
-- `APP_NAME`
-- `APP_VERSION`
-- `ENVIRONMENT`
-- `DEBUG`
-- `PUBLIC_API_BASE_URL`
-- `PUBLIC_WS_BASE_URL`
-- `CORS_ORIGINS`
+`APP_NAME`, `APP_VERSION`, `ENVIRONMENT`, `DEBUG`, `PUBLIC_API_BASE_URL`, `PUBLIC_WS_BASE_URL`, `CORS_ORIGINS`
 
-### 11.3 Database settings
+### 11.3 Database
 
-- `DATABASE_URL`
-- `DB_POOL_MIN_SIZE`
-- `DB_POOL_MAX_SIZE`
-- `RUN_MIGRATIONS_ON_STARTUP`
+`DATABASE_URL`, `DB_POOL_MIN_SIZE`, `DB_POOL_MAX_SIZE`, `RUN_MIGRATIONS_ON_STARTUP`
 
-### 11.4 Kafka settings
+### 11.4 Kafka
 
-- `KAFKA_BOOTSTRAP_SERVERS`
-- `KAFKA_GROUP_ID`
-- `KAFKA_CLIENT_ID`
-- `KAFKA_ENABLED`
-- `KAFKA_TOPIC_CAMERA_STATUS`
-- `KAFKA_TOPIC_CAMERA_EVENTS`
-- `KAFKA_TOPIC_CAMERA_AI_RESULTS`
-- `KAFKA_TOPIC_CAMERA_TRACKING_UPDATES`
-- `KAFKA_TOPIC_CAMERA_FRAMES`
-- `KAFKA_TOPIC_IDENTITY_EVENTS`
+`KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_GROUP_ID`, `KAFKA_CLIENT_ID`, `KAFKA_ENABLED`, `KAFKA_TOPIC_CAMERA_STATUS`, `KAFKA_TOPIC_CAMERA_EVENTS`, `KAFKA_TOPIC_CAMERA_AI_RESULTS`, `KAFKA_TOPIC_CAMERA_TRACKING_UPDATES`, `KAFKA_TOPIC_CAMERA_FRAMES`, `KAFKA_TOPIC_IDENTITY_EVENTS`
 
-### 11.5 Metrics settings
+### 11.5 Metrics
 
-- `METRICS_ENABLED`
-- `METRICS_HOST`
-- `METRICS_PORT`
-- `METRICS_COLLECTION_INTERVAL_SECONDS`
+`METRICS_ENABLED`, `METRICS_HOST`, `METRICS_PORT`, `METRICS_COLLECTION_INTERVAL_SECONDS`
 
-### 11.6 Inference settings
+### 11.6 Inference
 
-- `TRITON_URL`
-- `OPENCV_PIPELINE_ENABLE_BEHAVIOR_INFERENCE`
-- `OPENCV_PIPELINE_INFERENCE_STRATEGY`
+`TRITON_URL`, `OPENCV_PIPELINE_ENABLE_BEHAVIOR_INFERENCE`, `OPENCV_PIPELINE_INFERENCE_STRATEGY`
 
-### 11.7 Tracking and identity settings
+### 11.7 Tracking and identity
 
-- `TRACKING_ENABLED_BY_DEFAULT`
-- `TRACKING_SAMPLE_FPS`
-- `TRACKING_OUTPUT_FPS`
-- `TRACKING_DETECTOR_MODEL_ID`
-- `TRACKING_DETECTOR_CONFIDENCE_THRESHOLD`
-- `TRACKING_DETECTOR_IOU_THRESHOLD`
-- `TRACKING_DETECTOR_TARGET_CLASS_NAME`
-- `TRACKING_DETECTOR_API_KEY`
-- `TRACKING_EMBEDDER_NAME`
-- `TRACKING_EMBEDDER_WEIGHTS_PATH`
-- `TRACKING_TRACKER_LOST_TRACK_BUFFER`
-- `TRACKING_TRACKER_ACTIVATION_THRESHOLD`
-- `TRACKING_TRACKER_MINIMUM_CONSECUTIVE_FRAMES`
-- `TRACKING_TRACKER_MINIMUM_IOU_THRESHOLD`
-- `TRACKING_TRACKER_HIGH_CONF_DET_THRESHOLD`
-- `TRACKING_IDENTITY_STORE_URI`
-- `TRACKING_IDENTITY_STORE_TOKEN`
-- `TRACKING_IDENTITY_COLLECTION_NAME`
-- `TRACKING_IDENTITY_DIMENSION`
-- `TRACKING_IDENTITY_STORE_TIMEOUT_SECONDS`
-- `TRACKING_IDENTITY_SIMILARITY_THRESHOLD`
-- `TRACKING_IDENTITY_SEARCH_LIMIT`
-- `TRACKING_IDENTITY_MAX_CONCURRENT_BATCHES`
-- `TRACKING_IDENTITY_SYNC_INTERVAL_SECONDS`
-- `TRACKING_PUBLISH_UPDATE_INTERVAL_SECONDS`
-- `TRACKING_STREAM_SUFFIX`
+`TRACKING_EMBEDDER_NAME`, `TRACKING_EMBEDDER_WEIGHTS_PATH`, `TRACKING_TRACKER_LOST_TRACK_BUFFER`, `TRACKING_TRACKER_ACTIVATION_THRESHOLD`, `TRACKING_TRACKER_MINIMUM_CONSECUTIVE_FRAMES`, `TRACKING_TRACKER_MINIMUM_IOU_THRESHOLD`, `TRACKING_TRACKER_HIGH_CONF_DET_THRESHOLD`, `TRACKING_IDENTITY_STORE_URI`, `TRACKING_IDENTITY_STORE_TOKEN`, `TRACKING_IDENTITY_COLLECTION_NAME`, `TRACKING_IDENTITY_DIMENSION`, `TRACKING_IDENTITY_STORE_TIMEOUT_SECONDS`, `TRACKING_IDENTITY_SIMILARITY_THRESHOLD`, `TRACKING_IDENTITY_SEARCH_LIMIT`, `TRACKING_IDENTITY_MAX_CONCURRENT_BATCHES`, `TRACKING_IDENTITY_SYNC_INTERVAL_SECONDS`, `TRACKING_PUBLISH_UPDATE_INTERVAL_SECONDS`, `TRACKING_STREAM_SUFFIX`
 
-### 11.8 OpenCV pipeline settings
+### 11.8 OpenCV pipeline
 
-- `OPENCV_PIPELINE_ENABLED`
-- `OPENCV_PIPELINE_TARGET_WIDTH`
-- `OPENCV_PIPELINE_TARGET_HEIGHT`
-- `OPENCV_PIPELINE_TARGET_FPS`
-- `OPENCV_PIPELINE_FRAME_BUFFER_SIZE`
-- `OPENCV_PIPELINE_DROP_POLICY`
-- `OPENCV_PIPELINE_SYNC_TOLERANCE_MS`
-- `OPENCV_PIPELINE_BATCH_SIZE`
-- `OPENCV_PIPELINE_CAPTURE_RETRY_INITIAL_DELAY_SECONDS`
-- `OPENCV_PIPELINE_CAPTURE_RETRY_MAX_DELAY_SECONDS`
-- `OPENCV_PIPELINE_PREVIEW_JPEG_QUALITY`
-- `OPENCV_PIPELINE_PUBLISH_FRAME_PREVIEWS`
-- `OPENCV_PIPELINE_LOW_LIGHT_THRESHOLD`
-- `OPENCV_PIPELINE_DETECTION_MODEL_PATH`
-- `OPENCV_PIPELINE_DETECTION_CONFIDENCE`
-- `OPENCV_PIPELINE_DETECTION_CLASS_IDS`
-- `OPENCV_PIPELINE_IDENTITY_TTL_SECONDS`
-- `OPENCV_PIPELINE_REFRESH_ALL_CAMERAS_INTERVAL_SECONDS`
-- `OPENCV_PIPELINE_CALIBRATION_DIRECTORY`
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `OPENCV_PIPELINE_ENABLED` | `true` | disable to skip pipeline startup |
+| `OPENCV_PIPELINE_RTSP_URL` | — | if set, bootstraps a camera on startup |
+| `OPENCV_PIPELINE_RTSP_CAMERA_NAME` | `OpenCV Pipeline Camera` | display name for the bootstrapped camera |
+| `OPENCV_PIPELINE_TARGET_WIDTH` | `1280` | |
+| `OPENCV_PIPELINE_TARGET_HEIGHT` | `720` | |
+| `OPENCV_PIPELINE_TARGET_FPS` | `10.0` | |
+| `OPENCV_PIPELINE_FRAME_BUFFER_SIZE` | `128` | |
+| `OPENCV_PIPELINE_DROP_POLICY` | `drop_oldest` | |
+| `OPENCV_PIPELINE_SYNC_TOLERANCE_MS` | `40.0` | |
+| `OPENCV_PIPELINE_BATCH_SIZE` | `8` | |
+| `OPENCV_PIPELINE_CAPTURE_RETRY_INITIAL_DELAY_SECONDS` | `0.5` | |
+| `OPENCV_PIPELINE_CAPTURE_RETRY_MAX_DELAY_SECONDS` | `5.0` | |
+| `OPENCV_PIPELINE_PREVIEW_JPEG_QUALITY` | `100` | quality of JPEG previews sent over WebSocket |
+| `OPENCV_PIPELINE_PUBLISH_FRAME_PREVIEWS` | `false` | set `true` to include JPEG in frame events |
+| `OPENCV_PIPELINE_DISPLAY_ENABLED` | `false` | cv2 window; set `true` in the dev worker |
+| `OPENCV_PIPELINE_DISPLAY_WINDOW_PREFIX` | `OpenCV Pipeline` | |
+| `OPENCV_PIPELINE_LOW_LIGHT_THRESHOLD` | `40.0` | |
+| `OPENCV_PIPELINE_DETECTION_MODEL_PATH` | `yolo26n.pt` | |
+| `OPENCV_PIPELINE_DETECTION_CONFIDENCE` | `0.4` | |
+| `OPENCV_PIPELINE_DETECTION_CLASS_IDS` | `0` | comma-separated |
+| `OPENCV_PIPELINE_IDENTITY_TTL_SECONDS` | `30.0` | |
+| `OPENCV_PIPELINE_REFRESH_ALL_CAMERAS_INTERVAL_SECONDS` | `30.0` | |
+| `OPENCV_PIPELINE_CALIBRATION_DIRECTORY` | `runtime/calibration` | |
 
-### 11.9 Logging settings
+### 11.9 Logging
 
-- `LOG_LEVEL`
-- `JSON_LOGS`
-- `FILE_LOGS_ENABLED`
-- `LOG_DIRECTORY`
-- `LOG_FILE_PREFIX`
-- `LOG_FILE_MAX_BYTES`
-- `LOG_FILE_BACKUP_COUNT`
-- `SUBSYSTEM_LOGS_ENABLED`
-- `SUBSYSTEM_LOG_DIRECTORY`
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | |
+| `JSON_LOGS` | `false` | structured JSON output |
+| `FILE_LOGS_ENABLED` | `true` | writes `all.log` |
+| `LOG_DIRECTORY` | `runtime/logs` | all log files land here flat — no subdirectories |
+| `LOG_FILE_PREFIX` | `backend` | unused in filenames now; kept for compatibility |
+| `LOG_FILE_MAX_BYTES` | `10485760` | per-file rotation size |
+| `LOG_FILE_BACKUP_COUNT` | `5` | |
+| `SUBSYSTEM_LOGS_ENABLED` | `true` | writes per-subsystem `.log` files |
+
+`SUBSYSTEM_LOG_DIRECTORY` has been removed. All log files are written to `LOG_DIRECTORY`.
 
 ## 12. Dependencies
 
-### 12.1 Python dependencies
+### 12.1 Python
 
-Declared primarily in `pyproject.toml`, with a mostly duplicated `requirements.txt` for pip-based installs.
+Core: `fastapi`, `uvicorn[standard]`, `asyncpg`, `aiokafka`, `opencv-python`, `numpy`, `torch`, `torchvision`, `ultralytics`, `trackers`, `supervision`, `pymilvus`, `tritonclient[grpc]`, `prometheus-client`, `psutil`, `pydantic`, `pydantic-settings`, `tenacity`
 
-Core runtime libraries:
-- `fastapi`
-- `uvicorn[standard]`
-- `asyncpg`
-- `aiokafka`
-- `opencv-python`
-- `numpy`
-- `torch`
-- `torchvision`
-- `ultralytics`
-- `trackers`
-- `supervision`
-- `pymilvus`
-- `tritonclient[grpc]`
-- `prometheus-client`
-- `psutil`
-- `pydantic`
-- `pydantic-settings`
-- `tenacity`
+Dev/test: `pytest-asyncio`
 
-Developer/test dependency currently declared:
-- `pytest-asyncio`
+### 12.2 Infrastructure (Docker Compose)
 
-### 12.2 Infrastructure dependencies
+etcd, MinIO, Milvus standalone, Triton Inference Server, Kafka (KRaft), Kafka topic bootstrap, node-exporter, postgres-exporter, Loki, Grafana Alloy, Prometheus, Grafana.
 
-The supplied `docker-compose.yaml` provisions:
-- etcd
-- MinIO
-- Milvus standalone
-- Triton Inference Server
-- Kafka in KRaft mode
-- Kafka topic bootstrap container
-- node-exporter
-- postgres-exporter
-- Loki
-- Grafana Alloy
-- Prometheus
-- Grafana
-
-Important current-state note:
-- PostgreSQL itself is not defined in `docker-compose.yaml`
-- the backend expects a reachable external PostgreSQL instance via `DATABASE_URL`
-- `postgres-exporter` is present for metrics, but it points at an external Postgres endpoint
+> PostgreSQL is **not** defined in `docker-compose.yaml`. Provide an external instance via `DATABASE_URL`.
 
 ## 13. Deployment and execution
 
 ### 13.1 Prerequisites
 
-You need:
 - Python 3.10+
 - `uv` or `pip`
-- a reachable PostgreSQL database
-- Docker Compose v2 for the provided shared services
-- model assets expected by Triton and the tracking/ReID components
+- reachable PostgreSQL database
+- Docker Compose v2 for shared services
+- model assets expected by Triton and the ReID component
 - RTSP-reachable cameras for live operation
-
-Optional but recommended:
-- `ffprobe` in `PATH` for camera validation
-- PyAV (`av`) if you want the documented validator fallback when `ffprobe` is unavailable
-- GPU support for Triton and heavy vision workloads
+- optional: `ffprobe` in `PATH` for camera validation; `av` (PyAV) as fallback
 
 ### 13.2 Boot shared infrastructure
-
-From `backend/`:
 
 ```bash
 docker compose up -d etcd minio milvus kafka kafka-init triton
 ```
 
-Optional observability stack:
+Optional observability:
 
 ```bash
 docker compose up -d prometheus grafana loki alloy node-exporter postgres-exporter
@@ -927,23 +625,13 @@ docker compose up -d prometheus grafana loki alloy node-exporter postgres-export
 
 ### 13.3 Prepare Python environment
 
-Using `uv`:
-
 ```bash
 uv sync
-```
-
-Or with pip:
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# or
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 ```
 
 ### 13.4 Create `.env`
-
-Minimal example:
 
 ```env
 DATABASE_URL=postgresql://postgres:password@localhost:5432/rtsp_camera
@@ -953,185 +641,153 @@ TRITON_URL=localhost:8001
 TRACKING_IDENTITY_STORE_URI=http://localhost:19530
 MINIO_ROOT_USER=minioadmin
 MINIO_ROOT_PASSWORD=minioadmin
+
+# Enable JPEG frame previews for the frontend stream view
+OPENCV_PIPELINE_PUBLISH_FRAME_PREVIEWS=true
+
+# Optional: bootstrap one RTSP camera on startup
+# OPENCV_PIPELINE_RTSP_URL=rtsp://user:pass@192.168.1.100:554/stream
+# OPENCV_PIPELINE_RTSP_CAMERA_NAME=Front Gate
 ```
 
-Notes:
-- the default configuration in `src/core/config.py` points `TRACKING_IDENTITY_STORE_URI` at a local file under `runtime/milvus_tracking.db`; overriding it to `localhost:19530` switches you to the external Milvus service exposed by Docker Compose
-- if `ffprobe` is not in `PATH`, camera validation will attempt the PyAV fallback if `av` is installed
+> The default `TRACKING_IDENTITY_STORE_URI` points to a local file under `runtime/milvus_tracking.db`. Override it to `http://localhost:19530` to use the Docker Compose Milvus service.
 
-### 13.5 Apply database migrations manually if desired
+### 13.5 Apply database migrations
+
+Migrations run automatically when `RUN_MIGRATIONS_ON_STARTUP=true` (default). To apply manually:
 
 ```bash
 uv run python -m src.utils.migration_runner
 ```
 
-The same migrations also run automatically on startup when `RUN_MIGRATIONS_ON_STARTUP=true`.
-
-### 13.6 Run the FastAPI control plane
-
-From `backend/`:
+### 13.6 Run the production server
 
 ```bash
+# development (with reload)
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-```
 
-Production-style without reload:
-
-```bash
+# production
 uv run uvicorn src.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 13.7 Run the OpenCV edge worker
+The FastAPI process starts the OpenCV pipeline automatically as a background task. No second process is needed.
 
-From `backend/`:
+### 13.7 Run the standalone dev worker (optional)
 
 ```bash
 uv run python main.py
+# or with an explicit camera
+uv run python main.py --rtsp-url "rtsp://user:pass@host:554/stream" --camera-name "Front Gate"
 ```
 
-The worker will:
-- connect to PostgreSQL
-- load active cameras
-- spawn capture workers for cameras whose `status` is `active`
-- refresh the camera inventory periodically
+This script opens a cv2 preview window with all overlays (bounding boxes, persistent IDs, confidence, and inference labels) and is useful for visually verifying the pipeline without running the full API stack.
 
-Note:
-- if API and worker run on the same host with metrics enabled, give them different `METRICS_PORT` values; both runtimes default to `9109` and will otherwise compete for the same listener
+> If you run both the FastAPI server and the dev worker on the same host with metrics enabled, set different `METRICS_PORT` values — both default to `9109`.
 
 ### 13.8 Access points
 
-Default endpoints from the current configuration:
-- API: `http://localhost:8000`
-- API docs: `http://localhost:8000/docs`
-- metrics: `http://localhost:<METRICS_PORT>/metrics` on each process that has metrics enabled
-- Triton HTTP: `http://localhost:8000`
-- Triton gRPC: `localhost:8001`
-- Triton metrics: `http://localhost:8002/metrics`
-- Kafka broker: `localhost:9092`
-- Milvus gRPC/API port: `localhost:19530`
-- Milvus health: `http://localhost:9091/healthz`
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3001`
+| Service | Address |
+| --- | --- |
+| API | `http://localhost:8000` |
+| API docs | `http://localhost:8000/docs` |
+| Prometheus metrics | `http://localhost:9109/metrics` |
+| Triton HTTP | `http://localhost:8000` ⚠ port conflict with API |
+| Triton gRPC | `localhost:8001` |
+| Triton metrics | `http://localhost:8002/metrics` |
+| Kafka | `localhost:9092` |
+| Milvus | `localhost:19530` |
+| Milvus health | `http://localhost:9091/healthz` |
+| Prometheus | `http://localhost:9090` |
+| Grafana | `http://localhost:3001` |
 
-Important port note:
-- the API defaults to port `8000`
-- the provided Triton container also maps HTTP to host port `8000`
-- do not run both on the same host/port at the same time without changing one of the bindings
+> Triton HTTP and the API both default to port `8000`. Change one binding before running both on the same host.
 
 ## 14. Observability
 
-### 14.1 Metrics in code
+### 14.1 Application metrics
 
-The backend defines application metrics for:
-- frames received and dropped
-- frame processing latency
-- queue depth
-- tracking active tracks
-- websocket connections and sends
+- frames received, dropped, and processing latency
+- queue depth and active tracks
+- WebSocket connections and send counts
 - Kafka publish/consume success and failure
-- dependency health
+- dependency health (Milvus, Kafka)
 - inference ingress backpressure
 - system CPU, memory, and network usage
 
 ### 14.2 Metrics collectors
 
-- `SystemMetricsCollector` samples psutil-based host/process metrics and queue depth
-- `RuntimeMetricsCollector` samples health snapshots from long-lived services such as the Kafka producer and consumer
-- `HttpMetricsMiddleware` records per-route request counts and duration histograms in the API process
+- `SystemMetricsCollector` — psutil-based host/process metrics and pipeline queue depth
+- `RuntimeMetricsCollector` — health snapshots from long-lived services
+- `HttpMetricsMiddleware` — per-route request counts and latency histograms
 
 ### 14.3 Logging
 
-Logging is configured through `src/core/logger/logger.py` and supports:
-- standard or JSON logs
-- rotating file logs under `runtime/logs/`
-- dedicated rotating subsystem logs under `runtime/logs/subsystems/`:
-  - `streaming/`
-  - `person_detection/`
-  - `tracker/`
-  - `body_inference/`
-  - `milvus/`
-  - `inference/`
+All log files land flat in `LOG_DIRECTORY` with no subdirectories or PID suffixes:
 
-### 14.4 Dashboards and monitoring assets
+- `all.log` — complete log stream
+- `inference.log` — inference subsystem
+- `milvus.log` — Milvus identity store
+- `person_detection.log` — YOLO detection stage
+- `streaming.log` — capture, buffering, preprocessing, stabilization, output
+- `tracker.log` — ByteTrack stage
+- `body_inference.log` — ReID stage
 
-Additional assets live under:
-- `observability/prometheus/`
-- `observability/grafana/`
-- `observability/loki/`
-- `observability/alloy/`
-- `observability/kafka_jmx/`
+### 14.4 Dashboard assets
 
-## 15. Maintenance notes and extension guidance
+`observability/prometheus/`, `observability/grafana/`, `observability/loki/`, `observability/alloy/`, `observability/kafka_jmx/`
 
-### 15.1 If you add new Kafka-backed event types
+## 15. Maintenance notes
 
-You usually need to update all of the following:
-- producer code and payload schema under `src/schemas/`
-- topic name in `Settings`
-- `docker-compose.yaml` topic bootstrap in `kafka-init`
-- `StreamEventConsumer` subscription list if the API should rebroadcast it
-- frontend websocket consumers if clients need to render it
+### 15.1 Adding new Kafka event types
 
-### 15.2 If you add a new pipeline stage
+Update: producer code + `src/schemas/`, topic name in `Settings`, `docker-compose.yaml` `kafka-init`, `StreamEventConsumer` subscription list, frontend WebSocket consumers.
 
-Most changes belong in:
-- `src/opencv_pipeline/runtime.py` for stage orchestration
-- a new submodule under `src/opencv_pipeline/`
-- `src/opencv_pipeline/contracts.py` if the stage adds data to the shared frame/track contracts
-- `OutputDispatcher` and/or metrics if the new stage emits externally visible state
+### 15.2 Adding a new pipeline stage
 
-### 15.3 If you add a new inference strategy
+Changes belong in: `src/opencv_pipeline/runtime.py` (orchestration), a new submodule under `src/opencv_pipeline/`, `src/opencv_pipeline/contracts.py` (shared data), `OutputDispatcher` or metrics (external state).
 
-You will likely need to update:
-- `InferenceWorkerConfig`
-- `BatchBuilder`
-- Triton model deployment/configuration
-- `DecisionEngine`
-- the route-level strategy values accepted by `PATCH /streams/{camera_id}/inference`
+### 15.3 Adding a new inference strategy
 
-### 15.4 If you add a new persistence model
+Update: `InferenceWorkerConfig`, `BatchBuilder`, Triton model deployment, `DecisionEngine`, `PATCH /streams/{camera_id}/inference` accepted strategy values.
 
-Follow the current repository pattern:
-- add numbered SQL migration(s)
-- add parameterized SQL under `scripts/sql/`
-- add repository methods under `src/services/...`
-- keep schema definitions and repositories aligned; the current `inference_events` area is an example of what happens when they drift
+### 15.4 Adding a new persistence model
+
+Pattern: numbered SQL migration → parameterized SQL under `scripts/sql/` → repository methods → keep schema and repository aligned. The current `inference_events` area is an example of what happens when they drift.
 
 ## 16. Known implementation realities
 
-These are important for anyone maintaining the system:
-
-1. The current backend is split into two Python runtimes, not one monolith process.
+1. The system now runs as a single process — FastAPI embeds the OpenCV pipeline. The two-process split described in earlier versions is no longer the default.
 2. PostgreSQL is required but not containerized by the provided compose file.
-3. The `stream_state` schema exists, but the currently exposed API surface is focused on camera CRUD, health, and inference toggling.
-4. `camera.status` and `camera.events` are provisioned Kafka topics but are not actively used by the current Python application logic.
-5. The checked-in inference-event migration does not match the active repository write shape and should be reconciled.
-6. Triton and FastAPI both want host port `8000` by default, so local deployment needs explicit port planning.
+3. `stream_state` schema exists; the exposed API surface is focused on camera CRUD, health, and inference toggling.
+4. `camera.status` and `camera.events` are provisioned Kafka topics but are not actively used.
+5. The inference-event migration schema does not match the active repository write shape and should be reconciled.
+6. Triton HTTP and the FastAPI server both default to port `8000` — plan ports explicitly for local deployment.
 
 ## 17. Quick start checklist
 
 1. start PostgreSQL externally and set `DATABASE_URL`
 2. start Kafka, Milvus, and Triton from `docker-compose.yaml`
 3. install Python dependencies
-4. create `.env`
-5. run migrations
-6. start the FastAPI app: `uv run uvicorn src.main:app --host 0.0.0.0 --port 8000`
-7. start the worker: `uv run python main.py`
-8. register cameras through `POST /cameras`
-9. set camera `status` to `active`
-10. watch events on `WS /streams/ws/updates`
+4. create `.env` (set `OPENCV_PIPELINE_PUBLISH_FRAME_PREVIEWS=true` for frontend stream view)
+5. run migrations (automatic with default settings)
+6. start the server: `uv run uvicorn src.main:app --host 0.0.0.0 --port 8000`
+7. register cameras through `POST /cameras` with `status: active`
+8. watch events on `WS /streams/ws/updates`
 
-## 18. Related code-level references
+For visual pipeline inspection without a frontend: `uv run python main.py --rtsp-url "rtsp://..."` — opens a cv2 window with all overlays including inference labels.
 
-Useful files for maintainers:
-- `src/main.py` - API lifecycle wiring
-- `main.py` - worker lifecycle wiring
-- `src/core/config.py` - full configuration surface
-- `src/opencv_pipeline/runtime.py` - worker orchestration
-- `src/opencv_pipeline/output/publisher.py` - event emission
-- `src/services/inference/manager.py` - inference lifecycle
-- `src/services/inference/orchestrator.py` - Triton execution path
-- `src/services/stream/kafka_event_consumer.py` - Kafka to websocket bridge
-- `src/services/camera/camera_service.py` - camera business logic
-- `docs/opencv_pipeline_architecture.md` - deeper stage-by-stage pipeline notes
-- `docs/observability.md` - observability-specific notes
+## 18. Related code references
+
+| File | Purpose |
+| --- | --- |
+| `src/main.py` | API + pipeline lifecycle wiring |
+| `main.py` | standalone dev worker entrypoint |
+| `src/core/config.py` | full configuration surface |
+| `src/opencv_pipeline/runtime.py` | pipeline orchestration |
+| `src/opencv_pipeline/output/publisher.py` | frame annotation + event emission + inference overlay cache |
+| `src/services/inference/manager.py` | inference lifecycle + result callback wiring |
+| `src/services/inference/orchestrator.py` | Triton execution and result delivery |
+| `src/services/tracking/identity/milvus_store.py` | identity resolution with deduplication |
+| `src/services/stream/kafka_event_consumer.py` | Kafka to WebSocket bridge |
+| `src/services/camera/camera_service.py` | camera business logic |
+| `src/core/logger/logger.py` | flat rotating file log configuration |

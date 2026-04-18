@@ -85,12 +85,17 @@ class OpticalFlowStabilizer:
             state.previous_transform,
             self._smoothing_alpha,
         )
+        if _is_near_identity(smoothed_transform):
+            state.prev_gray = current_gray
+            state.previous_transform = smoothed_transform
+            return processed_frame, None
+
         height, width = processed_frame.working_bgr.shape[:2]
         stabilized = cv2.warpAffine(
             processed_frame.working_bgr,
             smoothed_transform,
             (width, height),
-            flags=cv2.INTER_LINEAR,
+            flags=cv2.INTER_CUBIC,
             borderMode=cv2.BORDER_REFLECT,
         )
         world_reference_frame = processed_frame.world_reference_frame
@@ -99,7 +104,7 @@ class OpticalFlowStabilizer:
                 world_reference_frame,
                 smoothed_transform,
                 (world_reference_frame.shape[1], world_reference_frame.shape[0]),
-                flags=cv2.INTER_LINEAR,
+                flags=cv2.INTER_CUBIC,
                 borderMode=cv2.BORDER_REFLECT,
             )
 
@@ -118,6 +123,20 @@ class OpticalFlowStabilizer:
         """Discard optical-flow history for a removed camera."""
 
         self._states.pop(camera_id, None)
+
+
+def _is_near_identity(transform: np.ndarray, translation_threshold: float = 0.5, rotation_threshold: float = 0.003) -> bool:
+    """Return True when the transform is too small to warrant a warpAffine call.
+
+    Skipping near-identity warps eliminates per-frame interpolation blur on
+    static or slow-moving scenes — the dominant source of softness in CCTV feeds.
+    """
+    tx, ty = float(transform[0, 2]), float(transform[1, 2])
+    cos_theta = float(transform[0, 0])
+    sin_theta = float(transform[1, 0])
+    translation_magnitude = (tx ** 2 + ty ** 2) ** 0.5
+    rotation_magnitude = abs(sin_theta) + abs(1.0 - cos_theta)
+    return translation_magnitude < translation_threshold and rotation_magnitude < rotation_threshold
 
 
 def _smooth_transform(

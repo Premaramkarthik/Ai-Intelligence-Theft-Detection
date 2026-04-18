@@ -2,19 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from multiprocessing import current_process
 from pathlib import Path
 
 
 @dataclass(slots=True, frozen=True)
 class _SubsystemLogSpec:
-    """Routing rule for one dedicated subsystem log file."""
-
     name: str
     logger_prefixes: tuple[str, ...] = ()
     structured_event_prefixes: tuple[str, ...] = ()
@@ -97,26 +92,11 @@ def _create_formatter(json_logs: bool) -> logging.Formatter:
     )
 
 
-def _sanitize_path_token(value: str) -> str:
-    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("._-")
-    return sanitized or "process"
-
-
 def _matches_logger_prefix(name: str, prefix: str) -> bool:
     return name == prefix or name.startswith(f"{prefix}.")
 
 
-def _resolve_log_file_path(log_directory: Path, log_file_prefix: str) -> Path:
-    process_name = _sanitize_path_token(current_process().name or "process")
-    process_directory = log_directory / process_name
-    process_directory.mkdir(parents=True, exist_ok=True)
-    file_name = f"{_sanitize_path_token(log_file_prefix)}-{os.getpid()}.log"
-    return process_directory / file_name
-
-
 class _SubsystemLogFilter(logging.Filter):
-    """Allow a record into a subsystem file when its namespace or event matches."""
-
     def __init__(
         self,
         *,
@@ -128,9 +108,8 @@ class _SubsystemLogFilter(logging.Filter):
         self._structured_event_prefixes = structured_event_prefixes
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if any(_matches_logger_prefix(record.name, prefix) for prefix in self._logger_prefixes):
+        if any(_matches_logger_prefix(record.name, p) for p in self._logger_prefixes):
             return True
-
         structured = getattr(record, "structured", None)
         if not isinstance(structured, dict):
             return False
@@ -138,9 +117,30 @@ class _SubsystemLogFilter(logging.Filter):
         if not isinstance(event, str):
             return False
         return any(
-            event == prefix or event.startswith(prefix)
-            for prefix in self._structured_event_prefixes
+            event == p or event.startswith(p)
+            for p in self._structured_event_prefixes
         )
+
+
+def _rotating_handler(
+    path: Path,
+    formatter: logging.Formatter,
+    max_bytes: int,
+    backup_count: int,
+    log_filter: logging.Filter | None = None,
+) -> RotatingFileHandler:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        path,
+        maxBytes=max(max_bytes, 1),
+        backupCount=max(backup_count, 0),
+        encoding="utf-8",
+        delay=True,
+    )
+    handler.setFormatter(formatter)
+    if log_filter is not None:
+        handler.addFilter(log_filter)
+    return handler
 
 
 def configure_logging(
@@ -155,65 +155,45 @@ def configure_logging(
     enable_subsystem_file_logging: bool = False,
     subsystem_log_directory: str | Path | None = None,
 ) -> None:
-    root_logger = logging.getLogger()
-    for handler in list(root_logger.handlers):
-        root_logger.removeHandler(handler)
-        handler.close()
-    root_logger.setLevel(level.upper())
-    root_logger.propagate = False
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+        h.close()
+    root.setLevel(level.upper())
+    root.propagate = False
 
     formatter = _create_formatter(json_logs)
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
-    root_logger.addHandler(stream_handler)
+    root.addHandler(stream_handler)
 
-    resolved_log_directory = Path(log_directory) if log_directory is not None else (
-        Path.cwd() / "runtime" / "logs"
-    )
+    log_dir = Path(log_directory) if log_directory is not None else Path.cwd() / "runtime" / "logs"
+
     if enable_file_logging:
-        log_file_path = _resolve_log_file_path(
-            resolved_log_directory,
-            log_file_prefix=log_file_prefix,
+        root.addHandler(
+            _rotating_handler(
+                log_dir / "all.log",
+                formatter,
+                log_file_max_bytes,
+                log_file_backup_count,
+            )
         )
-        file_handler = RotatingFileHandler(
-            log_file_path,
-            maxBytes=max(log_file_max_bytes, 1),
-            backupCount=max(log_file_backup_count, 0),
-            encoding="utf-8",
-            delay=True,
-        )
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
 
     if enable_subsystem_file_logging:
-        resolved_subsystem_log_directory = (
-            Path(subsystem_log_directory)
-            if subsystem_log_directory is not None
-            else resolved_log_directory / "subsystems"
-        )
         for subsystem in SUBSYSTEM_LOG_SPECS:
-            subsystem_directory = (
-                resolved_subsystem_log_directory / _sanitize_path_token(subsystem.name)
-            )
-            file_handler = RotatingFileHandler(
-                _resolve_log_file_path(
-                    subsystem_directory,
-                    log_file_prefix=f"{log_file_prefix}-{subsystem.name}",
-                ),
-                maxBytes=max(log_file_max_bytes, 1),
-                backupCount=max(log_file_backup_count, 0),
-                encoding="utf-8",
-                delay=True,
-            )
-            file_handler.addFilter(
-                _SubsystemLogFilter(
-                    logger_prefixes=subsystem.logger_prefixes,
-                    structured_event_prefixes=subsystem.structured_event_prefixes,
+            root.addHandler(
+                _rotating_handler(
+                    log_dir / f"{subsystem.name}.log",
+                    formatter,
+                    log_file_max_bytes,
+                    log_file_backup_count,
+                    log_filter=_SubsystemLogFilter(
+                        logger_prefixes=subsystem.logger_prefixes,
+                        structured_event_prefixes=subsystem.structured_event_prefixes,
+                    ),
                 )
             )
-            file_handler.setFormatter(formatter)
-            root_logger.addHandler(file_handler)
 
 
 def get_logger(name: str) -> logging.Logger:

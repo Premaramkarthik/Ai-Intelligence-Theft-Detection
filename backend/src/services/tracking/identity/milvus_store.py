@@ -356,9 +356,46 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                 search_results,
                 now_ts,
             )
+
+            # Preserve first_seen_ts for identities that already exist in Milvus.
+            # Collect the unique matched identity IDs, fetch their stored timestamps
+            # in one get() call, then patch the payloads before upserting.
+            matched_ids = [
+                p["identity_id"]
+                for p in upsert_payloads
+                if not p.get("_is_new", False)
+            ]
+            if matched_ids:
+                try:
+                    existing = client.get(
+                        collection_name=self._collection_name,
+                        ids=matched_ids,
+                        output_fields=["identity_id", "first_seen_ts"],
+                        timeout=self._timeout_seconds,
+                    )
+                    stored_first_seen: dict[str, int] = {
+                        row["identity_id"]: int(row["first_seen_ts"])
+                        for row in existing
+                        if "identity_id" in row and "first_seen_ts" in row
+                    }
+                    for p in upsert_payloads:
+                        if p["identity_id"] in stored_first_seen:
+                            p["first_seen_ts"] = stored_first_seen[p["identity_id"]]
+                except Exception:  # pylint: disable=broad-except
+                    pass  # fall through — first_seen_ts will be now_ts for matched records
+
+            # Remove internal marker before sending to Milvus.
+            for p in upsert_payloads:
+                p.pop("_is_new", None)
+
+            # Deduplicate by identity_id — Milvus rejects batches with duplicate PKs.
+            # When multiple tracks resolve to the same person, keep the last payload
+            # (most recent embedding) and discard earlier duplicates.
+            deduped_payloads = list({p["identity_id"]: p for p in upsert_payloads}.values())
+
             client.upsert(
                 collection_name=self._collection_name,
-                data=upsert_payloads,
+                data=deduped_payloads,
                 timeout=self._timeout_seconds,
             )
             self._logger.debug(
@@ -367,7 +404,8 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                     "structured": {
                         "event": "milvus.batch_stored",
                         "collection_name": self._collection_name,
-                        "stored_records": len(upsert_payloads),
+                        "stored_records": len(deduped_payloads),
+                        "deduplicated": len(upsert_payloads) - len(deduped_payloads),
                     }
                 },
             )
@@ -412,6 +450,7 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                     "local_track_id": req.local_track_id,
                     "first_seen_ts": now_ts,
                     "last_seen_ts": now_ts,
+                    "_is_new": not matched,  # internal marker, stripped before upsert
                 }
             )
 

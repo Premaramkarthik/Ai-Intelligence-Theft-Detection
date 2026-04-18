@@ -96,9 +96,10 @@ class Settings(BaseSettings):
     log_file_max_bytes: int = 10 * 1024 * 1024
     log_file_backup_count: int = 5
     subsystem_logs_enabled: bool = True
-    subsystem_log_directory: Path = BACKEND_ROOT / "runtime" / "logs" / "subsystems"
 
     opencv_pipeline_enabled: bool = True
+    opencv_pipeline_rtsp_url: str | None = None
+    opencv_pipeline_rtsp_camera_name: str = "OpenCV Pipeline Camera"
     opencv_pipeline_target_width: int = 1280
     opencv_pipeline_target_height: int = 720
     opencv_pipeline_target_fps: float = 10.0
@@ -110,7 +111,7 @@ class Settings(BaseSettings):
     opencv_pipeline_batch_size: int = 8
     opencv_pipeline_capture_retry_initial_delay_seconds: float = 0.5
     opencv_pipeline_capture_retry_max_delay_seconds: float = 5.0
-    opencv_pipeline_preview_jpeg_quality: int = 70
+    opencv_pipeline_preview_jpeg_quality: int = 100
     opencv_pipeline_publish_frame_previews: bool = False
     opencv_pipeline_display_enabled: bool = False
     opencv_pipeline_display_window_prefix: str = "OpenCV Pipeline"
@@ -148,7 +149,7 @@ class Settings(BaseSettings):
             return False
         raise ValueError("debug must be a boolean-like value.")
 
-    @field_validator("log_directory", "subsystem_log_directory", mode="before")
+    @field_validator("log_directory", mode="before")
     @classmethod
     def resolve_log_directory(cls, value: str | Path) -> Path:
         """Resolve the backend log directory relative to the backend root."""

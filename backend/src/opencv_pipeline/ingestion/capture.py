@@ -133,10 +133,13 @@ class VideoCaptureWorker:
             and target_height > 0
             and (frame.shape[1] != target_width or frame.shape[0] != target_height)
         ):
+            is_downscale = (
+                frame.shape[1] >= target_width and frame.shape[0] >= target_height
+            )
             frame = cv2.resize(
                 frame,
                 (target_width, target_height),
-                interpolation=cv2.INTER_LINEAR,
+                interpolation=cv2.INTER_AREA if is_downscale else cv2.INTER_LINEAR,
             )
         if not frame.flags.c_contiguous:
             frame = frame.copy()

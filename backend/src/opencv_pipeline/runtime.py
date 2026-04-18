@@ -19,16 +19,21 @@ from src.opencv_pipeline.detection.yolo import YOLOBatchDetector
 from src.opencv_pipeline.identity.service import IdentityAssignmentService
 from src.opencv_pipeline.ingestion.capture import VideoCaptureWorker
 from src.opencv_pipeline.motion.analyzer import MotionAnalyzer
-from src.opencv_pipeline.output.publisher import FrameAnnotator, OutputDispatcher
+from src.opencv_pipeline.output.publisher import FrameAnnotator, InferenceOverlayCache, OutputDispatcher
 from src.opencv_pipeline.preprocessing.processor import FramePreprocessor
 from src.opencv_pipeline.reid.stage import BodyReIdentifier
 from src.opencv_pipeline.stabilization.stabilizer import OpticalFlowStabilizer
 from src.opencv_pipeline.tracking.stage import ByteTrackStage
 from src.services.camera.camera_service import CameraService
 from src.services.inference.manager import InferenceManager
+from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.tracking.identity.milvus_store import MilvusIdentityStore
 from src.services.tracking.reid.embedder import TrackingReIdEmbedder
-from src.services.tracking.updates import FanoutTrackingUpdatePublisher, InferenceIngressPublisher
+from src.services.tracking.updates import (
+    FanoutTrackingUpdatePublisher,
+    InferenceIngressPublisher,
+    WebSocketTrackingUpdatePublisher,
+)
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
 from src.utils.ffmpeg import build_rtsp_url_from_camera
 
@@ -49,6 +54,7 @@ class OpenCvPipelineRuntime:
         tracking_kafka_producer: TrackingKafkaProducerService,
         inference_manager: InferenceManager,
         metrics_recorder: MetricsRecorder | None = None,
+        websocket_manager: WebSocketManager | None = None,
     ) -> None:
         self._settings = settings
         self._camera_service = camera_service
@@ -113,10 +119,14 @@ class OpenCvPipelineRuntime:
             identity_ttl_seconds=settings.opencv_pipeline_identity_ttl_seconds,
         )
         publishers = [tracking_kafka_producer.publisher()]
+        if websocket_manager is not None:
+            publishers.append(WebSocketTrackingUpdatePublisher(websocket_manager))
         if settings.opencv_pipeline_enable_behavior_inference:
             publishers.append(InferenceIngressPublisher(inference_manager))
         self._tracking_update_publisher = FanoutTrackingUpdatePublisher(publishers)
-        self._annotator = FrameAnnotator()
+        self._inference_cache = InferenceOverlayCache()
+        inference_manager.set_result_callback(self._inference_cache.record)
+        self._annotator = FrameAnnotator(inference_cache=self._inference_cache)
         self._dispatcher = OutputDispatcher(
             self._tracking_update_publisher,
             frame_publisher=tracking_kafka_producer.json_publisher(
@@ -125,6 +135,7 @@ class OpenCvPipelineRuntime:
             identity_event_publisher=tracking_kafka_producer.json_publisher(
                 settings.kafka_topic_identity_events
             ),
+            ws_frame_publisher=websocket_manager,
             annotated_stream_suffix=settings.tracking_stream_suffix,
             include_previews=settings.opencv_pipeline_publish_frame_previews,
             jpeg_quality=settings.opencv_pipeline_preview_jpeg_quality,
@@ -267,6 +278,7 @@ class OpenCvPipelineRuntime:
         discarded_frames = self._frame_buffer.discard_camera(camera_id)
         self._tracker.remove_camera(camera_id)
         self._stabilizer.remove_camera(camera_id)
+        self._inference_cache.remove_camera(camera_id)
         self._motion_analyzer.remove_camera(camera_id)
         self._calibration_service.remove_camera(camera_id)
         self._synchronizer.remove_camera(camera_id)

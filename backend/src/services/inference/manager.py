@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from src.core.logger.logger import get_logger
@@ -51,10 +52,21 @@ class InferenceManager:
         self._logger = get_logger(__name__)
         self._orchestrators: dict[str, InferenceOrchestrator] = {}
         self._schedulers: dict[str, InferenceIngressScheduler] = {}
+        self._result_callback: Callable[[str, str, str, float, str], None] | None = None
 
     # ------------------------------------------------------------------
     # Ingress - called by InferenceIngressPublisher from the event loop
     # ------------------------------------------------------------------
+
+    def set_result_callback(
+        self, callback: Callable[[str, str, str, float, str], None]
+    ) -> None:
+        """Register a callback invoked for each inference result.
+
+        Signature: callback(camera_id, local_track_id, label, score, alert_level)
+        Applied to all subsequently created orchestrators; existing ones are not updated.
+        """
+        self._result_callback = callback
 
     def ingest_sample(self, sample: InferenceIngressSample) -> None:
         """Route one tracking crop to the camera's scheduler, if active."""
@@ -179,6 +191,7 @@ class InferenceManager:
             websocket_manager=self._websocket_manager,
             kafka_publisher=self._kafka_publisher,
             metrics_recorder=self._metrics,
+            result_callback=self._result_callback,
         )
         self._schedulers[camera_id] = scheduler
         self._orchestrators[camera_id] = orchestrator

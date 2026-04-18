@@ -1,5 +1,6 @@
-import { RouteSkeleton } from "@/components/RouteSkeleton";
+import { CameraDetailSkeleton } from "@/components/skeletons/camera-detail-skeleton";
 
 export default function CameraLoading() {
-  return <RouteSkeleton variant="camera" />;
+  return <CameraDetailSkeleton />;
 }
+

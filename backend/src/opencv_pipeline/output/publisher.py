@@ -1,9 +1,10 @@
-"""Annotated frame generation and downstream event publication."""
+"""Frame generation and downstream event publication."""
 
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -12,9 +13,41 @@ from pydantic import BaseModel, Field
 
 from src.core.logger.logger import get_logger
 from src.opencv_pipeline.contracts import IdentityLifecycleEvent, MotionSummary, PipelineOutput
-from src.schemas.common import utc_now
+from src.schemas.common import WebSocketEnvelope, utc_now
+from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.tracking.contracts import TrackingTrackSnapshot
 from src.services.tracking.updates import TrackingUpdatePublisher
+
+
+@dataclass(slots=True)
+class _InferenceRecord:
+    label: str
+    score: float
+    alert_level: str
+
+
+class InferenceOverlayCache:
+    """Store the latest inference result per (camera_id, local_track_id)."""
+
+    def __init__(self) -> None:
+        self._data: dict[tuple[str, str], _InferenceRecord] = {}
+
+    def record(self, camera_id: str, local_track_id: str, label: str, score: float, alert_level: str) -> None:
+        self._data[(camera_id, local_track_id)] = _InferenceRecord(label, score, alert_level)
+
+    def get(self, camera_id: str, local_track_id: str) -> _InferenceRecord | None:
+        return self._data.get((camera_id, local_track_id))
+
+    def remove_camera(self, camera_id: str) -> None:
+        for key in [k for k in self._data if k[0] == camera_id]:
+            del self._data[key]
+
+
+_ALERT_COLORS: dict[str, tuple[int, int, int]] = {
+    "normal": (50, 220, 50),
+    "warning": (0, 200, 255),
+    "alert": (0, 60, 230),
+}
 
 
 class CameraFrameKafkaEventPayload(BaseModel):
@@ -56,42 +89,28 @@ class IdentityKafkaEventPayload(BaseModel):
 
 
 class FrameAnnotator:
-    """Draw track, identity, and motion metadata onto an output frame."""
+    """Draw track, identity, and inference metadata onto an output frame."""
 
-    def annotate(
-        self,
-        output: PipelineOutput,
-    ) -> Any:
+    def __init__(self, inference_cache: InferenceOverlayCache | None = None) -> None:
+        self._inference_cache = inference_cache
+
+    def annotate(self, output: PipelineOutput) -> Any:
+        camera_id = output.processed_frame.packet.camera_id
         frame = output.processed_frame.working_bgr.copy()
+
         for track in output.tracks:
-            top_left = (track.left, track.top)
-            bottom_right = (track.left + track.width, track.top + track.height)
-            cv2.rectangle(frame, top_left, bottom_right, (30, 200, 70), 2)
-            label = track.persistent_id or track.track_id
-            cv2.putText(
-                frame,
-                f"{label} {track.confidence:.2f}",
-                (track.left, max(24, track.top - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 255, 255),
-                2,
-            )
+            cv2.rectangle(frame, (track.left, track.top), (track.left + track.width, track.top + track.height), (30, 200, 70), 2)
+            id_label = track.persistent_id or track.track_id
+            cv2.putText(frame, f"{id_label} {track.confidence:.2f}", (track.left, max(24, track.top - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+
+            if self._inference_cache is not None:
+                result = self._inference_cache.get(camera_id, track.track_id)
+                if result is not None:
+                    color = _ALERT_COLORS.get(result.alert_level, (255, 255, 255))
+                    cv2.putText(frame, f"{result.label}  {result.score:.0%}  [{result.alert_level}]", (track.left, track.top + track.height + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 2)
 
         motion = output.motion
-        cv2.putText(
-            frame,
-            (
-                f"motion={motion.mean_magnitude:.2f} "
-                f"fg={motion.foreground_ratio:.2%} "
-                f"tracks={len(output.tracks)}"
-            ),
-            (12, 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 255, 255),
-            2,
-        )
+        cv2.putText(frame, f"motion={motion.mean_magnitude:.2f} fg={motion.foreground_ratio:.2%} tracks={len(output.tracks)}", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
         return frame
 
 
@@ -104,15 +123,17 @@ class OutputDispatcher:
         *,
         frame_publisher: Any | None,
         identity_event_publisher: Any | None,
+        ws_frame_publisher: WebSocketManager | None = None,
         annotated_stream_suffix: str = "tracked",
         include_previews: bool = False,
-        jpeg_quality: int = 70,
+        jpeg_quality: int = 100,
         display_enabled: bool = False,
         display_window_prefix: str = "OpenCV Pipeline",
     ) -> None:
         self._tracking_update_publisher = tracking_update_publisher
         self._frame_publisher = frame_publisher
         self._identity_event_publisher = identity_event_publisher
+        self._ws_frame_publisher = ws_frame_publisher
         self._annotated_stream_suffix = annotated_stream_suffix
         self._include_previews = include_previews
         self._jpeg_quality = jpeg_quality
@@ -157,25 +178,38 @@ class OutputDispatcher:
             self.publish_identity_events(output.identity_events),
         ]
 
+        frame_payload = CameraFrameKafkaEventPayload(
+            camera_id=packet.camera_id,
+            stream_name=packet.stream_name,
+            sequence_number=packet.sequence_number,
+            captured_at=packet.captured_at,
+            width=output.annotated_bgr.shape[1],
+            height=output.annotated_bgr.shape[0],
+            pipeline_latency_ms=output.pipeline_latency_ms,
+            motion=_motion_payload(output.motion),
+            detections=len(output.detections),
+            active_tracks=len(output.tracks),
+            preview_jpeg_base64=_encode_frame_preview(output.annotated_bgr, self._jpeg_quality),
+        )
+
         if self._frame_publisher is not None:
-            payload = CameraFrameKafkaEventPayload(
-                camera_id=packet.camera_id,
-                stream_name=packet.stream_name,
-                sequence_number=packet.sequence_number,
-                captured_at=packet.captured_at,
-                width=output.annotated_bgr.shape[1],
-                height=output.annotated_bgr.shape[0],
-                pipeline_latency_ms=output.pipeline_latency_ms,
-                motion=_motion_payload(output.motion),
-                detections=len(output.detections),
-                active_tracks=len(output.tracks),
-                preview_jpeg_base64=(
-                    _encode_frame_preview(output.annotated_bgr, self._jpeg_quality)
-                    if self._include_previews
-                    else None
-                ),
+            kafka_payload = frame_payload.model_dump(mode="json")
+            if not self._include_previews:
+                kafka_payload["preview_jpeg_base64"] = None
+            tasks.append(self._frame_publisher.publish(kafka_payload))
+
+        if self._ws_frame_publisher is not None:
+            tasks.append(
+                self._ws_frame_publisher.broadcast(
+                    WebSocketEnvelope(
+                        type="camera.frame",
+                        topic="camera.frames",
+                        message="Camera frame published.",
+                        camera_id=packet.camera_id,
+                        data=frame_payload.model_dump(mode="json"),
+                    )
+                )
             )
-            tasks.append(self._frame_publisher.publish(payload.model_dump(mode="json")))
 
         self._render_preview(packet.camera_id, packet.stream_name, output.annotated_bgr)
         results = await asyncio.gather(*tasks, return_exceptions=True)
