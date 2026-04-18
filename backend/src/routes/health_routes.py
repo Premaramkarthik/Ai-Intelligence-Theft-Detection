@@ -85,3 +85,26 @@ async def health_db(request: Request) -> dict[str, Any]:
     )
 
 
+@router.get(
+    "/logs",
+    response_model=ApiResponse[dict[str, list[str]]],
+    summary="Get recent system logs",
+)
+async def get_logs(lines: int = 50) -> dict[str, Any]:
+    from pathlib import Path
+    log_dir = Path.cwd() / "logs"
+    logs = {}
+    if log_dir.exists():
+        for process_dir in log_dir.iterdir():
+            if process_dir.is_dir():
+                log_files = sorted(process_dir.glob("*.log"), key=lambda f: f.stat().st_mtime, reverse=True)
+                if log_files:
+                    latest_log = log_files[0]
+                    try:
+                        with open(latest_log, "r", encoding="utf-8") as f:
+                            content = f.readlines()
+                            logs[process_dir.name] = [line.strip() for line in content[-lines:]]
+                    except Exception as e:
+                        logs[process_dir.name] = [f"Error reading log: {e}"]
+    return build_success_payload("Logs fetched successfully.", logs)
+

@@ -1,24 +1,66 @@
 @import "tailwindcss";
 
 :root {
-  --background: #081218;
-  --foreground: #edf7f7;
-  --surface: #11202a;
-  --surface-strong: #183241;
-  --muted: #8ba8b5;
-  --accent-live: #2dd4bf;
-  --accent-reconnecting: #fbbf24;
-  --accent-error: #f87171;
-  --accent-info: #38bdf8;
+  /* Color Palette (Limited, neutral-based) */
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #141414;
+  --bg-tertiary: #1f1f1f;
+  
+  --text-primary: #f5f5f5;
+  --text-secondary: #a3a3a3;
+  --text-tertiary: #525252;
+  
+  --border-subtle: #262626;
+  --border-strong: #404040;
+  
+  /* Accents */
+  --accent-primary: #e5e5e5;
+  --accent-active: #10b981; /* minimalist green for streams */
+  --accent-warning: #f59e0b;
+  --accent-error: #ef4444;
+
+  /* Typography Scale */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  
+  /* Spacing Scale */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  
+  /* Borders & Shadows */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  
+  --shadow-subtle: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -1px rgba(0, 0, 0, 0.24);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-surface: var(--surface);
-  --color-surface-strong: var(--surface-strong);
-  --font-sans: "Avenir Next", "Segoe UI Variable", "Helvetica Neue", sans-serif;
+  --color-background: var(--bg-primary);
+  --color-foreground: var(--text-primary);
+  
+  --color-surface: var(--bg-secondary);
+  --color-surface-hover: var(--bg-tertiary);
+  
+  --color-muted: var(--text-secondary);
+  --color-muted-foreground: var(--text-secondary);
+  
+  --color-border: var(--border-subtle);
+  
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
+  
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
 }
 
 html {
@@ -26,74 +68,32 @@ html {
 }
 
 body {
-  background:
-    radial-gradient(circle at top, rgba(56, 189, 248, 0.10), transparent 28%),
-    radial-gradient(circle at 18% 14%, rgba(45, 212, 191, 0.10), transparent 24%),
-    linear-gradient(180deg, #09131a 0%, #05090d 100%);
-  color: var(--foreground);
-  font-family: "Avenir Next", "Segoe UI Variable", "Helvetica Neue", sans-serif;
-  background-attachment: fixed;
-}
-
-@keyframes screen-enter {
-  from {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes card-enter {
-  from {
-    opacity: 0;
-    transform: translateY(18px) scale(0.985);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes skeleton-shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-
-  100% {
-    background-position: -200% 0;
-  }
-}
-
-.screen-enter {
-  animation: screen-enter 320ms ease-out both;
-}
-
-.card-enter {
-  animation: card-enter 360ms ease-out both;
-}
-
-.skeleton-block {
-  background:
-    linear-gradient(
-      90deg,
-      rgba(148, 163, 184, 0.10) 0%,
-      rgba(148, 163, 184, 0.20) 50%,
-      rgba(148, 163, 184, 0.10) 100%
-    );
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.3s linear infinite;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 * {
-  border-color: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-subtle);
 }
 
-::selection {
-  background: rgba(45, 212, 191, 0.28);
-  color: white;
+/* Animations */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-in {
+  animation: fade-in 200ms ease-out both;
+}
+
+.animate-slide-up {
+  animation: slide-up 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }

@@ -14,15 +14,15 @@ This document describes the system as it exists in the current codebase.
 At a high level, the backend:
 
 - stores camera inventory and state in PostgreSQL
-- validates RTSP cameras with `ffprobe` or a PyAV fallback
+- validates RTSP cameras with `ffprobe` or a PyAV fallback when PyAV is separately installed
 - runs an OpenCV-based multi-camera processing pipeline for active cameras
 - detects people with YOLO
 - tracks them locally with ByteTrack
 - extracts ReID embeddings and resolves global identities through Milvus
-- optionally forwards identity-qualified crops into a Triton-backed inference pipeline
+- optionally forwards identity-qualified crops into a Triton-backed behavior inference pipeline
 - publishes tracking, frame, identity, and inference events to Kafka
 - consumes Kafka events in the API process and rebroadcasts them to WebSocket clients
-- exposes health and Prometheus metrics for both the API and worker runtimes
+- exposes health endpoints for the API runtime and Prometheus metrics for both the API and worker runtimes
 
 ## 2. Runtime model
 
@@ -121,7 +121,8 @@ Important characteristics of the current implementation:
 - Kafka is the event backbone between the worker and the API process.
 - Milvus is used by the tracking identity layer, not by the FastAPI layer directly.
 - Triton is used by the inference manager after tracking/identity assignment, not by the YOLO detector inside the OpenCV pipeline.
-- The API process and the worker both create an `InferenceManager`, but only the worker naturally feeds it with tracking crops during normal pipeline execution. The API exposes the control endpoint used to enable or reconfigure inference for a camera.
+- The API process and the worker both create an `InferenceManager`, but only the worker naturally feeds it with tracking crops during normal pipeline execution.
+- The API exposes `PATCH /streams/{camera_id}/inference`, but that route currently affects the API process's local `InferenceManager` instance only; the worker still auto-configures inference during camera refresh based on worker settings.
 
 ## 4. Component-level architecture
 
@@ -266,7 +267,7 @@ RTSP validation implementation.
 Validation path:
 1. build RTSP URL from camera fields
 2. try `ffprobe`
-3. if `ffprobe` is unavailable or not executable, fall back to PyAV
+3. if `ffprobe` is unavailable or not executable, fall back to PyAV when `av` is installed in the runtime environment
 4. map known errors into stable machine-readable codes such as:
    - `RTSP_REACHABLE`
    - `RTSP_AUTH_FAILED`
@@ -689,7 +690,7 @@ Fields include:
 #### Stream routes (`/streams`)
 
 - `PATCH /streams/{camera_id}/inference`
-  - start, stop, or reconfigure inference for a camera
+  - start, stop, or reconfigure inference for the API process's local inference manager state for a camera
 - `GET /streams/health`
   - health of the Kafka stream event consumer bridge
 - `WS /streams/ws/updates`
@@ -721,7 +722,7 @@ The backend integrates with:
 - Kafka through `aiokafka`
 - Milvus through `pymilvus`
 - Triton through `tritonclient[grpc]`
-- RTSP validation through `ffprobe`, with PyAV fallback if available at runtime
+- RTSP validation through `ffprobe`, with a PyAV fallback only when `av`/PyAV is installed in the runtime environment
 - Prometheus through `prometheus_client`
 
 ## 11. Configuration reference
@@ -844,7 +845,7 @@ At minimum, a working environment needs:
 
 ### 12.1 Python dependencies
 
-Declared in `pyproject.toml` and mirrored in `requirements.txt`.
+Declared primarily in `pyproject.toml`, with a mostly duplicated `requirements.txt` for pip-based installs.
 
 Core runtime libraries:
 - `fastapi`
@@ -904,6 +905,7 @@ You need:
 
 Optional but recommended:
 - `ffprobe` in `PATH` for camera validation
+- PyAV (`av`) if you want the documented validator fallback when `ffprobe` is unavailable
 - GPU support for Triton and heavy vision workloads
 
 ### 13.2 Boot shared infrastructure
@@ -951,8 +953,8 @@ MINIO_ROOT_PASSWORD=minioadmin
 ```
 
 Notes:
-- if you want embedded/local Milvus-lite style behavior, ensure `TRACKING_IDENTITY_STORE_URI` matches the mode expected by `pymilvus` in your environment
-- if `ffprobe` is not in `PATH`, camera validation will attempt the PyAV fallback instead
+- the default configuration in `src/core/config.py` points `TRACKING_IDENTITY_STORE_URI` at a local file under `runtime/milvus_tracking.db`; overriding it to `localhost:19530` switches you to the external Milvus service exposed by Docker Compose
+- if `ffprobe` is not in `PATH`, camera validation will attempt the PyAV fallback if `av` is installed
 
 ### 13.5 Apply database migrations manually if desired
 
@@ -990,12 +992,15 @@ The worker will:
 - spawn capture workers for cameras whose `status` is `active`
 - refresh the camera inventory periodically
 
+Note:
+- if API and worker run on the same host with metrics enabled, give them different `METRICS_PORT` values; both runtimes default to `9109` and will otherwise compete for the same listener
+
 ### 13.8 Access points
 
 Default endpoints from the current configuration:
 - API: `http://localhost:8000`
 - API docs: `http://localhost:8000/docs`
-- worker/API metrics: `http://localhost:9109/metrics` on whichever process is running with metrics enabled
+- metrics: `http://localhost:<METRICS_PORT>/metrics` on each process that has metrics enabled
 - Triton HTTP: `http://localhost:8000`
 - Triton gRPC: `localhost:8001`
 - Triton metrics: `http://localhost:8002/metrics`
