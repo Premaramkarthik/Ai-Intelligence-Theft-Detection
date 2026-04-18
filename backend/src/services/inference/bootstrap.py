@@ -43,4 +43,5 @@ def create_inference_runtime_services(
         websocket_manager=websocket_manager,
         kafka_publisher=kafka_publisher,
         metrics_recorder=metrics_recorder,
+        triton_url=settings.triton_url,
     )

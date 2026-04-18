@@ -454,12 +454,12 @@ class PrometheusMetrics(MetricsRecorder):
         )
         self._stream_kafka_messages_consumed_total = Counter(
             "stream_kafka_messages_consumed_total",
-            "Kafka stream events successfully consumed by the backend.",
+            "Realtime stream events successfully consumed from Kafka.",
             registry=self._registry,
         )
         self._stream_kafka_consumer_failures_total = Counter(
             "stream_kafka_consumer_failures_total",
-            "Kafka stream event consumer failures inside the backend.",
+            "Realtime stream Kafka consumer failures.",
             registry=self._registry,
         )
         self._detector_pool_wait_seconds = Histogram(
@@ -670,4 +670,3 @@ class PrometheusMetrics(MetricsRecorder):
 
     def increment_inference_frame_drop(self, camera_id: str) -> None:
         self._inference_frame_drops_total.labels(camera_id=camera_id).inc()
-

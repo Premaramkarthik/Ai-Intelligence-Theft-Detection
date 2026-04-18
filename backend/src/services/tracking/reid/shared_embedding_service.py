@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from src.services.tracking.reid.embedder import TrackingReIdEmbedder
+from src.utils.async_blocking import run_blocking_in_daemon_thread
 
 if TYPE_CHECKING:
     pass
@@ -74,7 +75,7 @@ class SharedEmbeddingService:
             # Run the forward pass (CPU/GPU blocking call) in a thread so the
             # event loop remains responsive to other coroutines.
             try:
-                all_embeddings: list[np.ndarray] = await asyncio.to_thread(
+                all_embeddings: list[np.ndarray] = await run_blocking_in_daemon_thread(
                     self._embedder.embed, all_crops
                 )
             except Exception as exc:  # pylint: disable=broad-except

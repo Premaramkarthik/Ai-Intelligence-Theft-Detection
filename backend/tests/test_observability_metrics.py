@@ -14,12 +14,20 @@ from src.observability.runtime_metrics import (
     RuntimeMetricsDependencies,
 )
 from src.observability.system_metrics import SystemMetricsCollector
-from src.services.realtime_video.queue import FrameQueue
-from src.services.realtime_video.stream_manager import WorkerSnapshot
-from src.services.tracking.manager import TrackingRuntimeSnapshot
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
+
+
+class SimpleQueue:
+    def __init__(self) -> None:
+        self._items: list[object] = []
+
+    async def publish(self, item: object) -> None:
+        self._items.append(item)
+
+    def qsize(self) -> int:
+        return len(self._items)
 
 
 def _sample_value(families: dict[str, object], family_name: str, sample_name: str) -> float:
@@ -135,7 +143,7 @@ async def test_system_metrics_collector_updates_queue_and_resource_metrics(
 
     registry = CollectorRegistry()
     metrics = PrometheusMetrics(registry=registry)
-    frame_queue = FrameQueue(maxsize=4)
+    frame_queue = SimpleQueue()
     await frame_queue.publish(
         SimpleNamespace(camera_id="cam_1", stream_name="cam_1", sequence_number=1),
     )
@@ -231,9 +239,9 @@ async def test_runtime_metrics_collector_exports_worker_and_dependency_state() -
         def active_worker_count(self) -> int:
             return 1
 
-        def get_snapshot(self, camera_id: str) -> WorkerSnapshot:
+        def get_snapshot(self, camera_id: str) -> SimpleNamespace:
             assert camera_id == "cam_1"
-            return WorkerSnapshot(
+            return SimpleNamespace(
                 desired_state=SimpleNamespace(value="running"),
                 is_registered=True,
                 is_process_alive=True,
@@ -256,9 +264,9 @@ async def test_runtime_metrics_collector_exports_worker_and_dependency_state() -
         def active_worker_count(self) -> int:
             return 1
 
-        def get_runtime_snapshot(self, camera_id: str) -> TrackingRuntimeSnapshot:
+        def get_runtime_snapshot(self, camera_id: str) -> SimpleNamespace:
             assert camera_id == "cam_1"
-            return TrackingRuntimeSnapshot(
+            return SimpleNamespace(
                 is_registered=True,
                 is_process_alive=True,
                 reconnect_attempts=0,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.services.realtime_video.contracts import TrackingTrackSnapshot
+from src.services.tracking.contracts import TrackingTrackSnapshot
 from src.services.tracking.updates import FanoutTrackingUpdatePublisher
 
 

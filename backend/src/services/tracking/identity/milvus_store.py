@@ -16,6 +16,7 @@ import numpy as np
 from pymilvus import DataType, MilvusClient
 
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.utils.async_blocking import run_blocking_in_daemon_thread
 
 
 @dataclass(slots=True, frozen=True)
@@ -59,6 +60,7 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         search_limit: int,
         token: str | None = None,
         metrics_recorder: MetricsRecorder | None = None,
+        max_concurrent_batches: int = 4,
     ) -> None:  # pylint: disable=too-many-arguments
         self._uri = uri
         self._collection_name = collection_name
@@ -70,10 +72,12 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
         self._client: MilvusClient | None = None
         self._lock = Lock()
-        # asyncio.Semaphore is created lazily per event-loop for batch_resolve().
-        self._batch_semaphore: asyncio.Semaphore | None = None
         self._healthy = True
         self._last_error: str | None = None
+        # Lazily initialized on first batch_resolve call, but only once.
+        self._max_concurrent_batches = max(1, max_concurrent_batches)
+        self._batch_semaphore: asyncio.Semaphore | None = None
+        self._semaphore_initialized = False
 
     def ensure_ready(self) -> None:
         """Create the collection and indexes if they do not already exist."""
@@ -212,8 +216,7 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
     async def batch_resolve(
         self,
         requests: list[BatchResolveRequest],
-        *,
-        max_concurrent: int = 4,
+        max_concurrent: int | None = None,
     ) -> list[IdentityMatch]:
         """Resolve multiple identities in one Milvus search round-trip.
 
@@ -221,41 +224,109 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         and a single client.upsert() writes all results back.  An asyncio
         Semaphore (default 4) limits the number of concurrent calls so that
         a burst of cameras cannot monopolise Milvus connections.
+
+        Thread safety: the semaphore limits concurrency; the client lock is
+        acquired only inside the worker thread that performs the Milvus calls,
+        so the event loop never blocks on the synchronous Milvus client.
         """
 
         if not requests:
             return []
 
-        if self._batch_semaphore is None:
-            self._batch_semaphore = asyncio.Semaphore(max_concurrent)
+        # Lazily create the semaphore once, outside any lock.
+        # Double-checked locking pattern: first check without the lock,
+        # second check with the lock to atomically assign.
+        semaphore_capacity = max(1, max_concurrent or self._max_concurrent_batches)
+        if self._semaphore_initialized is False:
+            with self._lock:
+                if self._semaphore_initialized is False:
+                    self._max_concurrent_batches = semaphore_capacity
+                    self._batch_semaphore = asyncio.Semaphore(semaphore_capacity)
+                    self._semaphore_initialized = True
+        semaphore = self._batch_semaphore
+        if semaphore is None:
+            raise RuntimeError("Milvus batch semaphore was not initialized")
 
+        # Prepare vectors outside the lock — this is CPU-only work.
         vectors = [
             _normalize_embedding(r.embedding, self._embedding_dimension).tolist()
             for r in requests
         ]
         now_ts = int(time() * 1000)
 
-        async with self._batch_semaphore:
-            try:
-                search_results = await asyncio.to_thread(
-                    self._batch_search, vectors
+        # Limit concurrent Milvus calls while running the synchronous client in
+        # a worker thread.  Search and upsert stay in one worker invocation so
+        # tests and production workers do not rely on multiple executor hops.
+        try:
+            async with semaphore:
+                results = await run_blocking_in_daemon_thread(
+                    self._locked_batch_resolve,
+                    requests,
+                    vectors,
+                    now_ts,
                 )
-            except Exception as exc:  # pylint: disable=broad-except
-                self._mark_unhealthy(exc)
-                raise
+        except Exception as exc:  # pylint: disable=broad-except
+            self._mark_unhealthy(exc)
+            raise
 
+        self._mark_healthy()
+        return results
+
+    def _locked_batch_resolve(
+        self,
+        requests: list[BatchResolveRequest],
+        vectors: list[list[float]],
+        now_ts: int,
+    ) -> list[IdentityMatch]:
+        """Search and upsert a batch under the client-access lock in one worker call."""
+
+        with self._lock:
+            client = self._get_client()
+            self._ensure_collection_ready(client)
+            search_results = client.search(
+                collection_name=self._collection_name,
+                data=vectors,
+                limit=self._search_limit,
+                output_fields=["identity_id", "camera_id", "stream_name", "last_seen_ts"],
+                search_params={"metric_type": "COSINE"},
+                timeout=self._timeout_seconds,
+            )
+            results, upsert_payloads = self._parse_batch_results(
+                requests,
+                vectors,
+                search_results,
+                now_ts,
+            )
+            client.upsert(
+                collection_name=self._collection_name,
+                data=upsert_payloads,
+                timeout=self._timeout_seconds,
+            )
+            return results
+
+    def _parse_batch_results(
+        self,
+        requests: list[BatchResolveRequest],
+        vectors: list[list[float]],
+        search_results: list[list[dict]],
+        now_ts: int,
+    ) -> tuple[list[IdentityMatch], list[dict]]:
+        """Parse Milvus search hits into IdentityMatch objects and upsert payloads.
+
+        This is pure Python — no I/O — and must never raise.  Search result
+        structure is validated before accessing fields; any parse failure
+        defaults to a new identity rather than crashing.
+        """
         results: list[IdentityMatch] = []
         upsert_payloads: list[dict] = []
+
         for i, req in enumerate(requests):
             hits = search_results[i] if i < len(search_results) else []
             best = hits[0] if hits else None
-            similarity = float(best["distance"]) if best else 0.0
-            if best is not None and similarity >= self._similarity_threshold:
-                identity_id = _extract_identity_id(best)
-                matched = True
-            else:
-                identity_id = f"person_{uuid4().hex[:12]}"
-                matched = False
+
+            # Safely extract similarity — validate structure before accessing.
+            similarity, identity_id, matched = self._extract_best_match(best)
+
             results.append(
                 IdentityMatch(
                     identity_id=identity_id,
@@ -275,48 +346,56 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                 }
             )
 
-        async with self._batch_semaphore:
+        return results, upsert_payloads
+
+    def _extract_best_match(
+        self, best: dict[str, object] | None
+    ) -> tuple[float, str, bool]:
+        """Safely extract identity_id and similarity from a Milvus search hit.
+
+        Returns (similarity, identity_id, matched_existing).  On any parse
+        failure a new identity is created with similarity 0.0.
+        """
+        if best is None:
+            return 0.0, f"person_{uuid4().hex[:12]}", False
+
+        try:
+            # Milvus returns "distance" for COSINE metric.
+            raw_distance = best.get("distance")
+            if raw_distance is None:
+                raise ValueError("Milvus hit missing 'distance' field")
+            similarity = float(raw_distance)
+        except (TypeError, ValueError) as exc:
+            self._metrics_recorder.increment_tracking_identity_resolution(
+                "<parse_error>", False
+            )
+            return 0.0, f"person_{uuid4().hex[:12]}", False
+
+        if similarity >= self._similarity_threshold:
             try:
-                await asyncio.to_thread(self._batch_upsert, upsert_payloads)
-            except Exception as exc:  # pylint: disable=broad-except
-                self._mark_unhealthy(exc)
-                raise
+                identity_id = _extract_identity_id(best)
+                return similarity, identity_id, True
+            except (KeyError, ValueError) as exc:
+                self._metrics_recorder.increment_tracking_identity_resolution(
+                    "<parse_error>", False
+                )
+                return 0.0, f"person_{uuid4().hex[:12]}", False
 
-        self._mark_healthy()
-        return results
+        # No match above threshold — create a new identity.
+        return similarity, f"person_{uuid4().hex[:12]}", False
 
-    def _batch_search(self, vectors: list[list[float]]) -> list[list[dict]]:
-        """Run a multi-vector Milvus search under the threading lock."""
-        with self._lock:
-            client = self._get_client()
-            self._ensure_collection_ready(client)
-            return client.search(
-                collection_name=self._collection_name,
-                data=vectors,
-                limit=self._search_limit,
-                output_fields=["identity_id", "camera_id", "stream_name", "last_seen_ts"],
-                search_params={"metric_type": "COSINE"},
-                timeout=self._timeout_seconds,
-            )
-
-    def _batch_upsert(self, payloads: list[dict]) -> None:
-        """Upsert multiple identity records under the threading lock."""
-        with self._lock:
-            client = self._get_client()
-            client.upsert(
-                collection_name=self._collection_name,
-                data=payloads,
-                timeout=self._timeout_seconds,
-            )
 
     def close(self) -> None:
         """Release the client connection."""
 
         with self._lock:
             if self._client is None:
-                return
-            self._client.close()
-            self._client = None
+                client = None
+            else:
+                client = self._client
+                self._client = None
+        if client is not None:
+            client.close()
 
     def health_snapshot(self) -> IdentityStoreHealthSnapshot:
         """Return the latest observed health state for the identity store."""

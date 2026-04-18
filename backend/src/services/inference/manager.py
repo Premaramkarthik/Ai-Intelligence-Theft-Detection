@@ -93,7 +93,7 @@ class InferenceManager:
         if enabled is True and camera_id not in self._orchestrators:
             await self._start_camera(camera_id, strategy or "cnn_transformer")
         elif enabled is False:
-            await self._stop_camera(camera_id)
+            await self.remove_camera(camera_id)
         elif strategy is not None and camera_id in self._orchestrators:
             await self._orchestrators[camera_id].configure(strategy=strategy)
 
@@ -119,6 +119,11 @@ class InferenceManager:
 
         for camera_id in list(self._orchestrators):
             await self._stop_camera(camera_id)
+
+    async def remove_camera(self, camera_id: str) -> None:
+        """Stop inference and discard scheduler/orchestrator state for one camera."""
+
+        await self._stop_camera(camera_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -186,7 +191,18 @@ class InferenceManager:
         orchestrator = self._orchestrators.pop(camera_id, None)
         self._schedulers.pop(camera_id, None)
         if orchestrator is not None:
-            await orchestrator.close()
+            try:
+                await orchestrator.close()
+            except Exception as exc:  # pylint: disable=broad-except
+                log_inference_event(
+                    self._logger,
+                    logging.WARNING,
+                    "inference.camera_stop_failed",
+                    "Inference camera cleanup failed.",
+                    camera_id=camera_id,
+                    error=str(exc),
+                    error_type=exc.__class__.__name__,
+                )
             log_inference_event(
                 self._logger,
                 logging.INFO,

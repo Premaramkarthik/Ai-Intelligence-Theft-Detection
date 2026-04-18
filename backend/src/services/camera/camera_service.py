@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from math import ceil
+from typing import Protocol
 from uuid import uuid4
 
 from src.core.exceptions.camera.camera_exceptions import (
@@ -16,8 +17,14 @@ from src.schemas.camera_responses import CameraResponse, CameraValidationRespons
 from src.schemas.common import PaginatedItems, PaginationMeta
 from src.services.camera.camera_repository import CameraRepository
 from src.services.camera.camera_validator import CameraValidationResult, CameraValidator
-from src.services.realtime_video.mediamtx_service import MediaMtxService
 from src.utils.ffmpeg import build_rtsp_url_from_camera, mask_rtsp_url
+
+
+class MediaMtxConfigSync(Protocol):
+    """Optional adapter that regenerates MediaMTX config from camera inventory."""
+
+    async def sync_config(self, cameras: list[CameraRecord]) -> None:
+        """Synchronize MediaMTX config for the supplied cameras."""
 
 
 class CameraService:
@@ -25,7 +32,7 @@ class CameraService:
         self,
         repository: CameraRepository,
         validator: CameraValidator,
-        mediamtx_service: MediaMtxService | None = None,
+        mediamtx_service: MediaMtxConfigSync | None = None,
     ) -> None:
         """Create the camera service with optional MediaMTX config synchronization."""
 

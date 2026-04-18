@@ -30,6 +30,7 @@ def _utc_now() -> datetime:
 def _make_sample(
     camera_id: str = "cam_1",
     persistent_id: str = "person_1",
+    local_track_id: str = "track_1",
     persistent_id_state: str = "assigned",
     consecutive_hits: int = 10,
     frames_since_update: int = 0,
@@ -40,7 +41,7 @@ def _make_sample(
     return InferenceIngressSample(
         camera_id=camera_id,
         stream_name="stream_1",
-        local_track_id="track_1",
+        local_track_id=local_track_id,
         persistent_id=persistent_id,
         sampled_at=sampled_at or _utc_now(),
         left=10,
@@ -290,7 +291,7 @@ async def test_event_repository_persists_warning() -> None:
 
 @pytest.mark.asyncio
 async def test_inference_ingress_publisher_skips_tracks_without_persistent_id() -> None:
-    from src.services.realtime_video.contracts import TrackingTrackSnapshot
+    from src.services.tracking.contracts import TrackingTrackSnapshot
     from src.services.tracking.updates import InferenceIngressPublisher
 
     ingress = MagicMock()
@@ -320,7 +321,7 @@ async def test_inference_ingress_publisher_skips_tracks_without_persistent_id() 
 
 @pytest.mark.asyncio
 async def test_inference_ingress_publisher_enqueues_assigned_track() -> None:
-    from src.services.realtime_video.contracts import TrackingTrackSnapshot
+    from src.services.tracking.contracts import TrackingTrackSnapshot
     from src.services.tracking.updates import InferenceIngressPublisher
 
     ingress = MagicMock()
@@ -357,7 +358,7 @@ async def test_inference_ingress_publisher_enqueues_assigned_track() -> None:
 
 @pytest.mark.asyncio
 async def test_inference_ingress_publisher_no_op_without_frame() -> None:
-    from src.services.realtime_video.contracts import TrackingTrackSnapshot
+    from src.services.tracking.contracts import TrackingTrackSnapshot
     from src.services.tracking.updates import InferenceIngressPublisher
 
     ingress = MagicMock()
@@ -384,3 +385,112 @@ async def test_inference_ingress_publisher_no_op_without_frame() -> None:
         frame=None,
     )
     ingress.ingest_sample.assert_not_called()
+
+
+class _FakeTriton:
+    def __init__(self, outputs: dict[str, np.ndarray]) -> None:
+        self.outputs = outputs
+        self.closed = False
+
+    async def infer(
+        self,
+        model_name: str,
+        inputs: dict[str, np.ndarray],
+    ) -> dict[str, np.ndarray]:
+        del model_name, inputs
+        return self.outputs
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _make_orchestrator(outputs: dict[str, np.ndarray]):
+    from src.services.inference.orchestrator import InferenceOrchestrator
+
+    config = _make_config(temporal_buffer_size=3)
+    scheduler = InferenceIngressScheduler(
+        config,
+        TemporalBufferService(
+            window_size=config.temporal_buffer_size,
+            gap_reset_seconds=config.identity_gap_reset_seconds,
+        ),
+    )
+    repo = MagicMock()
+    repo.save = AsyncMock()
+    websocket = MagicMock()
+    websocket.broadcast = AsyncMock()
+    kafka = MagicMock()
+    kafka.publish = AsyncMock()
+    triton = _FakeTriton(outputs)
+    orchestrator = InferenceOrchestrator(
+        config=config,
+        scheduler=scheduler,
+        triton=triton,  # type: ignore[arg-type]
+        batch_builder=BatchBuilder(),
+        decision_engine=DecisionEngine(config),
+        event_repository=repo,
+        websocket_manager=websocket,
+        kafka_publisher=kafka,
+    )
+    return orchestrator, triton, repo, websocket, kafka
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_maps_batch_output_scores_to_each_sample() -> None:
+    orchestrator, _triton, repo, _websocket, kafka = _make_orchestrator(
+        {"output": np.array([[0.1], [0.65], [0.9]], dtype=np.float32)}
+    )
+    batch = [
+        _make_sample(persistent_id="person_1", local_track_id="track_1"),
+        _make_sample(persistent_id="person_2", local_track_id="track_2"),
+        _make_sample(persistent_id="person_3", local_track_id="track_3"),
+    ]
+
+    await orchestrator._process_batch(batch)  # pylint: disable=protected-access
+
+    published = [call.args[0] for call in kafka.publish.await_args_list]
+    assert len(published) == 3
+    assert {payload["persistent_id"] for payload in published} == {
+        "person_1",
+        "person_2",
+        "person_3",
+    }
+    assert {payload["alert_level"] for payload in published} == {
+        "normal",
+        "warning",
+        "alert",
+    }
+    assert repo.save.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_single_sequence_score_is_attributed_to_latest_sample() -> None:
+    orchestrator, _triton, repo, _websocket, kafka = _make_orchestrator(
+        {"output": np.array([[0.65]], dtype=np.float32)}
+    )
+    batch = [
+        _make_sample(persistent_id="person_1", local_track_id="track_1"),
+        _make_sample(persistent_id="person_2", local_track_id="track_2"),
+        _make_sample(persistent_id="person_3", local_track_id="track_3"),
+    ]
+
+    await orchestrator._process_batch(batch)  # pylint: disable=protected-access
+
+    kafka.publish.assert_awaited_once()
+    payload = kafka.publish.await_args.args[0]
+    assert payload["persistent_id"] == "person_3"
+    assert payload["local_track_id"] == "track_3"
+    assert payload["alert_level"] == "warning"
+    repo.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_close_releases_triton_client() -> None:
+    orchestrator, triton, _repo, _websocket, _kafka = _make_orchestrator(
+        {"output": np.array([[0.1]], dtype=np.float32)}
+    )
+
+    orchestrator.start()
+    await orchestrator.close()
+
+    assert triton.closed is True

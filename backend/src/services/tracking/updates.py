@@ -11,7 +11,7 @@ from src.schemas.common import WebSocketEnvelope
 from src.services.inference.contracts import InferenceIngressSample
 from src.services.inference.logging import log_inference_event, summarize_array
 from src.services.presentation.websocket_manager import WebSocketManager
-from src.services.realtime_video.contracts import TrackingTrackSnapshot
+from src.services.tracking.contracts import TrackingTrackSnapshot
 from src.utils.image import crop_ltwh
 
 

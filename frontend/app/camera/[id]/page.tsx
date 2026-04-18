@@ -1,6 +1,6 @@
 import { CameraDetail } from "@/components/CameraDetail";
-import { getCamera, getStreamInfo } from "@/lib/api";
-import type { CameraResponse, StreamInfoResponse } from "@/types/stream";
+import { getCamera } from "@/lib/api";
+import type { CameraResponse } from "@/types/camera";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +12,6 @@ export default async function CameraPage({ params }: CameraPageProps) {
   const { id } = await params;
 
   let initialCamera: CameraResponse | null = null;
-  let initialStreamInfo: StreamInfoResponse | null = null;
 
   try {
     initialCamera = await getCamera(id);
@@ -20,17 +19,10 @@ export default async function CameraPage({ params }: CameraPageProps) {
     initialCamera = null;
   }
 
-  try {
-    initialStreamInfo = await getStreamInfo(id);
-  } catch {
-    initialStreamInfo = null;
-  }
-
   return (
     <CameraDetail
       cameraId={id}
       initialCamera={initialCamera}
-      initialStreamInfo={initialStreamInfo}
     />
   );
 }

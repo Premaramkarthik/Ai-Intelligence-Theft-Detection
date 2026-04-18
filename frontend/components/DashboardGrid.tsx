@@ -4,15 +4,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
-import { StreamCard } from "@/components/StreamCard";
 import { deleteCamera } from "@/lib/api";
-import { useWebSocket } from "@/hooks/useWebSocket";
 import {
   buildGrafanaDashboardUrl,
   buildPrometheusTargetsUrl,
 } from "@/lib/observability";
-import { useStreamStore } from "@/store/streamStore";
-import type { CameraResponse } from "@/types/stream";
+import type { CameraResponse } from "@/types/camera";
 
 interface DashboardGridProps {
   initialCameras: CameraResponse[];
@@ -23,29 +20,9 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
 
-  const hydrateCameras = useStreamStore((state) => state.hydrateCameras);
-  const setCommandState = useStreamStore((state) => state.setCommandState);
-  const clearCommandState = useStreamStore((state) => state.clearCommandState);
-  const removeCamera = useStreamStore((state) => state.removeCamera);
-  const cameraOrder = useStreamStore((state) => state.cameraOrder);
-  const cameraMap = useStreamStore((state) => state.cameras);
-  const streams = useStreamStore((state) => state.streams);
+  const cameras = initialCameras;
 
-  useEffect(() => {
-    hydrateCameras(initialCameras);
-  }, [hydrateCameras, initialCameras]);
-
-  useWebSocket();
-
-  const cameras = useMemo(
-    () =>
-      cameraOrder
-        .map((cameraId) => cameraMap[cameraId])
-        .filter((camera): camera is CameraResponse => Boolean(camera)),
-    [cameraMap, cameraOrder],
-  );
-
-  const visibleCameras = cameras.length > 0 ? cameras : initialCameras;
+  const visibleCameras = cameras;
 
   const filteredCameras = visibleCameras.filter((camera) => {
     const searchable = [
@@ -68,35 +45,13 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
       return;
     }
 
-    setCommandState(
-      cameraId,
-      "deleting",
-      "Deleting camera from the backend inventory.",
-    );
     try {
       await deleteCamera(cameraId);
-      removeCamera(cameraId);
       router.refresh();
     } catch {
-      clearCommandState(cameraId);
+      // ignore
     }
   };
-
-  const liveCameraCount = filteredCameras.filter((camera) => {
-    const status =
-      streams[camera.id]?.streamInfo?.status ??
-      camera.stream_status ??
-      "stopped";
-    return ["starting", "running", "reconnecting"].includes(status);
-  }).length;
-
-  const totalActiveTracks = filteredCameras.reduce((sum, camera) => {
-    return sum + (streams[camera.id]?.streamInfo?.tracking?.active_tracks ?? 0);
-  }, 0);
-
-  const totalActiveInference = filteredCameras.reduce((sum, camera) => {
-    return sum + (streams[camera.id]?.inferenceActiveEvents.length ?? 0);
-  }, 0);
 
   return (
     <section className="screen-enter space-y-6">
@@ -109,9 +64,7 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
             Live camera streams
           </h1>
           <p className="max-w-2xl text-sm leading-6 text-slate-400">
-            WebRTC is preferred for low-latency playback, HLS stays available as
-            fallback, and tracker plus inference overlays are rendered directly
-            on the raw feed.
+            Cameras and their details are listed here. Stream access is currently disabled.
           </p>
         </div>
         <div className="w-full max-w-sm space-y-3">
@@ -160,32 +113,37 @@ export function DashboardGrid({ initialCameras }: DashboardGridProps) {
         </div>
         <div className="rounded-[20px] border border-white/10 bg-slate-950/80 px-4 py-4">
           <p className="text-xs uppercase tracking-[0.16em] text-slate-500">Live streams</p>
-          <p className="mt-2 text-3xl font-semibold text-slate-50">{liveCameraCount}</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-50">0</p>
         </div>
         <div className="rounded-[20px] border border-white/10 bg-slate-950/80 px-4 py-4">
           <p className="text-xs uppercase tracking-[0.16em] text-slate-500">
             Active overlays
           </p>
           <p className="mt-2 text-3xl font-semibold text-slate-50">
-            {totalActiveTracks + totalActiveInference}
+            0
           </p>
         </div>
       </div>
 
       <div className="grid gap-5 xl:grid-cols-2 2xl:grid-cols-3">
-        {filteredCameras.map((camera) => {
-          const streamEntity = streams[camera.id];
-          const streamInfo = streamEntity?.streamInfo;
-
-          return (
-            <StreamCard
-              key={camera.id}
-              camera={camera}
-              initialStreamInfo={streamInfo ?? null}
-              onDelete={() => void handleDelete(camera.id, camera.name)}
-            />
-          );
-        })}
+        {filteredCameras.map((camera) => (
+          <div key={camera.id} className="rounded-[20px] border border-white/10 bg-slate-950/80 p-5">
+            <h2 className="text-lg font-semibold text-slate-50">{camera.name}</h2>
+            <p className="text-sm text-slate-400">{camera.location ?? "No location"}</p>
+            <div className="mt-4 flex gap-3">
+              <Link href={`/camera/${camera.id}`} className="rounded-full bg-cyan-300 px-4 py-2 text-sm font-semibold text-slate-950">
+                View Details
+              </Link>
+              <button
+                type="button"
+                onClick={() => void handleDelete(camera.id, camera.name)}
+                className="rounded-full border border-rose-400/30 px-4 py-2 text-sm font-semibold text-rose-300"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );

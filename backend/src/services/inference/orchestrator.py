@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 
+import numpy as np
+
 from src.core.logger.logger import get_logger
 from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
 from src.schemas.common import WebSocketEnvelope
@@ -28,7 +30,6 @@ from src.services.inference.logging import (
 )
 from src.services.inference.triton_client import TritonInferenceClient
 from src.services.presentation.websocket_manager import WebSocketManager
-from src.services.tracking_kafka.service import _InferenceKafkaPublisher
 
 
 def _utc_now() -> datetime:
@@ -52,7 +53,7 @@ class InferenceOrchestrator:
         decision_engine: DecisionEngine,
         event_repository: InferenceEventRepository,
         websocket_manager: WebSocketManager,
-        kafka_publisher: _InferenceKafkaPublisher | None,
+        kafka_publisher: Any | None,
         metrics_recorder: MetricsRecorder | None = None,
     ) -> None:
         self._config = config
@@ -124,7 +125,7 @@ class InferenceOrchestrator:
         )
 
     async def close(self) -> None:
-        """Cancel the consume loop and wait for it to finish."""
+        """Cancel the consume loop, wait for it, and close Triton resources."""
 
         if self._task is not None:
             self._task.cancel()
@@ -140,6 +141,7 @@ class InferenceOrchestrator:
                 "Inference orchestrator stopped.",
                 camera_id=self._config.camera_id,
             )
+        await self._triton.close()
 
     async def _run(self) -> None:
         queue = self._scheduler.queue
@@ -291,80 +293,58 @@ class InferenceOrchestrator:
 
         inference_latency_ms = (perf_counter() - inference_started_at) * 1000.0
         output_summary = summarize_named_arrays(outputs)
-        if "output" not in outputs:
-            log_inference_event(
-                self._logger,
-                logging.WARNING,
-                "inference.output_missing",
-                "Inference response missing expected output tensor.",
-                camera_id=sample.camera_id,
-                strategy=strategy,
-                model_name=model_name,
-                outputs=output_summary,
-            )
-            score = 0.0
-        else:
-            try:
-                score = float(outputs["output"].flat[0])
-            except Exception as exc:  # pylint: disable=broad-except
-                log_inference_exception(
-                    self._logger,
-                    logging.ERROR,
-                    "inference.output_parse_failed",
-                    "Failed to parse inference output tensor.",
-                    exc,
-                    camera_id=sample.camera_id,
-                    strategy=strategy,
-                    model_name=model_name,
-                    outputs=output_summary,
-                )
-                raise
-
-        alert_level = self._decision.classify(score)
-        label = alert_level
+        attributions = self._score_attributions(
+            batch=batch,
+            outputs=outputs,
+            output_summary=output_summary,
+            strategy=strategy,
+            model_name=model_name,
+        )
         emitted_at = _utc_now()
-
-        self._active_tracks.add(sample.persistent_id)
+        payloads: list[InferenceKafkaEventPayload] = []
+        for attributed_sample, score in attributions:
+            alert_level = self._decision.classify(score)
+            label = alert_level
+            self._active_tracks.add(attributed_sample.persistent_id)
+            payloads.append(
+                InferenceKafkaEventPayload(
+                    camera_id=attributed_sample.camera_id,
+                    stream_name=attributed_sample.stream_name,
+                    persistent_id=attributed_sample.persistent_id,
+                    local_track_id=attributed_sample.local_track_id,
+                    strategy=strategy,
+                    score=score,
+                    alert_level=alert_level,
+                    label=label,
+                    model_name=model_name,
+                    sampled_at=attributed_sample.sampled_at,
+                    emitted_at=emitted_at,
+                )
+            )
         self._last_result_at = emitted_at
         self._healthy = True
 
-        payload = InferenceKafkaEventPayload(
-            camera_id=sample.camera_id,
-            stream_name=sample.stream_name,
-            persistent_id=sample.persistent_id,
-            local_track_id=sample.local_track_id,
-            strategy=strategy,
-            score=score,
-            alert_level=alert_level,
-            label=label,
-            model_name=model_name,
-            sampled_at=sample.sampled_at,
-            emitted_at=emitted_at,
-        )
-
         delivery_started_at = perf_counter()
-        task_specs: list[tuple[str, Any]] = [
-            ("websocket", self._broadcast_ws(payload)),
-            ("kafka", self._publish_kafka(payload)),
-        ]
-        if alert_level != "normal":
-            task_specs.append(("persistence", self._persist(payload)))
-        results = await asyncio.gather(
-            *(coroutine for _, coroutine in task_specs),
+        delivery_results = await asyncio.gather(
+            *(self._deliver_payload(payload) for payload in payloads),
             return_exceptions=True,
         )
         delivery_latency_ms = (perf_counter() - delivery_started_at) * 1000.0
 
         sink_failures: list[dict[str, str]] = []
-        for (sink_name, _), result in zip(task_specs, results):
+        for payload, result in zip(payloads, delivery_results):
             if isinstance(result, Exception):
                 sink_failures.append(
                     {
-                        "sink": sink_name,
+                        "sink": "delivery",
+                        "persistent_id": payload.persistent_id,
+                        "local_track_id": payload.local_track_id,
                         "error": str(result),
                         "error_type": result.__class__.__name__,
                     },
                 )
+            else:
+                sink_failures.extend(result)
         if sink_failures:
             log_inference_event(
                 self._logger,
@@ -382,8 +362,15 @@ class InferenceOrchestrator:
 
         completed_at = perf_counter()
         total_latency_ms = (completed_at - batch_started_at) * 1000.0
-        sample_age_ms = max((emitted_at - sample.sampled_at).total_seconds() * 1000.0, 0.0)
+        sample_age_ms = max(
+            (
+                (emitted_at - payload.sampled_at).total_seconds() * 1000.0
+                for payload in payloads
+            ),
+            default=0.0,
+        )
         inference_request_fps = self._record_completion(completed_at)
+        representative_payload = payloads[-1]
         log_inference_event(
             self._logger,
             logging.INFO,
@@ -396,6 +383,7 @@ class InferenceOrchestrator:
             strategy=strategy,
             model_name=model_name,
             batch_size=len(batch),
+            emitted_results=len(payloads),
             active_tracks=len(self._active_tracks),
             preprocessing_latency_ms=round(preprocessing_latency_ms, 3),
             inference_latency_ms=round(inference_latency_ms, 3),
@@ -403,12 +391,84 @@ class InferenceOrchestrator:
             total_latency_ms=round(total_latency_ms, 3),
             sample_age_ms=round(sample_age_ms, 3),
             inference_request_fps=round(inference_request_fps, 3),
-            score=score,
-            alert_level=alert_level,
-            label=label,
+            score=representative_payload.score,
+            alert_level=representative_payload.alert_level,
+            label=representative_payload.label,
+            scores=[round(payload.score, 6) for payload in payloads],
+            alert_levels=[payload.alert_level for payload in payloads],
             outputs=output_summary,
             sink_failures=sink_failures,
         )
+
+    def _score_attributions(
+        self,
+        *,
+        batch: list[InferenceIngressSample],
+        outputs: dict[str, np.ndarray],
+        output_summary: dict[str, dict[str, object]],
+        strategy: str,
+        model_name: str,
+    ) -> list[tuple[InferenceIngressSample, float]]:
+        """Map Triton output scores back to the samples they describe."""
+
+        sample = batch[-1]
+        if "output" not in outputs:
+            log_inference_event(
+                self._logger,
+                logging.WARNING,
+                "inference.output_missing",
+                "Inference response missing expected output tensor.",
+                camera_id=sample.camera_id,
+                strategy=strategy,
+                model_name=model_name,
+                outputs=output_summary,
+            )
+            return [(sample, 0.0)]
+
+        try:
+            scores = _extract_scalar_scores(outputs["output"], expected_count=len(batch))
+        except Exception as exc:  # pylint: disable=broad-except
+            log_inference_exception(
+                self._logger,
+                logging.ERROR,
+                "inference.output_parse_failed",
+                "Failed to parse inference output tensor.",
+                exc,
+                camera_id=sample.camera_id,
+                strategy=strategy,
+                model_name=model_name,
+                outputs=output_summary,
+            )
+            raise
+
+        if len(scores) == 1:
+            return [(sample, scores[0])]
+        return list(zip(batch, scores))
+
+    async def _deliver_payload(self, payload: InferenceKafkaEventPayload) -> list[dict[str, str]]:
+        task_specs: list[tuple[str, Any]] = [
+            ("websocket", self._broadcast_ws(payload)),
+            ("kafka", self._publish_kafka(payload)),
+        ]
+        if payload.alert_level != "normal":
+            task_specs.append(("persistence", self._persist(payload)))
+        results = await asyncio.gather(
+            *(coroutine for _, coroutine in task_specs),
+            return_exceptions=True,
+        )
+        sink_failures: list[dict[str, str]] = []
+        for (sink_name, _), result in zip(task_specs, results):
+            if isinstance(result, Exception):
+                sink_failures.append(
+                    {
+                        "sink": sink_name,
+                        "persistent_id": payload.persistent_id,
+                        "local_track_id": payload.local_track_id,
+                        "error": str(result),
+                        "error_type": result.__class__.__name__,
+                    },
+                )
+        return sink_failures
 
     async def _broadcast_ws(self, payload: InferenceKafkaEventPayload) -> None:
         envelope = WebSocketEnvelope(
@@ -478,3 +538,18 @@ class InferenceOrchestrator:
         if elapsed <= 0.0:
             return 0.0
         return (len(self._recent_completion_times) - 1) / elapsed
+
+
+def _extract_scalar_scores(output: np.ndarray, *, expected_count: int) -> list[float]:
+    """Return scalar scores from a Triton output tensor without guessing labels."""
+
+    array = np.asarray(output)
+    flattened = array.reshape(-1)
+    if flattened.size == 1:
+        return [float(flattened[0])]
+    if flattened.size == expected_count:
+        return [float(value) for value in flattened]
+    raise ValueError(
+        "Expected Triton output tensor 'output' to contain either one scalar score "
+        f"or {expected_count} scalar scores; got shape={list(array.shape)}."
+    )

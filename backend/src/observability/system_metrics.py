@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Protocol
 
 import psutil
 
 from src.observability.metrics import MetricsRecorder
-from src.services.realtime_video.queue import FrameQueue
+from src.utils.async_blocking import run_blocking_in_daemon_thread
+
+
+class QueueDepthProvider(Protocol):
+    """Structural protocol for queue-like objects that expose ``qsize()``."""
+
+    def qsize(self) -> int:
+        """Return the current queue depth."""
 
 
 @dataclass(slots=True)
@@ -29,7 +37,7 @@ class SystemMetricsCollector:
     def __init__(
         self,
         metrics: MetricsRecorder,
-        frame_queue: FrameQueue,
+        frame_queue: QueueDepthProvider | None = None,
         interval_seconds: float = 5.0,
     ) -> None:
         """Create a collector bound to the shared frame queue and metrics recorder."""
@@ -65,8 +73,9 @@ class SystemMetricsCollector:
     async def collect_once(self) -> None:
         """Collect and publish one metrics snapshot without blocking the event loop."""
 
-        snapshot = await asyncio.to_thread(self._sample_snapshot)
-        self._metrics.set_queue_size(self._frame_queue.qsize())
+        snapshot = await run_blocking_in_daemon_thread(self._sample_snapshot)
+        queue_size = self._frame_queue.qsize() if self._frame_queue is not None else 0
+        self._metrics.set_queue_size(queue_size)
         self._metrics.set_system_cpu_usage_percent(snapshot.system_cpu_usage_percent)
         self._metrics.set_process_cpu_usage_percent(snapshot.process_cpu_usage_percent)
         self._metrics.set_system_memory_usage_bytes(snapshot.system_memory_usage_bytes)

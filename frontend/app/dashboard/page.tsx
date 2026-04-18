@@ -1,6 +1,6 @@
 import { DashboardGrid } from "@/components/DashboardGrid";
 import { listCameras } from "@/lib/api";
-import type { CameraResponse } from "@/types/stream";
+import type { CameraResponse } from "@/types/camera";
 
 export const dynamic = "force-dynamic";
 

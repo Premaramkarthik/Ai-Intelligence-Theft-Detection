@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
 import { BackendApiError, createCamera } from "@/lib/api";
-import { useStreamStore } from "@/store/streamStore";
 
 type SourceMode = "direct" | "components";
 
@@ -78,7 +77,6 @@ function validateDraft(sourceMode: SourceMode, draft: CameraDraft): string | nul
  */
 export function CreateCameraForm() {
   const router = useRouter();
-  const upsertCamera = useStreamStore((state) => state.upsertCamera);
   const [sourceMode, setSourceMode] = useState<SourceMode>("direct");
   const [draft, setDraft] = useState<CameraDraft>(INITIAL_DRAFT);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -144,7 +142,6 @@ export function CreateCameraForm() {
         metadata,
         tags: parseTags(draft.tags),
       });
-      upsertCamera(camera);
       router.replace(`/camera/${camera.id}`);
       router.refresh();
     } catch (error) {

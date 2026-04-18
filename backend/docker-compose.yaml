@@ -1,37 +1,4 @@
 services:
-  mediamtx:
-    image: bluenviron/mediamtx:latest
-    ports:
-      - "8554:8554"
-      - "8888:8888"
-      - "8889:8889"
-      - "8189:8189/udp"
-      - "9997:9997"
-      - "9998:9998"
-    environment:
-      MTX_AUTHMETHOD: internal
-      MTX_API: "yes"
-      MTX_APIADDRESS: :9997
-      MTX_METRICS: "yes"
-      MTX_METRICSADDRESS: :9998
-      MTX_AUTHINTERNALUSERS_0_USER: any
-      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_0_ACTION: publish
-      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_1_ACTION: read
-      MTX_AUTHINTERNALUSERS_0_PERMISSIONS_2_ACTION: playback
-      MTX_AUTHINTERNALUSERS_1_USER: any
-      MTX_AUTHINTERNALUSERS_1_IPS: 127.0.0.1,::1
-      MTX_AUTHINTERNALUSERS_1_PERMISSIONS_0_ACTION: api
-      MTX_AUTHINTERNALUSERS_1_PERMISSIONS_1_ACTION: metrics
-      MTX_AUTHINTERNALUSERS_1_PERMISSIONS_2_ACTION: pprof
-      MTX_AUTHINTERNALUSERS_2_USER: ${MEDIAMTX_API_USERNAME:-backend-control}
-      MTX_AUTHINTERNALUSERS_2_PASS: ${MEDIAMTX_API_PASSWORD:-backend-control-dev-secret}
-      MTX_AUTHINTERNALUSERS_2_PERMISSIONS_0_ACTION: api
-      MTX_AUTHINTERNALUSERS_2_PERMISSIONS_1_ACTION: metrics
-      MTX_AUTHINTERNALUSERS_2_PERMISSIONS_2_ACTION: pprof
-    volumes:
-      - ./runtime/mediamtx.generated.yml:/mediamtx.yml
-    networks:
-      - backend_net
 
   etcd:
     image: quay.io/coreos/etcd:v3.5.18
@@ -159,6 +126,10 @@ services:
           --topic camera.ai_results --partitions 1 --replication-factor 1
         kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
           --topic camera.tracking.updates --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+          --topic camera.frames --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists \
+          --topic identity.events --partitions 1 --replication-factor 1
     restart: "no"
     networks:
       - backend_net
@@ -224,8 +195,6 @@ services:
     command:
       - |
         sed -e "s|__PROMETHEUS_SCRAPE_TARGET__|host.docker.internal:9109|g" \
-          -e "s|__MEDIAMTX_METRICS_USERNAME__|${MEDIAMTX_API_USERNAME:-backend-control}|g" \
-          -e "s|__MEDIAMTX_METRICS_PASSWORD__|${MEDIAMTX_API_PASSWORD:-backend-control-dev-secret}|g" \
           /etc/prometheus/prometheus.yml.tmpl > /tmp/prometheus.yml
         exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus
     ports:

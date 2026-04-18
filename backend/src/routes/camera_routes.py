@@ -81,6 +81,9 @@ async def update_camera(
 )
 async def delete_camera(camera_id: str, request: Request) -> dict[str, Any]:
     await get_camera_service(request).delete_camera(camera_id)
+    inference_manager = getattr(request.app.state.container, "inference_manager", None)
+    if inference_manager is not None:
+        await inference_manager.remove_camera(camera_id)
     return build_success_payload("Camera deleted successfully.", {"id": camera_id})
 
 

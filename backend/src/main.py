@@ -29,23 +29,12 @@ from src.routes.stream_routes import router as stream_router
 from src.services.camera.camera_repository import CameraRepository
 from src.services.camera.camera_service import CameraService
 from src.services.camera.camera_validator import CameraValidator
-from src.services.presentation.stream_contract_service import StreamContractService
 from src.services.presentation.websocket_manager import WebSocketManager
-from src.services.realtime_video.alert_publisher import (
-    WebSocketStreamConnectionAlertPublisher,
-)
-from src.services.realtime_video.mediamtx_service import MediaMtxService
-from src.services.realtime_video.queue import FrameQueue
-from src.services.realtime_video.stream_manager import MediaMtxStreamManager
-from src.services.stream.kafka_event_consumer import StreamEventConsumer
-from src.services.stream.stream_repository import StreamRepository
-from src.services.stream.stream_service import StreamService
 from src.services.inference.bootstrap import create_inference_runtime_services
 from src.services.inference.manager import InferenceManager
-from src.services.tracking.manager import TrackingStreamManager
+from src.services.stream.kafka_event_consumer import StreamEventConsumer
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
 from src.utils.migration_runner import apply_pending_migrations
-from src.utils.tracking_bootstrap import create_tracking_runtime_services
 
 
 if sys.platform == "win32":
@@ -62,14 +51,10 @@ class ApplicationContainer:  # pylint: disable=too-many-instance-attributes
     settings: Settings
     database: Database
     camera_service: CameraService
-    stream_service: StreamService
-    mediamtx_service: MediaMtxService
-    stream_manager: MediaMtxStreamManager
-    tracking_manager: TrackingStreamManager
     tracking_kafka_producer: TrackingKafkaProducerService
     inference_manager: InferenceManager
     websocket_manager: WebSocketManager
-    kafka_consumer: StreamEventConsumer
+    stream_event_consumer: StreamEventConsumer | None
     metrics_server: MetricsServer | None
     system_metrics_collector: SystemMetricsCollector | None
     runtime_metrics_collector: RuntimeMetricsCollector | None
@@ -99,10 +84,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
                 await apply_pending_migrations(connection)
 
         camera_repository = CameraRepository(database)
-        stream_repository = StreamRepository(database)
         camera_validator = CameraValidator(settings)
-        mediamtx_service = MediaMtxService(settings)
-        frame_queue = FrameQueue(maxsize=settings.realtime_frame_queue_size)
         metrics_recorder = (
             PrometheusMetrics()
             if settings.metrics_enabled
@@ -111,6 +93,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         metrics_server = None
         system_metrics_collector = None
         runtime_metrics_collector = None
+        stream_event_consumer = None
         if settings.metrics_enabled:
             metrics_server = MetricsServer(
                 port=settings.metrics_port,
@@ -120,7 +103,6 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             metrics_server.start()
             system_metrics_collector = SystemMetricsCollector(
                 metrics=metrics_recorder,
-                frame_queue=frame_queue,
                 interval_seconds=settings.metrics_collection_interval_seconds,
             )
             await system_metrics_collector.start()
@@ -128,32 +110,9 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         camera_service = CameraService(
             camera_repository,
             camera_validator,
-            mediamtx_service,
-        )
-        cameras = await camera_service.list_all_camera_records()
-        await mediamtx_service.sync_config(
-            cameras,
-            strict_runtime_sync=False,
         )
         websocket_manager = WebSocketManager(metrics_recorder=metrics_recorder)
-        stream_contract_service = StreamContractService(settings)
-        stream_manager = MediaMtxStreamManager(
-            frame_queue,
-            rtsp_base_url=settings.mediamtx_rtsp_base_url,
-            hls_base_url=settings.mediamtx_hls_base_url,
-            whep_base_url=settings.mediamtx_webrtc_base_url,
-            max_reconnect_attempts=settings.realtime_max_reconnect_attempts,
-            metrics_recorder=metrics_recorder,
-        )
-        stream_manager.set_connection_alert_publisher(
-            WebSocketStreamConnectionAlertPublisher(
-                camera_service,
-                stream_repository,
-                stream_manager,
-                stream_contract_service,
-                websocket_manager,
-            ),
-        )
+
         # Build the shared Kafka producer first so both inference and tracking
         # bootstraps can reference the same started producer instance.
         tracking_kafka_producer = TrackingKafkaProducerService(settings, metrics_recorder)
@@ -168,40 +127,19 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             tracking_kafka_producer,
             metrics_recorder,
         )
-        tracking_services = await create_tracking_runtime_services(
+        stream_event_consumer = StreamEventConsumer(
             settings,
-            websocket_manager,
-            metrics_recorder,
-            inference_manager=inference_manager,
-            tracking_kafka_producer=tracking_kafka_producer,
+            stream_service=None,
+            websocket_manager=websocket_manager,
+            metrics_recorder=metrics_recorder,
         )
-        tracking_manager = tracking_services.tracking_manager
-        stream_service = StreamService(
-            settings,
-            camera_service,
-            stream_repository,
-            mediamtx_service,
-            stream_manager,
-            tracking_manager,
-            inference_manager,
-            stream_contract_service,
-        )
-        kafka_consumer = StreamEventConsumer(
-            settings,
-            stream_service,
-            websocket_manager,
-            metrics_recorder,
-        )
-        await kafka_consumer.start()
+        await stream_event_consumer.start()
         if settings.metrics_enabled:
             runtime_metrics_collector = RuntimeMetricsCollector(
                 metrics=metrics_recorder,
                 dependencies=RuntimeMetricsDependencies(
-                    stream_manager=stream_manager,
-                    tracking_manager=tracking_manager,
                     tracking_kafka_producer=tracking_kafka_producer,
-                    kafka_consumer=kafka_consumer,
-                    mediamtx_service=mediamtx_service,
+                    kafka_consumer=stream_event_consumer,
                 ),
                 interval_seconds=settings.metrics_collection_interval_seconds,
             )
@@ -211,14 +149,10 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             settings=settings,
             database=database,
             camera_service=camera_service,
-            stream_service=stream_service,
-            mediamtx_service=mediamtx_service,
-            stream_manager=stream_manager,
-            tracking_manager=tracking_manager,
             tracking_kafka_producer=tracking_kafka_producer,
             inference_manager=inference_manager,
             websocket_manager=websocket_manager,
-            kafka_consumer=kafka_consumer,
+            stream_event_consumer=stream_event_consumer,
             metrics_server=metrics_server,
             system_metrics_collector=system_metrics_collector,
             runtime_metrics_collector=runtime_metrics_collector,
@@ -227,18 +161,16 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         try:
             yield
         finally:
-            await kafka_consumer.stop()
             await inference_manager.close()
+            if stream_event_consumer is not None:
+                await stream_event_consumer.stop()
             await tracking_kafka_producer.stop()
-            await tracking_manager.close()
-            await stream_manager.stop_all()
             if runtime_metrics_collector is not None:
                 await runtime_metrics_collector.stop()
             if system_metrics_collector is not None:
                 await system_metrics_collector.stop()
             if metrics_server is not None:
                 metrics_server.stop()
-            await mediamtx_service.stop()
             await database.disconnect()
 
     application = FastAPI(
@@ -247,8 +179,8 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         lifespan=lifespan,
         openapi_tags=[
             {"name": "Cameras", "description": "Camera CRUD and RTSP validation endpoints."},
-            {"name": "Streams", "description": "Worker and playback contract endpoints."},
-            {"name": "Health", "description": "Service, database, and stream health endpoints."},
+            {"name": "Health", "description": "Service and database endpoints."},
+            {"name": "Streams", "description": "Realtime websocket and inference controls."},
         ],
     )
     application.add_middleware(
@@ -262,8 +194,8 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
     application.add_middleware(HttpMetricsMiddleware)
     register_exception_handlers(application)
     application.include_router(camera_router)
-    application.include_router(stream_router)
     application.include_router(health_router)
+    application.include_router(stream_router)
     return application
 
 

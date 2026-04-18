@@ -19,9 +19,12 @@ router = APIRouter(prefix="/health", tags=["Health"])
 async def health(request: Request) -> dict[str, Any]:
     container = request.app.state.container
     db_ok = await container.database.ping()
-    kafka = container.kafka_consumer.health_snapshot()
-    mediamtx = container.mediamtx_service.health_snapshot()
     uptime_seconds = round(time() - container.started_at_epoch, 2)
+    kafka_snapshot = container.tracking_kafka_producer.health_snapshot()
+    stream_consumer = getattr(container, "stream_event_consumer", None)
+    stream_consumer_snapshot = (
+        stream_consumer.health_snapshot() if stream_consumer is not None else None
+    )
     payload = HealthResponse(
         service=container.settings.app_name,
         environment=container.settings.environment,
@@ -32,33 +35,33 @@ async def health(request: Request) -> dict[str, Any]:
                 status="ok" if db_ok else "error",
                 message="Database connection is healthy." if db_ok else "Database ping failed.",
             ),
-            "kafka": HealthComponent(
-                status="ok" if kafka["healthy"] else "degraded",
+            "tracking_kafka_producer": HealthComponent(
+                status="ok" if kafka_snapshot["healthy"] else "error",
                 message=(
-                    "Kafka consumer is healthy."
-                    if kafka["healthy"]
-                    else "Kafka consumer is degraded."
+                    "Kafka producer is healthy."
+                    if kafka_snapshot["healthy"]
+                    else "Kafka producer is unavailable."
                 ),
-                details={"last_error": kafka["last_error"]},
+                details=kafka_snapshot,
             ),
-            "workers": HealthComponent(
+            "stream_event_consumer": HealthComponent(
+                status=(
+                    "ok"
+                    if stream_consumer_snapshot is None
+                    or stream_consumer_snapshot["healthy"]
+                    else "error"
+                ),
+                message=(
+                    "Kafka stream consumer is healthy."
+                    if stream_consumer_snapshot is None
+                    or stream_consumer_snapshot["healthy"]
+                    else "Kafka stream consumer is unavailable."
+                ),
+                details=stream_consumer_snapshot,
+            ),
+            "inference_manager": HealthComponent(
                 status="ok",
-                message="Worker registry is available.",
-                details={"active_workers": container.stream_manager.active_worker_count()},
-            ),
-            "mediamtx": HealthComponent(
-                status="ok" if mediamtx.healthy else "degraded",
-                message=(
-                    "MediaMTX is ready."
-                    if mediamtx.healthy
-                    else "MediaMTX is not ready."
-                ),
-                details={
-                    "managed": mediamtx.managed,
-                    "externally_managed": mediamtx.externally_managed,
-                    "config_path": mediamtx.config_path,
-                    "last_error": mediamtx.last_error,
-                },
+                message="Inference manager is available.",
             ),
         },
     )
@@ -82,14 +85,3 @@ async def health_db(request: Request) -> dict[str, Any]:
     )
 
 
-@router.get(
-    "/stream/{camera_id}",
-    response_model=ApiResponse[HealthComponent],
-    summary="Check stream health",
-)
-async def health_stream(camera_id: str, request: Request) -> dict[str, Any]:
-    component = await request.app.state.container.stream_service.get_stream_health(camera_id)
-    return build_success_payload(
-        "Stream health fetched successfully.",
-        component.model_dump(mode="json"),
-    )

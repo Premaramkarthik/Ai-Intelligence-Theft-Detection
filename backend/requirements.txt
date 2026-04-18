@@ -1,8 +1,6 @@
 aiokafka
 asyncpg
-av
 fastapi
-inference
 numpy
 opencv-python
 prometheus-client
@@ -15,5 +13,7 @@ tenacity
 torch
 torchvision
 trackers
+tritonclient[grpc]
+ultralytics
 uvicorn
 uvicorn[standard]

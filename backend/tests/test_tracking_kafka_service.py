@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aiokafka.errors import KafkaConnectionError
 from src.core.config import Settings
-from src.services.realtime_video.contracts import TrackingTrackSnapshot
+from src.services.tracking.contracts import TrackingTrackSnapshot
 from src.services.tracking_kafka.publisher import KafkaTrackingUpdatePublisher
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
 

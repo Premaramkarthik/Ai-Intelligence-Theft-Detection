@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import subprocess
@@ -13,6 +12,7 @@ from src.core.config import Settings
 from src.core.exceptions.camera.camera_exceptions import CameraValidationException
 from src.core.logger.logger import get_logger
 from src.models.camera import CameraRecord
+from src.utils.async_blocking import run_blocking_in_daemon_thread
 from src.utils.ffmpeg import build_rtsp_url_from_camera, mask_rtsp_url
 
 
@@ -62,7 +62,7 @@ class CameraValidator:
         ]
 
         try:
-            completed = await asyncio.to_thread(
+            completed = await run_blocking_in_daemon_thread(
                 subprocess.run,
                 command,
                 stdout=subprocess.PIPE,
@@ -74,7 +74,7 @@ class CameraValidator:
             self._logger.warning(
                 "ffprobe is not available in PATH. Falling back to PyAV RTSP validation.",
             )
-            return await asyncio.to_thread(
+            return await run_blocking_in_daemon_thread(
                 self._validate_with_pyav,
                 camera,
                 rtsp_url,
@@ -86,7 +86,7 @@ class CameraValidator:
                 "ffprobe subprocess could not be started on this Windows host. "
                 "Falling back to PyAV RTSP validation.",
             )
-            return await asyncio.to_thread(
+            return await run_blocking_in_daemon_thread(
                 self._validate_with_pyav,
                 camera,
                 rtsp_url,

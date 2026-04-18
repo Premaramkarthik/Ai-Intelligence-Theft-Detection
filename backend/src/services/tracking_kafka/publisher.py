@@ -11,7 +11,7 @@ from src.schemas.tracking_events import (
     TrackingKafkaEventPayload,
     TrackingKafkaTrackPayload,
 )
-from src.services.realtime_video.contracts import TrackingTrackSnapshot
+from src.services.tracking.contracts import TrackingTrackSnapshot
 
 
 class KafkaTrackingUpdatePublisher:  # pylint: disable=too-few-public-methods

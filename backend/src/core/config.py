@@ -42,39 +42,15 @@ class Settings(BaseSettings):
     kafka_topic_camera_events: str = "camera.events"
     kafka_topic_camera_ai_results: str = "camera.ai_results"
     kafka_topic_camera_tracking_updates: str = "camera.tracking.updates"
+    kafka_topic_camera_frames: str = "camera.frames"
+    kafka_topic_identity_events: str = "identity.events"
 
-    ffmpeg_binary: str = "ffmpeg"
     ffprobe_binary: str = "ffprobe"
-    ffmpeg_rtsp_transport: str = "tcp"
-    mediamtx_binary: str = "mediamtx"
-    mediamtx_manage_process: bool = True
-    mediamtx_generated_config_path: Path = BACKEND_ROOT / "runtime" / "mediamtx.generated.yml"
-    mediamtx_start_timeout_seconds: float = 8.0
-    mediamtx_api_base_url: str = "http://localhost:9997"
-    mediamtx_api_timeout_seconds: float = 5.0
-    mediamtx_api_ready_timeout_seconds: float = 3.0
-    mediamtx_api_username: str = "backend-control"
-    mediamtx_api_password: SecretStr | None = None
-    mediamtx_api_password_file: Path = BACKEND_ROOT / "runtime" / "mediamtx.api.password"
-    mediamtx_rtsp_base_url: str = "rtsp://localhost:8554"
-    mediamtx_hls_base_url: str = "http://localhost:8888"
-    mediamtx_webrtc_base_url: str = "http://localhost:8889"
-    realtime_frame_sample_fps: float = 5.0
-    realtime_frame_queue_size: int = 512
-    realtime_max_reconnect_attempts: int = 5
     metrics_enabled: bool = True
     metrics_host: str = "0.0.0.0"
     metrics_port: int = 9109
     metrics_collection_interval_seconds: float = 5.0
-    hls_segment_time_seconds: int = 2
-    hls_playlist_size: int = 6
-    stream_start_timeout_seconds: int = 12
-
-    worker_monitor_interval_seconds: int = 5
-    worker_shutdown_grace_seconds: int = 8
-    worker_heartbeat_interval_seconds: int = 10
-    reconnect_base_delay_seconds: float = 1.0
-    reconnect_max_delay_seconds: float = 15.0
+    triton_url: str = "localhost:8001"
 
     validation_timeout_seconds: int = 8
     tracking_enabled_by_default: bool = True
@@ -107,6 +83,7 @@ class Settings(BaseSettings):
     tracking_identity_store_timeout_seconds: float = 5.0
     tracking_identity_similarity_threshold: float = 0.75
     tracking_identity_search_limit: int = 5
+    tracking_identity_max_concurrent_batches: int = 4
     tracking_identity_sync_interval_seconds: float = 1.0
     tracking_publish_update_interval_seconds: float = 0.5
     tracking_stream_suffix: str = "tracked"
@@ -117,6 +94,28 @@ class Settings(BaseSettings):
     log_file_prefix: str = "backend"
     log_file_max_bytes: int = 10 * 1024 * 1024
     log_file_backup_count: int = 5
+
+    opencv_pipeline_enabled: bool = True
+    opencv_pipeline_target_width: int = 1280
+    opencv_pipeline_target_height: int = 720
+    opencv_pipeline_target_fps: float = 10.0
+    opencv_pipeline_frame_buffer_size: int = 128
+    opencv_pipeline_drop_policy: str = "drop_oldest"
+    opencv_pipeline_sync_tolerance_ms: float = 40.0
+    opencv_pipeline_batch_size: int = 8
+    opencv_pipeline_capture_retry_initial_delay_seconds: float = 0.5
+    opencv_pipeline_capture_retry_max_delay_seconds: float = 5.0
+    opencv_pipeline_preview_jpeg_quality: int = 70
+    opencv_pipeline_publish_frame_previews: bool = False
+    opencv_pipeline_low_light_threshold: float = 40.0
+    opencv_pipeline_detection_model_path: Path = BACKEND_ROOT / "yolo26n.pt"
+    opencv_pipeline_detection_confidence: float = 0.4
+    opencv_pipeline_detection_class_ids: list[int] = Field(default_factory=lambda: [0])
+    opencv_pipeline_identity_ttl_seconds: float = 30.0
+    opencv_pipeline_refresh_all_cameras_interval_seconds: float = 30.0
+    opencv_pipeline_calibration_directory: Path = BACKEND_ROOT / "runtime" / "calibration"
+    opencv_pipeline_enable_behavior_inference: bool = True
+    opencv_pipeline_inference_strategy: str = "cnn_transformer"
 
     @field_validator("cors_origins", mode="before")
     @classmethod
@@ -141,26 +140,6 @@ class Settings(BaseSettings):
             return False
         raise ValueError("debug must be a boolean-like value.")
 
-    @field_validator("mediamtx_generated_config_path", mode="before")
-    @classmethod
-    def resolve_mediamtx_generated_config_path(cls, value: str | Path) -> Path:
-        """Resolve the generated MediaMTX config path relative to the backend root."""
-
-        path = Path(value)
-        if path.is_absolute():
-            return path
-        return BACKEND_ROOT / path
-
-    @field_validator("mediamtx_api_password_file", mode="before")
-    @classmethod
-    def resolve_mediamtx_api_password_file(cls, value: str | Path) -> Path:
-        """Resolve the MediaMTX Control API password file relative to the backend root."""
-
-        path = Path(value)
-        if path.is_absolute():
-            return path
-        return BACKEND_ROOT / path
-
     @field_validator("log_directory", mode="before")
     @classmethod
     def resolve_log_directory(cls, value: str | Path) -> Path:
@@ -183,6 +162,29 @@ class Settings(BaseSettings):
         if path.is_absolute():
             return path
         return BACKEND_ROOT / path
+
+    @field_validator(
+        "opencv_pipeline_detection_model_path",
+        "opencv_pipeline_calibration_directory",
+        mode="before",
+    )
+    @classmethod
+    def resolve_opencv_pipeline_paths(cls, value: str | Path) -> Path:
+        """Resolve OpenCV pipeline asset paths relative to the backend root."""
+
+        path = Path(value)
+        if path.is_absolute():
+            return path
+        return BACKEND_ROOT / path
+
+    @field_validator("opencv_pipeline_detection_class_ids", mode="before")
+    @classmethod
+    def parse_detection_class_ids(cls, value: str | list[int]) -> list[int]:
+        """Normalize detection class ids from env-friendly strings."""
+
+        if isinstance(value, str):
+            return [int(item.strip()) for item in value.split(",") if item.strip()]
+        return value
 
     @property
     def sql_dir(self) -> Path:

@@ -50,12 +50,12 @@ Provisioning files:
 
 - [prometheus.yml](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/provisioning/datasources/prometheus.yml)
 - [dashboards.yml](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/provisioning/dashboards/dashboards.yml)
-- [realtime_video_pipeline.json](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/dashboards/realtime_video_pipeline.json)
+- [opencv_pipeline.json](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/dashboards/opencv_pipeline.json)
 
 Manual Grafana flow:
 
 1. Add a Prometheus data source pointed at `http://127.0.0.1:9090`.
-2. Import `observability/grafana/dashboards/realtime_video_pipeline.json`.
+2. Import `observability/grafana/dashboards/opencv_pipeline.json`.
 3. Save the dashboard in a shared folder.
 
 ## PromQL Queries

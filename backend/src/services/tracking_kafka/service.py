@@ -95,9 +95,14 @@ class TrackingKafkaProducerService:
         serialises ``data`` as JSON and sends it to ``topic``.  Returns
         ``None`` when the producer has not started (Kafka disabled).
         """
+        return self.json_publisher(topic)
+
+    def json_publisher(self, topic: str) -> Any:
+        """Return a raw JSON Kafka publisher for arbitrary event payloads."""
+
         if self._producer is None:
             return None
-        return _InferenceKafkaPublisher(self._producer, topic)
+        return _JsonKafkaPublisher(self._producer, topic)
 
     def health_snapshot(self) -> dict[str, str | bool | None]:
         """Return a health summary consumed by health checks and metrics."""
@@ -119,8 +124,8 @@ class TrackingKafkaProducerService:
             )
 
 
-class _InferenceKafkaPublisher:
-    """Thin adapter that publishes raw inference event dicts to a Kafka topic.
+class _JsonKafkaPublisher:
+    """Thin adapter that publishes raw dict payloads to a Kafka topic.
 
     Used by ``InferenceOrchestrator`` which needs ``async publish(data: dict)``
     rather than the full ``TrackingUpdatePublisher`` protocol.
