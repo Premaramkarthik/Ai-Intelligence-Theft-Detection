@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 from pydantic import BaseModel, Field
@@ -17,6 +16,9 @@ from src.schemas.common import WebSocketEnvelope, utc_now
 from src.services.presentation.websocket_manager import WebSocketManager
 from src.services.tracking.contracts import TrackingTrackSnapshot
 from src.services.tracking.updates import TrackingUpdatePublisher
+
+if TYPE_CHECKING:
+    from src.services.webrtc.registry import WebRTCRegistry
 
 
 @dataclass(slots=True)
@@ -51,7 +53,10 @@ _ALERT_COLORS: dict[str, tuple[int, int, int]] = {
 
 
 class CameraFrameKafkaEventPayload(BaseModel):
-    """Structured event published to ``camera.frames``."""
+    """Structured event published to ``camera.frames``.
+
+    preview_jpeg_base64 is intentionally absent: video is now delivered via WebRTC.
+    """
 
     event: str = "camera.frame"
     emitted_at: datetime = Field(default_factory=utc_now)
@@ -65,7 +70,6 @@ class CameraFrameKafkaEventPayload(BaseModel):
     motion: dict[str, float | bool]
     detections: int
     active_tracks: int
-    preview_jpeg_base64: str | None = None
 
 
 class IdentityKafkaEventPayload(BaseModel):
@@ -115,7 +119,7 @@ class FrameAnnotator:
 
 
 class OutputDispatcher:
-    """Publish pipeline outputs to Kafka and the tracking/inference fanout path."""
+    """Publish pipeline outputs to Kafka, WebSocket metadata, and WebRTC tracks."""
 
     def __init__(
         self,
@@ -124,9 +128,8 @@ class OutputDispatcher:
         frame_publisher: Any | None,
         identity_event_publisher: Any | None,
         ws_frame_publisher: WebSocketManager | None = None,
+        webrtc_registry: WebRTCRegistry | None = None,
         annotated_stream_suffix: str = "tracked",
-        include_previews: bool = False,
-        jpeg_quality: int = 100,
         display_enabled: bool = False,
         display_window_prefix: str = "OpenCV Pipeline",
     ) -> None:
@@ -134,9 +137,8 @@ class OutputDispatcher:
         self._frame_publisher = frame_publisher
         self._identity_event_publisher = identity_event_publisher
         self._ws_frame_publisher = ws_frame_publisher
+        self._webrtc_registry = webrtc_registry
         self._annotated_stream_suffix = annotated_stream_suffix
-        self._include_previews = include_previews
-        self._jpeg_quality = jpeg_quality
         self._display_enabled = display_enabled
         self._display_window_prefix = display_window_prefix
         self._logger = get_logger(__name__)
@@ -189,14 +191,14 @@ class OutputDispatcher:
             motion=_motion_payload(output.motion),
             detections=len(output.detections),
             active_tracks=len(output.tracks),
-            preview_jpeg_base64=_encode_frame_preview(output.annotated_bgr, self._jpeg_quality),
         )
 
+        # Push the annotated frame to all active WebRTC viewers (non-blocking).
+        if self._webrtc_registry is not None:
+            self._webrtc_registry.push_frame(packet.camera_id, output.annotated_bgr)
+
         if self._frame_publisher is not None:
-            kafka_payload = frame_payload.model_dump(mode="json")
-            if not self._include_previews:
-                kafka_payload["preview_jpeg_base64"] = None
-            tasks.append(self._frame_publisher.publish(kafka_payload))
+            tasks.append(self._frame_publisher.publish(frame_payload.model_dump(mode="json")))
 
         if self._ws_frame_publisher is not None:
             tasks.append(
@@ -298,14 +300,3 @@ def _motion_payload(motion: MotionSummary) -> dict[str, float | bool]:
         "foreground_ratio": motion.foreground_ratio,
         "is_motion_consistent": motion.is_motion_consistent,
     }
-
-
-def _encode_frame_preview(frame_bgr: Any, jpeg_quality: int) -> str | None:
-    ok, encoded = cv2.imencode(
-        ".jpg",
-        frame_bgr,
-        [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
-    )
-    if not ok:
-        return None
-    return base64.b64encode(encoded.tobytes()).decode("ascii")

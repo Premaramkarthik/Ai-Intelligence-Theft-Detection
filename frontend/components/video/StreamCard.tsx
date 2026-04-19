@@ -1,11 +1,12 @@
 "use client";
-/* eslint-disable @next/next/no-img-element */
 
-import { AlertTriangle, ScanLine, WifiOff } from "lucide-react";
+import { AlertTriangle, RefreshCw, ScanLine, WifiOff } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StreamOverlay } from "@/components/video/StreamOverlay";
+import { useWebRTCStream } from "@/hooks/useWebRTCStream";
 import { useCameraRealtime, useRealtimeOverview } from "@/hooks/useRealtime";
 import type { CameraResponse } from "@/types/camera";
 
@@ -19,9 +20,17 @@ function formatLastUpdate(isoTimestamp: string | null) {
 export function StreamCard({ camera }: { camera: CameraResponse }) {
   const overview = useRealtimeOverview();
   const stream = useCameraRealtime(camera.id);
-  const frame = stream.frame;
-  const isConnected = overview.connectionState === "connected";
-  const isBooting = !frame && (overview.connectionState === "connecting" || overview.connectionState === "reconnecting");
+  const { videoRef, state: rtcState, attempt, maxAttempts, restart } = useWebRTCStream(camera.id);
+
+  const isWsConnected = overview.connectionState === "connected";
+  const isRtcConnected = rtcState === "connected";
+  const isBooting = rtcState === "connecting" || rtcState === "idle";
+  const isRetrying = rtcState === "retrying";
+  const isFailed = rtcState === "failed" || rtcState === "closed";
+
+  // Use frame dimensions from the last WebSocket metadata event for overlay scaling.
+  const frameWidth = stream.frame?.width ?? 1280;
+  const frameHeight = stream.frame?.height ?? 720;
 
   return (
     <Card className="overflow-hidden">
@@ -42,33 +51,78 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="relative aspect-video overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-1)]">
-          {frame?.preview_jpeg_base64 ? (
-            <img
-              src={`data:image/jpeg;base64,${frame.preview_jpeg_base64}`}
-              alt={`${camera.name} live frame`}
-              className="absolute inset-0 h-full w-full object-contain"
+          {/* WebRTC video element — always mounted so the ref is stable */}
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-300 ${
+              isRtcConnected ? "opacity-100" : "opacity-0"
+            }`}
+          />
+
+          {/* Tracking overlay — positioned over the video */}
+          {isRtcConnected && (
+            <StreamOverlay
+              tracking={stream.tracking}
+              inference={stream.inference}
+              frameWidth={frameWidth}
+              frameHeight={frameHeight}
             />
-          ) : isBooting ? (
-            <div className="absolute inset-0 p-4">
-              <Skeleton className="h-full w-full rounded-2xl" />
-            </div>
-          ) : (
+          )}
+
+          {/* Loading / error states shown while video is not live */}
+          {!isRtcConnected && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
-              {isConnected ? (
-                <ScanLine className="h-8 w-8 text-[var(--text-secondary)]" />
+              {isBooting || isRetrying ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-4">
+                  <Skeleton className="absolute inset-0 h-full w-full rounded-2xl" />
+                  {isRetrying && (
+                    <p className="relative z-10 text-xs font-medium text-[var(--text-secondary)]">
+                      Retry {attempt}/{maxAttempts}…
+                    </p>
+                  )}
+                </div>
+              ) : isFailed ? (
+                <>
+                  <WifiOff className="h-8 w-8 text-[var(--danger-strong)]" />
+                  <div>
+                    <p className="text-sm font-semibold text-[var(--text-primary)]">
+                      WebRTC connection failed
+                    </p>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                      Check that the camera is active and the backend is reachable.
+                    </p>
+                  </div>
+                  <button
+                    onClick={restart}
+                    className="mt-2 flex items-center gap-2 rounded-md border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--surface-3)] transition-colors"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    Retry
+                  </button>
+                </>
+              ) : !isWsConnected ? (
+                <>
+                  <WifiOff className="h-8 w-8 text-[var(--danger-strong)]" />
+                  <div>
+                    <p className="text-sm font-semibold text-[var(--text-primary)]">
+                      Realtime connection unavailable
+                    </p>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                      The WebSocket is reconnecting. Stream cards will resume automatically.
+                    </p>
+                  </div>
+                </>
               ) : (
-                <WifiOff className="h-8 w-8 text-[var(--danger-strong)]" />
+                <>
+                  <ScanLine className="h-8 w-8 text-[var(--text-secondary)]" />
+                  <p className="text-sm font-semibold text-[var(--text-primary)]">
+                    Awaiting WebRTC stream
+                  </p>
+                </>
               )}
-              <div>
-                <p className="text-sm font-semibold text-[var(--text-primary)]">
-                  {isConnected ? "Awaiting live frames" : "Realtime connection unavailable"}
-                </p>
-                <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                  {isConnected
-                    ? "The dashboard is connected, but this camera has not published a preview frame yet."
-                    : "The websocket is reconnecting. Stream cards will resume automatically when data returns."}
-                </p>
-              </div>
             </div>
           )}
         </div>
@@ -77,13 +131,13 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
           <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Pipeline</p>
             <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">
-              {frame ? `${frame.pipeline_latency_ms.toFixed(1)}ms` : "—"}
+              {stream.frame ? `${stream.frame.pipeline_latency_ms.toFixed(1)}ms` : "—"}
             </p>
           </div>
           <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Tracks</p>
             <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">
-              {stream.tracking?.active_tracks ?? frame?.active_tracks ?? 0}
+              {stream.tracking?.active_tracks ?? stream.frame?.active_tracks ?? 0}
             </p>
           </div>
           <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">

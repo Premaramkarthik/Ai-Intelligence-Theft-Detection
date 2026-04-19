@@ -17,7 +17,6 @@ export interface CameraFrameEvent {
   };
   detections: number;
   active_tracks: number;
-  preview_jpeg_base64: string | null;
 }
 
 export interface TrackingTrack {

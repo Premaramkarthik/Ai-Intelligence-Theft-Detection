@@ -68,5 +68,8 @@ export const endpoints = {
     db: "/health/db",
     logs: (lines = 60) => withQuery("/health/logs", { lines }),
   },
+  webrtc: {
+    offer: (cameraId: string) => `/webrtc/offer/${encodeURIComponent(cameraId)}`,
+  },
 };
 

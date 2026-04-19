@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from time import perf_counter_ns
+from typing import TYPE_CHECKING
 
 from src.core.config import Settings
 from src.core.logger.logger import get_logger
@@ -37,6 +38,9 @@ from src.services.tracking.updates import (
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
 from src.utils.ffmpeg import build_rtsp_url_from_camera
 
+if TYPE_CHECKING:
+    from src.services.webrtc.registry import WebRTCRegistry
+
 
 @dataclass(slots=True)
 class _ActiveCamera:
@@ -55,6 +59,7 @@ class OpenCvPipelineRuntime:
         inference_manager: InferenceManager,
         metrics_recorder: MetricsRecorder | None = None,
         websocket_manager: WebSocketManager | None = None,
+        webrtc_registry: WebRTCRegistry | None = None,
     ) -> None:
         self._settings = settings
         self._camera_service = camera_service
@@ -136,9 +141,8 @@ class OpenCvPipelineRuntime:
                 settings.kafka_topic_identity_events
             ),
             ws_frame_publisher=websocket_manager,
+            webrtc_registry=webrtc_registry,
             annotated_stream_suffix=settings.tracking_stream_suffix,
-            include_previews=settings.opencv_pipeline_publish_frame_previews,
-            jpeg_quality=settings.opencv_pipeline_preview_jpeg_quality,
             display_enabled=settings.opencv_pipeline_display_enabled,
             display_window_prefix=settings.opencv_pipeline_display_window_prefix,
         )

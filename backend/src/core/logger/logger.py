@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -96,6 +97,18 @@ def _matches_logger_prefix(name: str, prefix: str) -> bool:
     return name == prefix or name.startswith(f"{prefix}.")
 
 
+class _AioiceLinkLocalFilter(logging.Filter):
+    """Drop aioice INFO records about link-local (169.254.x.x) bind failures on Windows.
+
+    These addresses are APIPA addresses that Windows cannot bind to. aioice logs
+    each failed attempt at INFO level, producing noise in every WebRTC session even
+    though ICE still completes successfully via valid interfaces.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Could not bind to 169.254" not in record.getMessage()
+
+
 class _SubsystemLogFilter(logging.Filter):
     def __init__(
         self,
@@ -167,6 +180,10 @@ def configure_logging(
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)
     root.addHandler(stream_handler)
+
+    # Suppress noisy link-local bind warnings from aioice on Windows.
+    if sys.platform == "win32":
+        logging.getLogger("aioice.ice").addFilter(_AioiceLinkLocalFilter())
 
     log_dir = Path(log_directory) if log_directory is not None else Path.cwd() / "runtime" / "logs"
 

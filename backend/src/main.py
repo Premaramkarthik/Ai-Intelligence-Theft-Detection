@@ -29,6 +29,8 @@ from src.opencv_pipeline.runtime import OpenCvPipelineRuntime
 from src.routes.camera_routes import router as camera_router
 from src.routes.health_routes import router as health_router
 from src.routes.stream_routes import router as stream_router
+from src.routes.webrtc_routes import router as webrtc_router
+from src.routes.webrtc_routes import close_all_peer_connections
 from src.schemas.camera_requests import CreateCameraRequest, UpdateCameraRequest
 from src.services.camera.camera_repository import CameraRepository
 from src.services.camera.camera_service import CameraService
@@ -40,6 +42,7 @@ from src.services.stream.stream_control_service import StreamControlService
 from src.services.stream.kafka_event_consumer import StreamEventConsumer
 from src.services.stream.stream_state_repository import StreamStateRepository
 from src.services.tracking_kafka.service import TrackingKafkaProducerService
+from src.services.webrtc.registry import WebRTCRegistry
 from src.utils.migration_runner import apply_pending_migrations
 
 
@@ -62,6 +65,7 @@ class ApplicationContainer:  # pylint: disable=too-many-instance-attributes
     inference_manager: InferenceManager
     opencv_pipeline: OpenCvPipelineRuntime
     websocket_manager: WebSocketManager
+    webrtc_registry: WebRTCRegistry
     stream_event_consumer: StreamEventConsumer | None
     metrics_server: MetricsServer | None
     system_metrics_collector: SystemMetricsCollector | None
@@ -174,6 +178,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         )
         stream_control_service = StreamControlService(stream_state_repository)
         websocket_manager = WebSocketManager(metrics_recorder=metrics_recorder)
+        webrtc_registry = WebRTCRegistry()
 
         # Build the shared Kafka producer first so both inference and tracking
         # bootstraps can reference the same started producer instance.
@@ -197,6 +202,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             inference_manager,
             metrics_recorder,
             websocket_manager=websocket_manager,
+            webrtc_registry=webrtc_registry,
         )
         pipeline_task = asyncio.create_task(opencv_pipeline.run_forever())
 
@@ -235,6 +241,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             inference_manager=inference_manager,
             opencv_pipeline=opencv_pipeline,
             websocket_manager=websocket_manager,
+            webrtc_registry=webrtc_registry,
             stream_event_consumer=stream_event_consumer,
             metrics_server=metrics_server,
             system_metrics_collector=system_metrics_collector,
@@ -244,6 +251,8 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
         try:
             yield
         finally:
+            await close_all_peer_connections()
+            webrtc_registry.close()
             await opencv_pipeline.stop()
             pipeline_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -269,6 +278,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
             {"name": "Cameras", "description": "Camera CRUD and RTSP validation endpoints."},
             {"name": "Health", "description": "Service and database endpoints."},
             {"name": "Streams", "description": "Realtime websocket and inference controls."},
+            {"name": "WebRTC", "description": "WebRTC SDP signaling endpoints."},
         ],
     )
     application.add_middleware(
@@ -284,6 +294,7 @@ def create_application() -> FastAPI:  # pylint: disable=too-many-statements
     application.include_router(camera_router)
     application.include_router(health_router)
     application.include_router(stream_router)
+    application.include_router(webrtc_router)
     return application
 
 
