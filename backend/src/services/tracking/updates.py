@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, Protocol
 
 from src.core.logger.logger import get_logger
@@ -159,9 +160,39 @@ class InferenceIngressPublisher:
     scheduler's dispatch gate applies the final quality checks.
     """
 
+    _STATE_LOG_INTERVAL_SECONDS = 30.0
+
     def __init__(self, ingress: _InferenceIngress) -> None:
         self._ingress = ingress
         self._logger = get_logger(__name__)
+        self._last_visible_state: dict[str, tuple[str, float]] = {}
+
+    def _log_visible_state(
+        self,
+        *,
+        camera_id: str,
+        state: str,
+        event: str,
+        message: str,
+        **fields: object,
+    ) -> None:
+        now = monotonic()
+        previous = self._last_visible_state.get(camera_id)
+        if previous is not None:
+            previous_state, previous_logged_at = previous
+            if previous_state == state and (
+                now - previous_logged_at < self._STATE_LOG_INTERVAL_SECONDS
+            ):
+                return
+        self._last_visible_state[camera_id] = (state, now)
+        log_inference_event(
+            self._logger,
+            logging.INFO,
+            event,
+            message,
+            camera_id=camera_id,
+            **fields,
+        )
 
     async def publish(
         self,
@@ -174,6 +205,21 @@ class InferenceIngressPublisher:
     ) -> None:
         del annotated_stream_name
         if not self._ingress.is_camera_enabled(camera_id):
+            self._log_visible_state(
+                camera_id=camera_id,
+                state="skip:camera_inference_disabled",
+                event="inference.input_skipped",
+                message=(
+                    "Inference input skipped before scheduler: "
+                    "reason=camera_inference_disabled "
+                    f"camera_id={camera_id} "
+                    f"stream_name={stream_name} "
+                    f"total_tracks={len(tracks)}"
+                ),
+                stream_name=stream_name,
+                total_tracks=len(tracks),
+                reason="camera_inference_disabled",
+            )
             log_inference_event(
                 self._logger,
                 logging.DEBUG,
@@ -186,6 +232,21 @@ class InferenceIngressPublisher:
             )
             return
         if frame is None:
+            self._log_visible_state(
+                camera_id=camera_id,
+                state="skip:missing_frame",
+                event="inference.input_skipped",
+                message=(
+                    "Inference input skipped before scheduler: "
+                    "reason=missing_frame "
+                    f"camera_id={camera_id} "
+                    f"stream_name={stream_name} "
+                    f"total_tracks={len(tracks)}"
+                ),
+                stream_name=stream_name,
+                total_tracks=len(tracks),
+                reason="missing_frame",
+            )
             log_inference_event(
                 self._logger,
                 logging.DEBUG,
@@ -198,6 +259,21 @@ class InferenceIngressPublisher:
             )
             return
         if not tracks:
+            self._log_visible_state(
+                camera_id=camera_id,
+                state="skip:no_tracks",
+                event="inference.input_skipped",
+                message=(
+                    "Inference input skipped before scheduler: "
+                    "reason=no_tracks "
+                    f"camera_id={camera_id} "
+                    f"stream_name={stream_name} "
+                    "total_tracks=0"
+                ),
+                stream_name=stream_name,
+                total_tracks=0,
+                reason="no_tracks",
+            )
             log_inference_event(
                 self._logger,
                 logging.DEBUG,
@@ -247,6 +323,23 @@ class InferenceIngressPublisher:
             self._ingress.ingest_sample(sample)
             dispatched_tracks += 1
 
+        self._log_visible_state(
+            camera_id=camera_id,
+            state="dispatch",
+            event="inference.input_dispatched_visible",
+            message=(
+                "Inference input dispatched to scheduler: "
+                f"camera_id={camera_id} "
+                f"stream_name={stream_name} "
+                f"total_tracks={len(tracks)} "
+                f"dispatched_tracks={dispatched_tracks} "
+                f"sampled_at={now.isoformat()}"
+            ),
+            stream_name=stream_name,
+            total_tracks=len(tracks),
+            dispatched_tracks=dispatched_tracks,
+            sampled_at=now.isoformat(),
+        )
         log_inference_event(
             self._logger,
             logging.DEBUG,

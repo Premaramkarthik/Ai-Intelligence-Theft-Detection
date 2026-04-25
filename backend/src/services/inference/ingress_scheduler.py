@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import monotonic
 
 from src.core.logger.logger import get_logger
 from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
@@ -25,6 +26,8 @@ class InferenceIngressScheduler:
     begin on the earliest visible person track.
     """
 
+    _VISIBLE_LOG_INTERVAL_SECONDS = 30.0
+
     def __init__(
         self,
         config: InferenceWorkerConfig,
@@ -39,6 +42,7 @@ class InferenceIngressScheduler:
         self._queue: asyncio.Queue[list[InferenceIngressSample]] = asyncio.Queue(
             maxsize=config.ingress_queue_maxsize,
         )
+        self._last_visible_state: tuple[str, float] | None = None
 
     @property
     def queue(self) -> asyncio.Queue[list[InferenceIngressSample]]:
@@ -65,6 +69,27 @@ class InferenceIngressScheduler:
 
         gate_failure_reasons = self._gate_failure_reasons(sample, temporal_buffer_depth)
         if gate_failure_reasons:
+            self._log_visible_state(
+                state=f"gate:{'|'.join(gate_failure_reasons)}",
+                event="inference.gate_rejected_visible",
+                message=(
+                    "Inference dispatch gate rejected sample: "
+                    f"camera_id={self._config.camera_id} "
+                    f"persistent_id={sample.persistent_id} "
+                    f"local_track_id={sample.local_track_id} "
+                    f"failure_reasons={gate_failure_reasons} "
+                    f"queue_depth={queue_depth_before} "
+                    f"temporal_buffer_depth={temporal_buffer_depth} "
+                    f"crop={sample.width}x{sample.height} "
+                    f"consecutive_hits={sample.consecutive_hits} "
+                    f"frames_since_update={sample.frames_since_update}"
+                ),
+                camera_id=self._config.camera_id,
+                queue_depth=queue_depth_before,
+                temporal_buffer_depth=temporal_buffer_depth,
+                failure_reasons=gate_failure_reasons,
+                sample=summarize_sample(sample),
+            )
             log_inference_event(
                 self._logger,
                 logging.DEBUG,
@@ -117,6 +142,24 @@ class InferenceIngressScheduler:
             self._config.camera_id,
             queue_depth_after,
         )
+        self._log_visible_state(
+            state="enqueued",
+            event="inference.batch_enqueued_visible",
+            message=(
+                "Inference batch enqueued for orchestration: "
+                f"camera_id={self._config.camera_id} "
+                f"persistent_id={sample.persistent_id} "
+                f"local_track_id={sample.local_track_id} "
+                f"batch_size={len(batch)} "
+                f"queue_depth={queue_depth_after} "
+                f"temporal_buffer_depth={temporal_buffer_depth}"
+            ),
+            camera_id=self._config.camera_id,
+            persistent_id=sample.persistent_id,
+            batch_size=len(batch),
+            queue_depth=queue_depth_after,
+            temporal_buffer_depth=temporal_buffer_depth,
+        )
         log_inference_event(
             self._logger,
             logging.DEBUG,
@@ -127,6 +170,30 @@ class InferenceIngressScheduler:
             batch_size=len(batch),
             queue_depth=queue_depth_after,
             temporal_buffer_depth=temporal_buffer_depth,
+        )
+
+    def _log_visible_state(
+        self,
+        *,
+        state: str,
+        event: str,
+        message: str,
+        **fields: object,
+    ) -> None:
+        now = monotonic()
+        if self._last_visible_state is not None:
+            previous_state, previous_logged_at = self._last_visible_state
+            if previous_state == state and (
+                now - previous_logged_at < self._VISIBLE_LOG_INTERVAL_SECONDS
+            ):
+                return
+        self._last_visible_state = (state, now)
+        log_inference_event(
+            self._logger,
+            logging.INFO,
+            event,
+            message,
+            **fields,
         )
 
     def _gate_passes(self, sample: InferenceIngressSample) -> bool:

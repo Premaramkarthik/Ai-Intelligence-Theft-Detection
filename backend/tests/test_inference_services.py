@@ -148,6 +148,14 @@ class TestInferenceIngressScheduler:
         sched.ingest(_make_sample(persistent_id_state="pending"))
         assert sched.queue.qsize() == 1
 
+    def test_gate_allows_first_visible_detection_with_zero_hits(self) -> None:
+        sched = self._make_scheduler(
+            temporal_buffer_size=1,
+            dispatch_min_consecutive_hits=0,
+        )
+        sched.ingest(_make_sample(consecutive_hits=0))
+        assert sched.queue.qsize() == 1
+
     def test_gate_rejects_insufficient_consecutive_hits(self) -> None:
         sched = self._make_scheduler(
             temporal_buffer_size=1, dispatch_min_consecutive_hits=4
