@@ -17,13 +17,17 @@ function alertTone(level: string): "success" | "warning" | "danger" | "neutral" 
   return "neutral";
 }
 
-/** Keep only the most recent inference event per local_track_id. */
-function latestPerTrack(events: InferenceEvent[]): InferenceEvent[] {
+/** Keep only the most recent inference event for this camera and track. */
+function latestPerTrack(events: InferenceEvent[], cameraId: string): InferenceEvent[] {
   const seen = new Set<string>();
   const result: InferenceEvent[] = [];
   for (const ev of events) {
-    if (!seen.has(ev.local_track_id)) {
-      seen.add(ev.local_track_id);
+    if (ev.camera_id !== cameraId) {
+      continue;
+    }
+    const trackKey = ev.local_track_id;
+    if (!seen.has(trackKey)) {
+      seen.add(trackKey);
       result.push(ev);
     }
   }
@@ -41,6 +45,9 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
   const overview = useRealtimeOverview();
   const stream = useCameraRealtime(camera.id);
   const { videoRef, state: rtcState, attempt, maxAttempts, restart } = useWebRTCStream(camera.id);
+  const frame = stream.frame?.camera_id === camera.id ? stream.frame : null;
+  const tracking = stream.tracking?.camera_id === camera.id ? stream.tracking : null;
+  const inference = latestPerTrack(stream.inference, camera.id);
 
   const isWsConnected = overview.connectionState === "connected";
   const isRtcConnected = rtcState === "connected";
@@ -137,20 +144,20 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
           <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Pipeline</p>
             <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">
-              {stream.frame ? `${stream.frame.pipeline_latency_ms.toFixed(1)}ms` : "—"}
+              {frame ? `${frame.pipeline_latency_ms.toFixed(1)}ms` : "-"}
             </p>
           </div>
           <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Tracks</p>
             <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">
-              {stream.tracking?.active_tracks ?? stream.frame?.active_tracks ?? 0}
+              {tracking?.active_tracks ?? frame?.active_tracks ?? 0}
             </p>
           </div>
           <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">
             <p className="text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">Alerts</p>
             <p className="mt-2 flex items-center gap-2 text-lg font-semibold text-[var(--text-primary)]">
-              {stream.inference.filter((event) => event.alert_level !== "normal").length}
-              {stream.inference.some((event) => event.alert_level === "alert") ? (
+              {inference.filter((event) => event.alert_level !== "normal").length}
+              {inference.some((event) => event.alert_level === "alert") ? (
                 <AlertTriangle className="h-4 w-4 text-[var(--danger-strong)]" />
               ) : null}
             </p>
@@ -158,15 +165,15 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
         </div>
 
         {/* Per-track inference labels — scoped to this camera only */}
-        {stream.inference.length > 0 && (
+        {inference.length > 0 && (
           <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">
             <p className="mb-2.5 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
-              Inference · {camera.name}
+              Inference - {camera.name}
             </p>
             <div className="space-y-2">
-              {latestPerTrack(stream.inference).map((event) => (
+              {inference.map((event) => (
                 <div
-                  key={event.local_track_id}
+                  key={`${event.camera_id}-${event.local_track_id}`}
                   className="flex items-center justify-between gap-3"
                 >
                   <span className="truncate text-sm font-medium text-[var(--text-secondary)]">

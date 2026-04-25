@@ -18,7 +18,7 @@ type Listener = () => void;
 const MAX_ACTIVITY_ITEMS = 30;
 const MAX_INFERENCE_ITEMS = 12;
 const MAX_IDENTITY_ITEMS = 12;
-const INFERENCE_TTL_MS = 3_000;
+const ORPHAN_INFERENCE_TTL_MS = 3_000;
 const INFERENCE_SWEEP_INTERVAL_MS = 1_000;
 
 const EMPTY_CAMERA_SNAPSHOT: CameraRealtimeSnapshot = {
@@ -43,18 +43,100 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function readCameraId(value: unknown): string | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return typeof value.camera_id === "string" && value.camera_id ? value.camera_id : null;
+}
+
 function normalizeCameraId(envelope: WebSocketEnvelope<unknown>): string | null {
-  if (typeof envelope.camera_id === "string" && envelope.camera_id) {
-    return envelope.camera_id;
+  const envelopeCameraId =
+    typeof envelope.camera_id === "string" && envelope.camera_id ? envelope.camera_id : null;
+  const payloadCameraId = readCameraId(envelope.data);
+
+  if (envelopeCameraId && payloadCameraId && envelopeCameraId !== payloadCameraId) {
+    return null;
   }
-  if (isRecord(envelope.data) && typeof envelope.data.camera_id === "string") {
-    return envelope.data.camera_id;
+  return envelopeCameraId ?? payloadCameraId;
+}
+
+function isCameraPayload(payload: Record<string, unknown>, cameraId: string): boolean {
+  return readCameraId(payload) === cameraId;
+}
+
+function isInferenceTopic(topic: string, payload: Record<string, unknown> | null): boolean {
+  return topic === "camera.ai_results" || topic === "inference" || payload?.event === "inference.updated";
+}
+
+function isTrackingTopic(topic: string, payload: Record<string, unknown> | null): boolean {
+  return topic === "camera.tracking.updates" || topic === "tracking.updated" || payload?.event === "tracking.updated";
+}
+
+function filterInferenceForCamera(events: InferenceEvent[], cameraId: string): InferenceEvent[] {
+  return events.filter((event) => event.camera_id === cameraId);
+}
+
+function inferenceTrackKey(event: Pick<InferenceEvent, "persistent_id" | "local_track_id">): string {
+  return event.persistent_id || event.local_track_id;
+}
+
+function upsertInferenceEvent(
+  events: InferenceEvent[],
+  event: InferenceEvent,
+  cameraId: string,
+): InferenceEvent[] {
+  const eventKey = inferenceTrackKey(event);
+  let replaced = false;
+  const next = filterInferenceForCamera(events, cameraId).map((item) => {
+    const sameLocalTrack = item.local_track_id === event.local_track_id;
+    const samePersistentTrack = inferenceTrackKey(item) === eventKey;
+    if (sameLocalTrack || samePersistentTrack) {
+      replaced = true;
+      return event;
+    }
+    return item;
+  });
+
+  if (!replaced) {
+    next.push(event);
   }
-  return null;
+
+  return next.length > MAX_INFERENCE_ITEMS
+    ? next.slice(next.length - MAX_INFERENCE_ITEMS)
+    : next;
+}
+
+function pruneInferenceToTracking(
+  events: InferenceEvent[],
+  tracking: TrackingEvent,
+  cameraId: string,
+): InferenceEvent[] {
+  const localTrackIds = new Set(tracking.tracks.map((track) => track.track_id));
+  const persistentIds = new Set(
+    tracking.tracks
+      .map((track) => track.persistent_id)
+      .filter((value): value is string => typeof value === "string" && value.length > 0),
+  );
+  return filterInferenceForCamera(events, cameraId).filter((event) => {
+    return localTrackIds.has(event.local_track_id) || persistentIds.has(event.persistent_id);
+  });
+}
+
+function isInferenceAttachedToTracking(event: InferenceEvent, tracking: TrackingEvent | null): boolean {
+  if (!tracking) {
+    return false;
+  }
+  return tracking.tracks.some((track) => {
+    if (track.track_id === event.local_track_id) {
+      return true;
+    }
+    return Boolean(track.persistent_id) && track.persistent_id === event.persistent_id;
+  });
 }
 
 function topicLabel(topic: string, payload: Record<string, unknown> | null): { label: string; tone: RealtimeActivityItem["tone"] } {
-  if (topic === "camera.ai_results") {
+  if (isInferenceTopic(topic, payload)) {
     const level = typeof payload?.alert_level === "string" ? payload.alert_level : "normal";
     return {
       label:
@@ -64,7 +146,7 @@ function topicLabel(topic: string, payload: Record<string, unknown> | null): { l
       tone: level === "alert" ? "critical" : level === "warning" ? "warning" : "positive",
     };
   }
-  if (topic === "camera.tracking.updates" || topic === "tracking.updated") {
+  if (isTrackingTopic(topic, payload)) {
     return { label: "Tracking updated", tone: "positive" };
   }
   if (topic === "camera.frames") {
@@ -178,7 +260,11 @@ class RealtimeClient {
     if (typeof window === "undefined") {
       return;
     }
-    if (this.socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(this.socket.readyState)) {
+    if (
+      this.socket &&
+      (this.socket.readyState === WebSocket.OPEN ||
+        this.socket.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
@@ -235,25 +321,23 @@ class RealtimeClient {
     const payload = isRecord(envelope.data) ? envelope.data : null;
     const topic = envelope.topic;
 
-    if (cameraId && payload) {
+    if (cameraId && payload && isCameraPayload(payload, cameraId)) {
       const current = this.streamSnapshots.get(cameraId) ?? EMPTY_CAMERA_SNAPSHOT;
       const next = cloneCameraSnapshot(current);
       next.lastUpdatedAt = this.lastMessageAt;
 
       if (topic === "camera.frames" || payload.event === "camera.frame") {
         next.frame = payload as unknown as CameraFrameEvent;
-      } else if (topic === "camera.tracking.updates" || topic === "tracking.updated" || payload.event === "tracking.updated") {
-        next.tracking = payload as unknown as TrackingEvent;
-      } else if (topic === "camera.ai_results" || payload.event === "inference.updated") {
-        next.inference = [
+      } else if (isTrackingTopic(topic, payload)) {
+        const tracking = payload as unknown as TrackingEvent;
+        next.tracking = tracking;
+        next.inference = pruneInferenceToTracking(next.inference, tracking, cameraId);
+      } else if (isInferenceTopic(topic, payload)) {
+        next.inference = upsertInferenceEvent(
+          next.inference,
           payload as unknown as InferenceEvent,
-          ...next.inference.filter((item) => {
-            return !(
-              item.local_track_id === payload.local_track_id &&
-              item.sampled_at === payload.sampled_at
-            );
-          }),
-        ].slice(0, MAX_INFERENCE_ITEMS);
+          cameraId,
+        );
       } else if (topic === "identity.events") {
         next.identity = [
           payload as unknown as IdentityEvent,
@@ -292,10 +376,13 @@ class RealtimeClient {
   }
 
   private sweepStaleInference() {
-    const cutoff = Date.now() - INFERENCE_TTL_MS;
+    const cutoff = Date.now() - ORPHAN_INFERENCE_TTL_MS;
     for (const [cameraId, snapshot] of this.streamSnapshots) {
       const fresh = snapshot.inference.filter(
-        (ev) => new Date(ev.emitted_at).getTime() > cutoff,
+        (ev) =>
+          ev.camera_id === cameraId &&
+          (isInferenceAttachedToTracking(ev, snapshot.tracking) ||
+            new Date(ev.emitted_at).getTime() > cutoff),
       );
       if (fresh.length !== snapshot.inference.length) {
         const next = cloneCameraSnapshot(snapshot);

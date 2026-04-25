@@ -298,6 +298,7 @@ class OpenCvPipelineRuntime:
         self._tracker.remove_camera(camera_id)
         self._stabilizer.remove_camera(camera_id)
         self._inference_cache.remove_camera(camera_id)
+        self._annotator.remove_camera(camera_id)
         self._motion_analyzer.remove_camera(camera_id)
         self._calibration_service.remove_camera(camera_id)
         self._synchronizer.remove_camera(camera_id)

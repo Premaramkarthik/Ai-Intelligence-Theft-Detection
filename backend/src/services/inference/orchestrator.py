@@ -385,24 +385,20 @@ class InferenceOrchestrator:
 
         emitted_at = _utc_now()
         payloads: list[InferenceKafkaEventPayload] = []
-        # (raw_score, smoothed_score, previous_label) parallel to payloads
-        attribution_extras: list[tuple[float, float, str]] = []
+        # (raw_score, smoothed_score) parallel to payloads
+        attribution_extras: list[tuple[float, float]] = []
 
         for attributed_sample, raw_score in attributions:
-            previous_label = self._decision.get_state(attributed_sample.persistent_id)
             smoothed_score = self._smooth_score(
                 raw_score,
                 camera_id=attributed_sample.camera_id,
                 persistent_id=attributed_sample.persistent_id,
                 model_name=model_name,
             )
-            alert_level = self._decision.classify(
-                smoothed_score,
-                track_id=attributed_sample.persistent_id,
-            )
+            alert_level = self._decision.classify(smoothed_score)
             label = alert_level
             self._active_tracks.add(attributed_sample.persistent_id)
-            attribution_extras.append((raw_score, smoothed_score, previous_label))
+            attribution_extras.append((raw_score, smoothed_score))
             payloads.append(
                 InferenceKafkaEventPayload(
                     camera_id=attributed_sample.camera_id,
@@ -419,7 +415,7 @@ class InferenceOrchestrator:
                 )
             )
 
-        for payload, (raw_score, smoothed_score, previous_label) in zip(payloads, attribution_extras):
+        for payload, (raw_score, smoothed_score) in zip(payloads, attribution_extras):
             self._metrics.increment_inference_result(
                 strategy,
                 model_name,
@@ -436,7 +432,6 @@ class InferenceOrchestrator:
                 f"persistent_id={payload.persistent_id} "
                 f"strategy={payload.strategy} "
                 f"model_name={payload.model_name} "
-                f"previous_label={previous_label} "
                 f"label={payload.label} "
                 f"alert_level={payload.alert_level} "
                 f"raw_score={raw_score:.6f} "
@@ -456,7 +451,6 @@ class InferenceOrchestrator:
                 raw_score=round(raw_score, 6),
                 smoothed_score=round(smoothed_score, 6),
                 score=round(payload.score, 6),
-                previous_label=previous_label,
                 label=payload.label,
                 alert_level=payload.alert_level,
                 real_temporal_frames=real_frames,

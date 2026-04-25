@@ -133,7 +133,7 @@ async function request<T>(path: string, options: ApiRequestOptions = {}): Promis
         body,
         headers,
         cache: options.cache ?? "no-store",
-        signal: combineSignals(controller, options.signal),
+        signal: combineSignals(controller, options.signal ?? undefined),
       });
       clearTimeout(timeoutId);
       return await parseResponse<T>(response);

@@ -26,6 +26,16 @@ class _InferenceRecord:
     label: str
     score: float
     alert_level: str
+    recorded_at: datetime
+
+
+@dataclass(slots=True)
+class _TrackOverlayState:
+    left: float
+    top: float
+    width: float
+    height: float
+    last_seen_at: datetime
 
 
 class InferenceOverlayCache:
@@ -35,17 +45,33 @@ class InferenceOverlayCache:
         self._data: dict[tuple[str, str], _InferenceRecord] = {}
 
     def record(self, camera_id: str, local_track_id: str, label: str, score: float, alert_level: str) -> None:
-        self._data[(camera_id, local_track_id)] = _InferenceRecord(label, score, alert_level)
+        self._data[(camera_id, local_track_id)] = _InferenceRecord(
+            label,
+            score,
+            alert_level,
+            utc_now(),
+        )
 
     def get(self, camera_id: str, local_track_id: str) -> _InferenceRecord | None:
         return self._data.get((camera_id, local_track_id))
 
-    def items_for_camera(self, camera_id: str) -> list[tuple[str, _InferenceRecord]]:
+    def items_for_camera(
+        self,
+        camera_id: str,
+        active_track_ids: set[str] | None = None,
+    ) -> list[tuple[str, _InferenceRecord]]:
         return [
             (local_track_id, record)
             for (record_camera_id, local_track_id), record in self._data.items()
             if record_camera_id == camera_id
+            and (active_track_ids is None or local_track_id in active_track_ids)
         ]
+
+    def retain_active_tracks(self, camera_id: str, active_track_ids: set[str]) -> None:
+        """Remove prediction records for tracks that are no longer visible."""
+
+        for key in [k for k in self._data if k[0] == camera_id and k[1] not in active_track_ids]:
+            del self._data[key]
 
     def remove_camera(self, camera_id: str) -> None:
         for key in [k for k in self._data if k[0] == camera_id]:
@@ -95,30 +121,122 @@ class IdentityKafkaEventPayload(BaseModel):
 class FrameAnnotator:
     """Draw track, identity, and inference metadata onto an output frame."""
 
+    _BOX_SMOOTHING_ALPHA = 0.55
+    _BOX_RESET_DISTANCE_FACTOR = 0.75
+
     def __init__(self, inference_cache: InferenceOverlayCache | None = None) -> None:
         self._inference_cache = inference_cache
+        self._track_overlays: dict[tuple[str, str], _TrackOverlayState] = {}
 
     def annotate(self, output: PipelineOutput) -> Any:
         camera_id = output.processed_frame.packet.camera_id
         frame = output.processed_frame.working_bgr.copy()
+        active_track_ids = {track.track_id for track in output.tracks}
+        self._retain_active_track_overlays(camera_id, active_track_ids)
+        if self._inference_cache is not None:
+            self._inference_cache.retain_active_tracks(camera_id, active_track_ids)
 
         for track in output.tracks:
-            cv2.rectangle(frame, (track.left, track.top), (track.left + track.width, track.top + track.height), (30, 200, 70), 2)
+            left, top, width, height = _clamp_box(
+                self._stable_box(camera_id, track),
+                frame.shape[1],
+                frame.shape[0],
+            )
+            cv2.rectangle(frame, (left, top), (left + width, top + height), (30, 200, 70), 2)
             id_label = f"person_{track.track_id}"
             _draw_text_with_background(
                 frame,
                 f"{id_label} {track.confidence:.2f}",
-                (track.left, max(24, track.top - 8)),
+                (left, max(24, top - 8)),
             )
+            inference_record = (
+                self._inference_cache.get(camera_id, track.track_id)
+                if self._inference_cache is not None
+                else None
+            )
+            if inference_record is not None:
+                _draw_text_with_background(
+                    frame,
+                    (
+                        f"prediction: {inference_record.label}  "
+                        f"value: {inference_record.score:.4f}"
+                    ),
+                    (left, min(frame.shape[0] - 8, top + height + 22)),
+                )
 
         if self._inference_cache is not None:
-            self._draw_prediction_panel(frame, camera_id)
+            self._draw_prediction_panel(frame, camera_id, active_track_ids)
         return frame
 
-    def _draw_prediction_panel(self, frame: Any, camera_id: str) -> None:
-        """Render latest prediction labels in the top-left corner."""
+    def remove_camera(self, camera_id: str) -> None:
+        """Clear stable overlay state for a removed camera."""
 
-        prediction_items = self._inference_cache.items_for_camera(camera_id)
+        for key in [k for k in self._track_overlays if k[0] == camera_id]:
+            del self._track_overlays[key]
+
+    def _retain_active_track_overlays(self, camera_id: str, active_track_ids: set[str]) -> None:
+        for key in [k for k in self._track_overlays if k[0] == camera_id and k[1] not in active_track_ids]:
+            del self._track_overlays[key]
+
+    def _stable_box(self, camera_id: str, track: Any) -> tuple[int, int, int, int]:
+        """Return a smoothed box for a stable overlay container."""
+
+        key = (camera_id, track.track_id)
+        state = self._track_overlays.get(key)
+        now = utc_now()
+        if state is None:
+            state = _TrackOverlayState(
+                left=float(track.left),
+                top=float(track.top),
+                width=float(track.width),
+                height=float(track.height),
+                last_seen_at=now,
+            )
+            self._track_overlays[key] = state
+        elif self._should_reset_box(state, track):
+            state.left = float(track.left)
+            state.top = float(track.top)
+            state.width = float(track.width)
+            state.height = float(track.height)
+            state.last_seen_at = now
+        else:
+            alpha = self._BOX_SMOOTHING_ALPHA
+            state.left = _blend(state.left, float(track.left), alpha)
+            state.top = _blend(state.top, float(track.top), alpha)
+            state.width = _blend(state.width, float(track.width), alpha)
+            state.height = _blend(state.height, float(track.height), alpha)
+            state.last_seen_at = now
+        return (
+            int(round(state.left)),
+            int(round(state.top)),
+            max(1, int(round(state.width))),
+            max(1, int(round(state.height))),
+        )
+
+    def _should_reset_box(self, state: _TrackOverlayState, track: Any) -> bool:
+        previous_center_x = state.left + state.width / 2.0
+        previous_center_y = state.top + state.height / 2.0
+        current_center_x = float(track.left) + float(track.width) / 2.0
+        current_center_y = float(track.top) + float(track.height) / 2.0
+        distance = (
+            (current_center_x - previous_center_x) ** 2
+            + (current_center_y - previous_center_y) ** 2
+        ) ** 0.5
+        reset_distance = (
+            max(state.width, state.height, float(track.width), float(track.height), 1.0)
+            * self._BOX_RESET_DISTANCE_FACTOR
+        )
+        return distance > reset_distance
+
+    def _draw_prediction_panel(
+        self,
+        frame: Any,
+        camera_id: str,
+        active_track_ids: set[str],
+    ) -> None:
+        """Render latest active prediction labels in the top-left corner."""
+
+        prediction_items = self._inference_cache.items_for_camera(camera_id, active_track_ids)
         if not prediction_items:
             return
 
@@ -320,6 +438,23 @@ def _motion_payload(motion: MotionSummary) -> dict[str, float | bool]:
         "foreground_ratio": motion.foreground_ratio,
         "is_motion_consistent": motion.is_motion_consistent,
     }
+
+
+def _blend(previous: float, current: float, alpha: float) -> float:
+    return previous + (current - previous) * alpha
+
+
+def _clamp_box(
+    box: tuple[int, int, int, int],
+    frame_width: int,
+    frame_height: int,
+) -> tuple[int, int, int, int]:
+    left, top, width, height = box
+    left = max(0, min(left, max(0, frame_width - 1)))
+    top = max(0, min(top, max(0, frame_height - 1)))
+    width = max(1, min(width, max(1, frame_width - left)))
+    height = max(1, min(height, max(1, frame_height - top)))
+    return left, top, width, height
 
 
 def _draw_text_with_background(

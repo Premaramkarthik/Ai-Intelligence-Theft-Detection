@@ -62,6 +62,6 @@ class InferenceWorkerConfig:
     identity_gap_reset_seconds: float = 2.0
     ingress_queue_maxsize: int = 64
     score_warning_threshold: float = 0.5
-    score_alert_threshold: float = 0.8
+    score_alert_threshold: float = 0.65
     dispatch_cooldown_seconds: float = 0.75  # min seconds between batches per persistent_id (~1.3 FPS)
     extra: dict[str, Any] = field(default_factory=dict)
