@@ -18,16 +18,17 @@ _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
-def _prepare_temporal_window(frames: list[Any], *, required: int) -> list[Any]:
-    """Return exactly ``required`` frames, padding short windows by repetition."""
+def _prepare_temporal_window(frames: list[Any], *, required: int) -> tuple[list[Any], int]:
+    """Return exactly ``required`` frames padded by repetition, plus the pad count."""
 
     if not frames:
         raise ValueError("Inference batch builder requires at least one frame crop.")
     if len(frames) >= required:
-        return list(frames[-required:])
+        return list(frames[-required:]), 0
     padded = list(frames)
-    padded.extend([frames[-1]] * (required - len(frames)))
-    return padded
+    pad_count = required - len(frames)
+    padded.extend([frames[-1]] * pad_count)
+    return padded, pad_count
 
 
 def _resize_crop(crop: Any, *, h: int, w: int) -> np.ndarray:
@@ -58,32 +59,39 @@ class BatchBuilder:
         self,
         frames: list[Any],
         strategy: str,
-    ) -> dict[str, np.ndarray]:
-        """Return the named Triton tensors for ``strategy``."""
+    ) -> tuple[dict[str, np.ndarray], dict[str, int]]:
+        """Return ``(named_tensors, metadata)`` for ``strategy``.
+
+        ``metadata`` contains:
+        - ``real_frames``: number of actual frames supplied
+        - ``padded_frames``: number of frames added by repetition padding
+        """
 
         if strategy == "vjepa_probe":
-            tensor = self._build_vjepa_tensor(frames)
-            return {"pixel_values_videos": tensor}
+            tensor, padded = self._build_vjepa_tensor(frames)
+            meta = {"real_frames": len(frames), "padded_frames": padded}
+            return {"pixel_values_videos": tensor}, meta
 
-        tensor = self._build_cnn_transformer_tensor(frames)
-        return {"input": tensor}
+        tensor, padded = self._build_cnn_transformer_tensor(frames)
+        meta = {"real_frames": len(frames), "padded_frames": padded}
+        return {"input": tensor}, meta
 
-    def _build_cnn_transformer_tensor(self, frames: list[Any]) -> np.ndarray:
+    def _build_cnn_transformer_tensor(self, frames: list[Any]) -> tuple[np.ndarray, int]:
         """Build the CNN transformer tensor as ``(1, T, C, H, W)``."""
 
-        prepared_frames = _prepare_temporal_window(frames, required=_CNN_TEMPORAL_WINDOW)
+        prepared_frames, pad_count = _prepare_temporal_window(frames, required=_CNN_TEMPORAL_WINDOW)
         resized = np.stack(
             [_resize_crop(frame, h=_CNN_CROP_H, w=_CNN_CROP_W) for frame in prepared_frames],
             axis=0,
         )  # (T, H, W, C)
-        return resized.transpose(0, 3, 1, 2)[np.newaxis]  # (1, T, C, H, W)
+        return resized.transpose(0, 3, 1, 2)[np.newaxis], pad_count  # (1, T, C, H, W)
 
-    def _build_vjepa_tensor(self, frames: list[Any]) -> np.ndarray:
+    def _build_vjepa_tensor(self, frames: list[Any]) -> tuple[np.ndarray, int]:
         """Build the VJEPA tensor as ``(1, T, C, H, W)``."""
 
-        prepared_frames = _prepare_temporal_window(frames, required=_VJEPA_TEMPORAL_WINDOW)
+        prepared_frames, pad_count = _prepare_temporal_window(frames, required=_VJEPA_TEMPORAL_WINDOW)
         resized = np.stack(
             [_resize_crop(frame, h=_VJEPA_CROP_H, w=_VJEPA_CROP_W) for frame in prepared_frames],
             axis=0,
         )  # (T, H, W, C)
-        return resized.transpose(0, 3, 1, 2)[np.newaxis]  # (1, T, C, H, W)
+        return resized.transpose(0, 3, 1, 2)[np.newaxis], pad_count  # (1, T, C, H, W)

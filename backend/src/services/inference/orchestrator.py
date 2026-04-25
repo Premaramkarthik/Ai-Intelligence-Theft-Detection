@@ -32,6 +32,8 @@ from src.services.inference.logging import (
 from src.services.inference.triton_client import TritonInferenceClient
 from src.services.presentation.websocket_manager import WebSocketManager
 
+_EMA_ALPHA: float = 0.35
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -78,6 +80,8 @@ class InferenceOrchestrator:
         self._strategy_lock = asyncio.Lock()
         self._strategy = config.strategy
         self._recent_completion_times: deque[float] = deque(maxlen=32)
+        # EMA score state keyed by "{camera_id}:{persistent_id}:{model_name}"
+        self._ema_scores: dict[str, float] = {}
 
     def get_snapshot_data(self) -> dict[str, object]:
         """Return a snapshot dict compatible with InferenceSnapshot fields."""
@@ -269,7 +273,7 @@ class InferenceOrchestrator:
 
         preprocessing_started_at = perf_counter()
         try:
-            tensors = self._batch_builder.build(crops, strategy)
+            tensors, build_meta = self._batch_builder.build(crops, strategy)
         except Exception as exc:  # pylint: disable=broad-except
             self._metrics.increment_inference_request(strategy, model_name, "preprocessing_failed")
             log_inference_exception(
@@ -289,6 +293,8 @@ class InferenceOrchestrator:
             )
             raise
 
+        real_frames: int = build_meta["real_frames"]
+        padded_frames: int = build_meta["padded_frames"]
         preprocessing_latency_ms = (perf_counter() - preprocessing_started_at) * 1000.0
         self._metrics.observe_inference_preprocessing_latency(
             strategy,
@@ -305,6 +311,8 @@ class InferenceOrchestrator:
             strategy=strategy,
             model_name=model_name,
             preprocessing_latency_ms=round(preprocessing_latency_ms, 3),
+            real_temporal_frames=real_frames,
+            padded_temporal_frames=padded_frames,
             tensors=tensor_summary,
         )
 
@@ -344,11 +352,11 @@ class InferenceOrchestrator:
                 )
             raise
 
-        inference_latency_ms = (perf_counter() - inference_started_at) * 1000.0
+        triton_latency_ms = (perf_counter() - inference_started_at) * 1000.0
         self._metrics.observe_inference_execution_latency(
             strategy,
             model_name,
-            inference_latency_ms / 1000.0,
+            triton_latency_ms / 1000.0,
         )
         output_summary = summarize_named_arrays(outputs)
         attributions = self._score_attributions(
@@ -367,19 +375,34 @@ class InferenceOrchestrator:
                 f"camera_id={sample.camera_id} "
                 f"strategy={strategy} "
                 f"model_name={model_name} "
-                f"scores={[round(score, 6) for _entry, score in attributions]}"
+                f"raw_scores={[round(score, 6) for _, score in attributions]}"
             ),
             camera_id=sample.camera_id,
             strategy=strategy,
             model_name=model_name,
-            scores=[round(score, 6) for _entry, score in attributions],
+            raw_scores=[round(score, 6) for _, score in attributions],
         )
+
         emitted_at = _utc_now()
         payloads: list[InferenceKafkaEventPayload] = []
-        for attributed_sample, score in attributions:
-            alert_level = self._decision.classify(score)
+        # (raw_score, smoothed_score, previous_label) parallel to payloads
+        attribution_extras: list[tuple[float, float, str]] = []
+
+        for attributed_sample, raw_score in attributions:
+            previous_label = self._decision.get_state(attributed_sample.persistent_id)
+            smoothed_score = self._smooth_score(
+                raw_score,
+                camera_id=attributed_sample.camera_id,
+                persistent_id=attributed_sample.persistent_id,
+                model_name=model_name,
+            )
+            alert_level = self._decision.classify(
+                smoothed_score,
+                track_id=attributed_sample.persistent_id,
+            )
             label = alert_level
             self._active_tracks.add(attributed_sample.persistent_id)
+            attribution_extras.append((raw_score, smoothed_score, previous_label))
             payloads.append(
                 InferenceKafkaEventPayload(
                     camera_id=attributed_sample.camera_id,
@@ -387,7 +410,7 @@ class InferenceOrchestrator:
                     persistent_id=attributed_sample.persistent_id,
                     local_track_id=attributed_sample.local_track_id,
                     strategy=strategy,
-                    score=score,
+                    score=smoothed_score,
                     alert_level=alert_level,
                     label=label,
                     model_name=model_name,
@@ -395,7 +418,8 @@ class InferenceOrchestrator:
                     emitted_at=emitted_at,
                 )
             )
-        for payload in payloads:
+
+        for payload, (raw_score, smoothed_score, previous_label) in zip(payloads, attribution_extras):
             self._metrics.increment_inference_result(
                 strategy,
                 model_name,
@@ -412,9 +436,11 @@ class InferenceOrchestrator:
                 f"persistent_id={payload.persistent_id} "
                 f"strategy={payload.strategy} "
                 f"model_name={payload.model_name} "
+                f"previous_label={previous_label} "
                 f"label={payload.label} "
                 f"alert_level={payload.alert_level} "
-                f"score={payload.score:.6f}"
+                f"raw_score={raw_score:.6f} "
+                f"smoothed_score={smoothed_score:.6f}"
             )
             log_inference_event(
                 self._prediction_logger,
@@ -427,12 +453,18 @@ class InferenceOrchestrator:
                 local_track_id=payload.local_track_id,
                 strategy=payload.strategy,
                 model_name=payload.model_name,
+                raw_score=round(raw_score, 6),
+                smoothed_score=round(smoothed_score, 6),
                 score=round(payload.score, 6),
+                previous_label=previous_label,
                 label=payload.label,
                 alert_level=payload.alert_level,
+                real_temporal_frames=real_frames,
+                padded_temporal_frames=padded_frames,
+                triton_latency_ms=round(triton_latency_ms, 3),
+                sample_age_ms=round(sample_age_ms, 3),
                 sampled_at=payload.sampled_at.isoformat(),
                 emitted_at=payload.emitted_at.isoformat(),
-                sample_age_ms=round(sample_age_ms, 3),
             )
         self._last_result_at = emitted_at
         self._healthy = True
@@ -520,8 +552,10 @@ class InferenceOrchestrator:
             batch_size=len(batch),
             emitted_results=len(payloads),
             active_tracks=len(self._active_tracks),
+            real_temporal_frames=real_frames,
+            padded_temporal_frames=padded_frames,
             preprocessing_latency_ms=round(preprocessing_latency_ms, 3),
-            inference_latency_ms=round(inference_latency_ms, 3),
+            triton_latency_ms=round(triton_latency_ms, 3),
             delivery_latency_ms=round(delivery_latency_ms, 3),
             total_latency_ms=round(total_latency_ms, 3),
             sample_age_ms=round(sample_age_ms, 3),
@@ -538,6 +572,21 @@ class InferenceOrchestrator:
             self._config.camera_id,
             self._scheduler.queue.qsize(),
         )
+
+    def _smooth_score(
+        self,
+        raw_score: float,
+        *,
+        camera_id: str,
+        persistent_id: str,
+        model_name: str,
+    ) -> float:
+        """Apply EMA smoothing per (camera_id, persistent_id, model_name) track."""
+        key = f"{camera_id}:{persistent_id}:{model_name}"
+        prev = self._ema_scores.get(key)
+        smoothed = raw_score if prev is None else _EMA_ALPHA * raw_score + (1.0 - _EMA_ALPHA) * prev
+        self._ema_scores[key] = smoothed
+        return smoothed
 
     def _score_attributions(
         self,

@@ -18,6 +18,8 @@ type Listener = () => void;
 const MAX_ACTIVITY_ITEMS = 30;
 const MAX_INFERENCE_ITEMS = 12;
 const MAX_IDENTITY_ITEMS = 12;
+const INFERENCE_TTL_MS = 3_000;
+const INFERENCE_SWEEP_INTERVAL_MS = 1_000;
 
 const EMPTY_CAMERA_SNAPSHOT: CameraRealtimeSnapshot = {
   frame: null,
@@ -80,6 +82,7 @@ class RealtimeClient {
   private reconnectAttempt = 0;
   private reconnectTimer: number | null = null;
   private heartbeatTimer: number | null = null;
+  private inferenceSweepTimer: number | null = null;
   private started = false;
   private lastMessageAt: string | null = null;
   private overviewListeners = new Set<Listener>();
@@ -98,6 +101,10 @@ class RealtimeClient {
     }
     this.started = true;
     this.open();
+    this.inferenceSweepTimer = window.setInterval(
+      () => this.sweepStaleInference(),
+      INFERENCE_SWEEP_INTERVAL_MS,
+    );
   }
 
   stop() {
@@ -111,6 +118,10 @@ class RealtimeClient {
     if (this.heartbeatTimer !== null) {
       window.clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    if (this.inferenceSweepTimer !== null) {
+      window.clearInterval(this.inferenceSweepTimer);
+      this.inferenceSweepTimer = null;
     }
     this.socket?.close();
     this.socket = null;
@@ -278,6 +289,21 @@ class RealtimeClient {
       },
       ...this.recentActivity,
     ].slice(0, MAX_ACTIVITY_ITEMS);
+  }
+
+  private sweepStaleInference() {
+    const cutoff = Date.now() - INFERENCE_TTL_MS;
+    for (const [cameraId, snapshot] of this.streamSnapshots) {
+      const fresh = snapshot.inference.filter(
+        (ev) => new Date(ev.emitted_at).getTime() > cutoff,
+      );
+      if (fresh.length !== snapshot.inference.length) {
+        const next = cloneCameraSnapshot(snapshot);
+        next.inference = fresh;
+        this.streamSnapshots.set(cameraId, next);
+        this.notifyCamera(cameraId);
+      }
+    }
   }
 
   private scheduleReconnect() {

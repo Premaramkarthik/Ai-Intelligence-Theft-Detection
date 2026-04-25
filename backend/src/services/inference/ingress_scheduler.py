@@ -13,11 +13,52 @@ from src.services.inference.logging import log_inference_event, summarize_sample
 from src.services.inference.temporal_buffer import TemporalBufferService
 
 
+class _LatestOnlyQueue:
+    """Latest-only queue for inference batches.
+
+    For each persistent_id only the most recent batch is retained.  When a new
+    batch arrives before the orchestrator consumes the previous one, the old
+    batch is silently replaced so the model always sees the freshest crops.
+    The external interface (``get``, ``qsize``) mirrors ``asyncio.Queue`` so the
+    orchestrator needs no changes.
+    """
+
+    def __init__(self, maxsize: int = 0) -> None:
+        self._latest: dict[str, list[InferenceIngressSample]] = {}
+        self._queued: set[str] = set()
+        self._notify: asyncio.Queue[str] = asyncio.Queue(maxsize=maxsize)
+
+    def qsize(self) -> int:
+        return self._notify.qsize()
+
+    def full(self) -> bool:
+        return self._notify.full()
+
+    def put_latest(self, persistent_id: str, batch: list[InferenceIngressSample]) -> None:
+        """Replace (or register) the latest batch for a track.
+
+        Raises ``asyncio.QueueFull`` only when a *new* track would exceed
+        ``maxsize`` — updates to an already-queued track are always free.
+        """
+        self._latest[persistent_id] = batch
+        if persistent_id not in self._queued:
+            self._notify.put_nowait(persistent_id)  # raises QueueFull if at capacity
+            self._queued.add(persistent_id)
+
+    async def get(self) -> list[InferenceIngressSample]:
+        while True:
+            pid = await self._notify.get()
+            self._queued.discard(pid)
+            batch = self._latest.pop(pid, None)
+            if batch is not None:
+                return batch
+
+
 class InferenceIngressScheduler:
     """Buffer incoming samples, gate dispatch, and feed the inference orchestrator.
 
     Dispatch gate (all conditions must be true, per plan section 3.5):
-      - temporal buffer depth >= window_size
+      - temporal buffer depth >= dispatch_min_temporal_frames
       - consecutive_hits >= min_consecutive_hits
       - frames_since_update == 0
       - crop width >= min_crop_width and height >= min_crop_height
@@ -39,14 +80,14 @@ class InferenceIngressScheduler:
         self._buffer = buffer
         self._logger = get_logger(__name__)
         self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
-        self._queue: asyncio.Queue[list[InferenceIngressSample]] = asyncio.Queue(
+        self._queue: _LatestOnlyQueue = _LatestOnlyQueue(
             maxsize=config.ingress_queue_maxsize,
         )
         self._last_enqueued_at: dict[str, float] = {}
         self._last_visible_state: tuple[str, float] | None = None
 
     @property
-    def queue(self) -> asyncio.Queue[list[InferenceIngressSample]]:
+    def queue(self) -> _LatestOnlyQueue:
         """Expose the dispatch queue for the orchestrator to consume."""
 
         return self._queue
@@ -128,7 +169,7 @@ class InferenceIngressScheduler:
 
         batch = self._buffer.get(sample.persistent_id)
         try:
-            self._queue.put_nowait(batch)
+            self._queue.put_latest(sample.persistent_id, batch)
         except asyncio.QueueFull:
             self._metrics_recorder.increment_inference_queue_full(self._config.camera_id)
             self._metrics_recorder.increment_inference_frame_drop(
@@ -225,7 +266,7 @@ class InferenceIngressScheduler:
             else self._buffer.depth(sample.persistent_id)
         )
         reasons: list[str] = []
-        if current_buffer_depth < cfg.temporal_buffer_size:
+        if current_buffer_depth < cfg.dispatch_min_temporal_frames:
             reasons.append("temporal_buffer_not_ready")
         if sample.consecutive_hits < cfg.dispatch_min_consecutive_hits:
             reasons.append("insufficient_consecutive_hits")

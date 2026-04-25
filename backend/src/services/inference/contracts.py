@@ -55,6 +55,7 @@ class InferenceWorkerConfig:
     triton_max_in_flight: int = 8               # per-strategy bounded concurrency
     triton_reconnect_interval_seconds: float = 5.0
     temporal_buffer_size: int = 16
+    dispatch_min_temporal_frames: int = 1    # min real frames in buffer before dispatch (early dispatch)
     dispatch_min_consecutive_hits: int = 0
     dispatch_min_crop_width: int = 32
     dispatch_min_crop_height: int = 64
@@ -62,5 +63,5 @@ class InferenceWorkerConfig:
     ingress_queue_maxsize: int = 64
     score_warning_threshold: float = 0.5
     score_alert_threshold: float = 0.8
-    dispatch_cooldown_seconds: float = 1.5   # min seconds between batches per persistent_id
+    dispatch_cooldown_seconds: float = 0.75  # min seconds between batches per persistent_id (~1.3 FPS)
     extra: dict[str, Any] = field(default_factory=dict)
