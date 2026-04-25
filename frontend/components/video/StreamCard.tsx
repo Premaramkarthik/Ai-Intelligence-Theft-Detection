@@ -5,7 +5,6 @@ import { AlertTriangle, RefreshCw, ScanLine, WifiOff } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { StreamOverlay } from "@/components/video/StreamOverlay";
 import { useWebRTCStream } from "@/hooks/useWebRTCStream";
 import { useCameraRealtime, useRealtimeOverview } from "@/hooks/useRealtime";
 import type { CameraResponse } from "@/types/camera";
@@ -28,10 +27,6 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
   const isRetrying = rtcState === "retrying";
   const isFailed = rtcState === "failed" || rtcState === "closed";
 
-  // Use frame dimensions from the last WebSocket metadata event for overlay scaling.
-  const frameWidth = stream.frame?.width ?? 1280;
-  const frameHeight = stream.frame?.height ?? 720;
-
   return (
     <Card className="overflow-hidden">
       <CardHeader className="flex flex-row items-start justify-between gap-4 border-b border-[var(--border-subtle)]">
@@ -51,7 +46,7 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="relative aspect-video overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-1)]">
-          {/* WebRTC video element — always mounted so the ref is stable */}
+          {/* WebRTC video — bounding boxes are burned in by the Python backend */}
           <video
             ref={videoRef}
             autoPlay
@@ -61,16 +56,6 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
               isRtcConnected ? "opacity-100" : "opacity-0"
             }`}
           />
-
-          {/* Tracking overlay — positioned over the video */}
-          {isRtcConnected && (
-            <StreamOverlay
-              tracking={stream.tracking}
-              inference={stream.inference}
-              frameWidth={frameWidth}
-              frameHeight={frameHeight}
-            />
-          )}
 
           {/* Loading / error states shown while video is not live */}
           {!isRtcConnected && (
