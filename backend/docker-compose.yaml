@@ -56,7 +56,10 @@ services:
       - backend_net
 
   triton:
-    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    build:
+      context: .
+      dockerfile: docker/triton.Dockerfile
+    image: pipeline-opencv-triton:24.08-py3
     command: ["tritonserver", "--model-repository=/models/triton", "--model-control-mode=explicit", "--load-model=vjepa_finetune", "--load-model=cnn_transformer", "--disable-auto-complete-config", "--backend-config=onnxruntime,default-max-batch-size=0", "--log-verbose=1", "--allow-grpc=true", "--allow-http=false", "--metrics-port=8002"]
     ports:
       - "9001:8001"   # gRPC  — backend triton_url must use 9001

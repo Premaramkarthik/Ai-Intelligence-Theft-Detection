@@ -566,8 +566,30 @@ class InferenceOrchestrator:
             )
             return [(sample, 0.0)]
 
+        raw_tensor = outputs[output_tensor_name]
+        log_inference_event(
+            self._prediction_logger,
+            logging.INFO,
+            "inference.raw_logits",
+            (
+                "Raw Triton logits received: "
+                f"camera_id={sample.camera_id} "
+                f"strategy={strategy} "
+                f"model_name={model_name} "
+                f"logits={np.asarray(raw_tensor).reshape(-1).tolist()}"
+            ),
+            camera_id=sample.camera_id,
+            strategy=strategy,
+            model_name=model_name,
+            logits=np.asarray(raw_tensor).reshape(-1).tolist(),
+        )
+
+        if strategy == "vjepa_probe":
+            score = _extract_vjepa_score(raw_tensor)
+            return [(sample, score)]
+
         try:
-            scores = _extract_scalar_scores(outputs[output_tensor_name], expected_count=len(batch))
+            scores = _extract_scalar_scores(raw_tensor, expected_count=len(batch))
         except Exception as exc:  # pylint: disable=broad-except
             log_inference_exception(
                 self._logger,
@@ -707,6 +729,17 @@ def _extract_scalar_scores(output: np.ndarray, *, expected_count: int) -> list[f
         "Expected Triton output tensor 'output' to contain either one scalar score "
         f"or {expected_count} scalar scores; got shape={list(array.shape)}."
     )
+
+
+def _extract_vjepa_score(logits: np.ndarray) -> float:
+    """Softmax over 2-class VJEPA logits; return class-1 (shoplifter) probability."""
+
+    array = np.asarray(logits).reshape(-1)
+    if array.size != 2:
+        return float(array.flat[0])
+    shifted = array - array.max()
+    exp_shifted = np.exp(shifted)
+    return float(exp_shifted[1] / exp_shifted.sum())
 
 
 def _resolve_model_name(strategy: str) -> str:

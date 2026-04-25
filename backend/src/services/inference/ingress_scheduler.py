@@ -42,6 +42,7 @@ class InferenceIngressScheduler:
         self._queue: asyncio.Queue[list[InferenceIngressSample]] = asyncio.Queue(
             maxsize=config.ingress_queue_maxsize,
         )
+        self._last_enqueued_at: dict[str, float] = {}
         self._last_visible_state: tuple[str, float] | None = None
 
     @property
@@ -111,6 +112,19 @@ class InferenceIngressScheduler:
                 self._queue.qsize(),
             )
             return
+
+        # Per-person cooldown: skip if the same person was enqueued within the cooldown window.
+        cooldown = self._config.dispatch_cooldown_seconds
+        if cooldown > 0:
+            last = self._last_enqueued_at.get(sample.persistent_id)
+            now_mono = monotonic()
+            if last is not None and (now_mono - last) < cooldown:
+                self._metrics_recorder.set_inference_queue_depth(
+                    self._config.camera_id,
+                    self._queue.qsize(),
+                )
+                return
+            self._last_enqueued_at[sample.persistent_id] = now_mono
 
         batch = self._buffer.get(sample.persistent_id)
         try:

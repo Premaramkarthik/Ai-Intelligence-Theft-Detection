@@ -218,8 +218,8 @@ class TritonInferenceClient:
             raise
 
         outputs = {
-            name: response.as_numpy(name)
-            for name in response.get_output_names()
+            out.name: response.as_numpy(out.name)
+            for out in response.get_response().outputs
         }
         log_inference_event(
             self._logger,

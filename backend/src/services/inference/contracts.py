@@ -54,12 +54,13 @@ class InferenceWorkerConfig:
     triton_url: str = "localhost:8001"
     triton_max_in_flight: int = 8               # per-strategy bounded concurrency
     triton_reconnect_interval_seconds: float = 5.0
-    temporal_buffer_size: int = 1
-    dispatch_min_consecutive_hits: int = 1
+    temporal_buffer_size: int = 16
+    dispatch_min_consecutive_hits: int = 0
     dispatch_min_crop_width: int = 32
     dispatch_min_crop_height: int = 64
     identity_gap_reset_seconds: float = 2.0
     ingress_queue_maxsize: int = 64
     score_warning_threshold: float = 0.5
     score_alert_threshold: float = 0.8
+    dispatch_cooldown_seconds: float = 1.5   # min seconds between batches per persistent_id
     extra: dict[str, Any] = field(default_factory=dict)

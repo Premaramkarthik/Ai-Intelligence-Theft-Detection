@@ -14,6 +14,9 @@ _VJEPA_TEMPORAL_WINDOW = 16
 _VJEPA_CROP_H = 256
 _VJEPA_CROP_W = 256
 
+_IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+_IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
 
 def _prepare_temporal_window(frames: list[Any], *, required: int) -> list[Any]:
     """Return exactly ``required`` frames, padding short windows by repetition."""
@@ -28,14 +31,15 @@ def _prepare_temporal_window(frames: list[Any], *, required: int) -> list[Any]:
 
 
 def _resize_crop(crop: Any, *, h: int, w: int) -> np.ndarray:
-    """Resize a HWC uint8 ndarray to ``(h, w, 3)`` and normalise to FP32."""
+    """Resize a HWC BGR uint8 ndarray to ``(h, w, 3)`` RGB, rescale and normalise."""
 
     import cv2  # pylint: disable=import-outside-toplevel
 
     resized: np.ndarray = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
     if resized.ndim == 2:
         resized = np.stack([resized] * 3, axis=-1)
-    return resized.astype(np.float32) / 255.0
+    resized = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+    return (resized.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD
 
 
 class BatchBuilder:

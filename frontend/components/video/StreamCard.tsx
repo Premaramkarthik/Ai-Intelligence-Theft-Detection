@@ -8,6 +8,27 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useWebRTCStream } from "@/hooks/useWebRTCStream";
 import { useCameraRealtime, useRealtimeOverview } from "@/hooks/useRealtime";
 import type { CameraResponse } from "@/types/camera";
+import type { InferenceEvent } from "@/types/realtime";
+
+function alertTone(level: string): "success" | "warning" | "danger" | "neutral" {
+  if (level === "alert") return "danger";
+  if (level === "warning") return "warning";
+  if (level === "normal") return "success";
+  return "neutral";
+}
+
+/** Keep only the most recent inference event per local_track_id. */
+function latestPerTrack(events: InferenceEvent[]): InferenceEvent[] {
+  const seen = new Set<string>();
+  const result: InferenceEvent[] = [];
+  for (const ev of events) {
+    if (!seen.has(ev.local_track_id)) {
+      seen.add(ev.local_track_id);
+      result.push(ev);
+    }
+  }
+  return result.slice(0, 8);
+}
 
 function formatLastUpdate(isoTimestamp: string | null) {
   if (!isoTimestamp) {
@@ -135,6 +156,33 @@ export function StreamCard({ camera }: { camera: CameraResponse }) {
             </p>
           </div>
         </div>
+
+        {/* Per-track inference labels — scoped to this camera only */}
+        {stream.inference.length > 0 && (
+          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-1)] px-4 py-3">
+            <p className="mb-2.5 text-xs uppercase tracking-[0.18em] text-[var(--text-muted)]">
+              Inference · {camera.name}
+            </p>
+            <div className="space-y-2">
+              {latestPerTrack(stream.inference).map((event) => (
+                <div
+                  key={event.local_track_id}
+                  className="flex items-center justify-between gap-3"
+                >
+                  <span className="truncate text-sm font-medium text-[var(--text-secondary)]">
+                    {event.persistent_id ?? event.local_track_id}
+                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="text-xs tabular-nums text-[var(--text-muted)]">
+                      {(event.score * 100).toFixed(0)}%
+                    </span>
+                    <Badge tone={alertTone(event.alert_level)}>{event.alert_level}</Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
