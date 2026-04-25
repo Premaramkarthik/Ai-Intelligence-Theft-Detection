@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from src.core.logger.logger import get_logger
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.schemas.common import WebSocketEnvelope
 from src.schemas.inference_events import InferenceKafkaEventPayload
 from src.services.inference.batch_builder import BatchBuilder
@@ -55,7 +55,7 @@ class InferenceOrchestrator:
         event_repository: InferenceEventRepository,
         websocket_manager: WebSocketManager,
         kafka_publisher: Any | None,
-        metrics_recorder: MetricsRecorder | None = None,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
         result_callback: Callable[[str, str, str, float, str], None] | None = None,
     ) -> None:
         self._config = config
@@ -66,9 +66,10 @@ class InferenceOrchestrator:
         self._repo = event_repository
         self._ws = websocket_manager
         self._kafka = kafka_publisher
-        self._metrics = metrics_recorder or NullMetricsRecorder()
         self._result_callback = result_callback
         self._logger = get_logger(__name__)
+        self._prediction_logger = get_logger("src.services.inference.prediction")
+        self._metrics = metrics_recorder or NullMetricsRecorder()
         self._task: asyncio.Task[None] | None = None
         self._active_tracks: set[str] = set()
         self._last_result_at: datetime | None = None
@@ -119,6 +120,18 @@ class InferenceOrchestrator:
 
         self._task = asyncio.create_task(self._run())
         log_inference_event(
+            self._prediction_logger,
+            logging.INFO,
+            "inference.prediction_logger_ready",
+            (
+                "Prediction logging ready: "
+                f"camera_id={self._config.camera_id} "
+                f"strategy={self._strategy}"
+            ),
+            camera_id=self._config.camera_id,
+            strategy=self._strategy,
+        )
+        log_inference_event(
             self._logger,
             logging.INFO,
             "inference.orchestrator_started",
@@ -159,6 +172,10 @@ class InferenceOrchestrator:
                     camera_id=self._config.camera_id,
                     batch_size=len(batch),
                     queue_depth=queue.qsize(),
+                )
+                self._metrics.set_inference_queue_depth(
+                    self._config.camera_id,
+                    queue.qsize(),
                 )
                 await self._process_batch(batch)
             except asyncio.CancelledError:
@@ -223,16 +240,38 @@ class InferenceOrchestrator:
             strategy=strategy,
             model_name=model_name,
         )
+        log_inference_event(
+            self._prediction_logger,
+            logging.INFO,
+            "inference.prediction_request_started",
+            (
+                "Prediction request started: "
+                f"camera_id={sample.camera_id} "
+                f"local_track_id={sample.local_track_id} "
+                f"persistent_id={sample.persistent_id} "
+                f"strategy={strategy} "
+                f"model_name={model_name} "
+                f"batch_size={len(batch)}"
+            ),
+            camera_id=sample.camera_id,
+            local_track_id=sample.local_track_id,
+            persistent_id=sample.persistent_id,
+            strategy=strategy,
+            model_name=model_name,
+            batch_size=len(batch),
+        )
 
         if not await self._triton.ensure_connected():
             self._healthy = False
             self._last_error = f"Triton server at {self._config.triton_url} is not reachable."
+            self._metrics.increment_inference_request(strategy, model_name, "triton_unavailable")
             return
 
         preprocessing_started_at = perf_counter()
         try:
             tensors = self._batch_builder.build(crops, strategy)
         except Exception as exc:  # pylint: disable=broad-except
+            self._metrics.increment_inference_request(strategy, model_name, "preprocessing_failed")
             log_inference_exception(
                 self._logger,
                 logging.ERROR,
@@ -251,6 +290,11 @@ class InferenceOrchestrator:
             raise
 
         preprocessing_latency_ms = (perf_counter() - preprocessing_started_at) * 1000.0
+        self._metrics.observe_inference_preprocessing_latency(
+            strategy,
+            model_name,
+            preprocessing_latency_ms / 1000.0,
+        )
         tensor_summary = summarize_named_arrays(tensors)
         log_inference_event(
             self._logger,
@@ -268,6 +312,7 @@ class InferenceOrchestrator:
         try:
             outputs = await self._triton.infer(model_name, tensors)
         except Exception as exc:  # pylint: disable=broad-except
+            self._metrics.increment_inference_request(strategy, model_name, "execution_failed")
             if was_exception_logged(exc):
                 log_inference_event(
                     self._logger,
@@ -300,6 +345,11 @@ class InferenceOrchestrator:
             raise
 
         inference_latency_ms = (perf_counter() - inference_started_at) * 1000.0
+        self._metrics.observe_inference_execution_latency(
+            strategy,
+            model_name,
+            inference_latency_ms / 1000.0,
+        )
         output_summary = summarize_named_arrays(outputs)
         attributions = self._score_attributions(
             batch=batch,
@@ -307,6 +357,22 @@ class InferenceOrchestrator:
             output_summary=output_summary,
             strategy=strategy,
             model_name=model_name,
+        )
+        log_inference_event(
+            self._prediction_logger,
+            logging.INFO,
+            "inference.prediction_scores_received",
+            (
+                "Prediction scores received: "
+                f"camera_id={sample.camera_id} "
+                f"strategy={strategy} "
+                f"model_name={model_name} "
+                f"scores={[round(score, 6) for _entry, score in attributions]}"
+            ),
+            camera_id=sample.camera_id,
+            strategy=strategy,
+            model_name=model_name,
+            scores=[round(score, 6) for _entry, score in attributions],
         )
         emitted_at = _utc_now()
         payloads: list[InferenceKafkaEventPayload] = []
@@ -328,6 +394,45 @@ class InferenceOrchestrator:
                     sampled_at=attributed_sample.sampled_at,
                     emitted_at=emitted_at,
                 )
+            )
+        for payload in payloads:
+            self._metrics.increment_inference_result(
+                strategy,
+                model_name,
+                payload.alert_level,
+            )
+            sample_age_ms = max(
+                (payload.emitted_at - payload.sampled_at).total_seconds() * 1000.0,
+                0.0,
+            )
+            prediction_message = (
+                "Inference prediction emitted: "
+                f"camera_id={payload.camera_id} "
+                f"local_track_id={payload.local_track_id} "
+                f"persistent_id={payload.persistent_id} "
+                f"strategy={payload.strategy} "
+                f"model_name={payload.model_name} "
+                f"label={payload.label} "
+                f"alert_level={payload.alert_level} "
+                f"score={payload.score:.6f}"
+            )
+            log_inference_event(
+                self._prediction_logger,
+                logging.INFO,
+                "inference.prediction_emitted",
+                prediction_message,
+                camera_id=payload.camera_id,
+                stream_name=payload.stream_name,
+                persistent_id=payload.persistent_id,
+                local_track_id=payload.local_track_id,
+                strategy=payload.strategy,
+                model_name=payload.model_name,
+                score=round(payload.score, 6),
+                label=payload.label,
+                alert_level=payload.alert_level,
+                sampled_at=payload.sampled_at.isoformat(),
+                emitted_at=payload.emitted_at.isoformat(),
+                sample_age_ms=round(sample_age_ms, 3),
             )
         self._last_result_at = emitted_at
         self._healthy = True
@@ -364,6 +469,7 @@ class InferenceOrchestrator:
             else:
                 sink_failures.extend(result)
         if sink_failures:
+            self._metrics.increment_inference_request(strategy, model_name, "delivery_partial_failure")
             log_inference_event(
                 self._logger,
                 logging.WARNING,
@@ -389,6 +495,17 @@ class InferenceOrchestrator:
         )
         inference_request_fps = self._record_completion(completed_at)
         representative_payload = payloads[-1]
+        self._metrics.observe_inference_total_latency(
+            strategy,
+            model_name,
+            total_latency_ms / 1000.0,
+        )
+        self._metrics.observe_inference_sample_age(
+            strategy,
+            model_name,
+            sample_age_ms / 1000.0,
+        )
+        self._metrics.increment_inference_request(strategy, model_name, "success")
         log_inference_event(
             self._logger,
             logging.INFO,
@@ -416,6 +533,10 @@ class InferenceOrchestrator:
             alert_levels=[payload.alert_level for payload in payloads],
             outputs=output_summary,
             sink_failures=sink_failures,
+        )
+        self._metrics.set_inference_queue_depth(
+            self._config.camera_id,
+            self._scheduler.queue.qsize(),
         )
 
     def _score_attributions(
@@ -473,7 +594,10 @@ class InferenceOrchestrator:
         if payload.alert_level != "normal":
             task_specs.append(("persistence", self._persist(payload)))
         results = await asyncio.gather(
-            *(coroutine for _, coroutine in task_specs),
+            *(
+                self._timed_delivery(sink_name, coroutine)
+                for sink_name, coroutine in task_specs
+            ),
             return_exceptions=True,
         )
         sink_failures: list[dict[str, str]] = []
@@ -489,6 +613,16 @@ class InferenceOrchestrator:
                     },
                 )
         return sink_failures
+
+    async def _timed_delivery(self, sink_name: str, coroutine: Any) -> None:
+        started_at = perf_counter()
+        try:
+            await coroutine
+        finally:
+            self._metrics.observe_inference_delivery_latency(
+                sink_name,
+                perf_counter() - started_at,
+            )
 
     async def _broadcast_ws(self, payload: InferenceKafkaEventPayload) -> None:
         envelope = WebSocketEnvelope(

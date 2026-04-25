@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.core.logger.logger import get_logger
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.services.inference.batch_builder import BatchBuilder
 from src.services.inference.contracts import (
     InferenceIngressSample,
@@ -37,7 +37,7 @@ class InferenceManager:
         event_repository: InferenceEventRepository,
         websocket_manager: WebSocketManager,
         kafka_publisher: Any | None,
-        metrics_recorder: MetricsRecorder | None = None,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
         triton_url: str = "localhost:8001",
         triton_max_in_flight: int = 8,
         triton_reconnect_interval_seconds: float = 5.0,
@@ -45,11 +45,11 @@ class InferenceManager:
         self._event_repository = event_repository
         self._websocket_manager = websocket_manager
         self._kafka_publisher = kafka_publisher
-        self._metrics = metrics_recorder or NullMetricsRecorder()
         self._triton_url = triton_url
         self._triton_max_in_flight = triton_max_in_flight
         self._triton_reconnect_interval_seconds = triton_reconnect_interval_seconds
         self._logger = get_logger(__name__)
+        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
         self._orchestrators: dict[str, InferenceOrchestrator] = {}
         self._schedulers: dict[str, InferenceIngressScheduler] = {}
         self._result_callback: Callable[[str, str, str, float, str], None] | None = None
@@ -160,11 +160,16 @@ class InferenceManager:
             window_size=config.temporal_buffer_size,
             gap_reset_seconds=config.identity_gap_reset_seconds,
         )
-        scheduler = InferenceIngressScheduler(config, buffer, self._metrics)
+        scheduler = InferenceIngressScheduler(
+            config,
+            buffer,
+            metrics_recorder=self._metrics_recorder,
+        )
         triton = TritonInferenceClient(
             url=config.triton_url,
             max_in_flight=config.triton_max_in_flight,
             reconnect_interval_seconds=config.triton_reconnect_interval_seconds,
+            metrics_recorder=self._metrics_recorder,
         )
         try:
             await triton.connect()
@@ -190,11 +195,12 @@ class InferenceManager:
             event_repository=self._event_repository,
             websocket_manager=self._websocket_manager,
             kafka_publisher=self._kafka_publisher,
-            metrics_recorder=self._metrics,
+            metrics_recorder=self._metrics_recorder,
             result_callback=self._result_callback,
         )
         self._schedulers[camera_id] = scheduler
         self._orchestrators[camera_id] = orchestrator
+        self._metrics_recorder.set_inference_queue_depth(camera_id, 0)
         orchestrator.start()
         log_inference_event(
             self._logger,
@@ -232,3 +238,4 @@ class InferenceManager:
                 "Inference stopped for camera.",
                 camera_id=camera_id,
             )
+        self._metrics_recorder.set_inference_queue_depth(camera_id, 0)

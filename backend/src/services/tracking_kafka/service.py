@@ -10,7 +10,7 @@ from aiokafka.errors import KafkaError
 
 from src.core.config import Settings
 from src.core.logger.logger import get_logger
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.services.tracking.updates import NullTrackingUpdatePublisher, TrackingUpdatePublisher
 from src.services.tracking_kafka.publisher import KafkaTrackingUpdatePublisher
 
@@ -31,16 +31,14 @@ class TrackingKafkaProducerService:
     def __init__(
         self,
         settings: Settings,
-        metrics_recorder: MetricsRecorder | None = None,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
     ) -> None:
-        """Create the Kafka producer service used by the tracking pipeline."""
-
         self._settings = settings
         self._logger = get_logger(__name__)
-        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
         self._producer: AIOKafkaProducer | None = None
         self._healthy = not settings.kafka_enabled
         self._last_error: str | None = None
+        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
 
     async def start(self) -> None:
         """Start the Kafka producer when Kafka integration is enabled."""
@@ -102,7 +100,7 @@ class TrackingKafkaProducerService:
 
         if self._producer is None:
             return None
-        return _JsonKafkaPublisher(self._producer, topic)
+        return _JsonKafkaPublisher(self._producer, topic, self._metrics_recorder)
 
     def health_snapshot(self) -> dict[str, str | bool | None]:
         """Return a health summary consumed by health checks and metrics."""
@@ -131,14 +129,25 @@ class _JsonKafkaPublisher:
     rather than the full ``TrackingUpdatePublisher`` protocol.
     """
 
-    def __init__(self, producer: AIOKafkaProducer, topic: str) -> None:
+    def __init__(
+        self,
+        producer: AIOKafkaProducer,
+        topic: str,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder,
+    ) -> None:
         self._producer = producer
         self._topic = topic
+        self._metrics_recorder = metrics_recorder
 
     async def publish(self, data: dict) -> None:
         camera_id: str = data.get("camera_id", "unknown")
-        await self._producer.send_and_wait(
-            self._topic,
-            data,
-            key=camera_id,
-        )
+        try:
+            await self._producer.send_and_wait(
+                self._topic,
+                data,
+                key=camera_id,
+            )
+        except Exception:
+            self._metrics_recorder.increment_tracking_kafka_publish_failures()
+            raise
+        self._metrics_recorder.increment_tracking_kafka_messages_published()

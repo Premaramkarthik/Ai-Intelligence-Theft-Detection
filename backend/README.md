@@ -218,6 +218,7 @@ Log files written to `LOG_DIRECTORY` (default `runtime/logs/`):
 | --- | --- |
 | `all.log` | every log record (requires `FILE_LOGS_ENABLED=true`) |
 | `inference.log` | `src.services.inference.*` + `inference.*` structured events |
+| `prediction.log` | final per-track prediction labels, scores, model names, and alert levels (`inference.prediction_*`) |
 | `milvus.log` | `src.opencv_pipeline.identity.*` + `src.services.tracking.identity.*` |
 | `person_detection.log` | `src.opencv_pipeline.detection.*` + `person_detection.*` structured events |
 | `streaming.log` | `src.opencv_pipeline.runtime`, ingestion, output, buffering, preprocessing, motion, stabilization, calibration |
@@ -261,10 +262,10 @@ Lifecycle owner for per-camera `InferenceOrchestrator` instances.
 New: supports `set_result_callback(fn)` — the pipeline runtime registers a callback here so inference results are fed directly into `InferenceOverlayCache` without a Kafka round-trip.
 
 #### `InferenceIngressPublisher`
-Bridge from tracking output into inference input. Crops person patches and pushes `InferenceIngressSample` objects to the manager.
+Bridge from tracking output into inference input. Crops person patches and pushes `InferenceIngressSample` objects to the manager. Short temporal histories are padded in the batch builder, so Triton inference can start as soon as a person track first appears instead of waiting for a full 16-frame history.
 
 #### `InferenceOrchestrator`
-Per-camera async inference loop. After scoring, calls `result_callback(camera_id, local_track_id, label, score, alert_level)` before dispatching to Kafka and WebSocket, so the cv2 overlay updates immediately.
+Per-camera async inference loop using the Triton gRPC client. After scoring, calls `result_callback(camera_id, local_track_id, label, score, alert_level)` before dispatching to Kafka and WebSocket, so the cv2 overlay updates immediately.
 
 #### `InferenceEventRepository`
 Persists non-normal inference events to PostgreSQL.
@@ -349,6 +350,7 @@ runtime/
 ├── logs/
 │   ├── all.log
 │   ├── inference.log
+│   ├── prediction.log
 │   ├── milvus.log
 │   ├── person_detection.log
 │   ├── streaming.log
@@ -691,8 +693,7 @@ This script opens a cv2 preview window with all overlays (bounding boxes, persis
 | API | `http://localhost:8000` |
 | API docs | `http://localhost:8000/docs` |
 | Prometheus metrics | `http://localhost:9109/metrics` |
-| Triton HTTP | `http://localhost:8000` ⚠ port conflict with API |
-| Triton gRPC | `localhost:8001` |
+| Triton gRPC | `localhost:9001` |
 | Triton metrics | `http://localhost:8002/metrics` |
 | Kafka | `localhost:9092` |
 | Milvus | `localhost:19530` |
@@ -726,6 +727,7 @@ All log files land flat in `LOG_DIRECTORY` with no subdirectories or PID suffixe
 
 - `all.log` — complete log stream
 - `inference.log` — inference subsystem
+- `prediction.log` — final per-track prediction labels, scores, model names, and alert levels
 - `milvus.log` — Milvus identity store
 - `person_detection.log` — YOLO detection stage
 - `streaming.log` — capture, buffering, preprocessing, stabilization, output
@@ -735,6 +737,12 @@ All log files land flat in `LOG_DIRECTORY` with no subdirectories or PID suffixe
 ### 14.4 Dashboard assets
 
 `observability/prometheus/`, `observability/grafana/`, `observability/loki/`, `observability/alloy/`, `observability/kafka_jmx/`
+
+Local Grafana is provisioned automatically:
+
+- URL: `http://localhost:3001`
+- default login: `admin` / `admin`
+- dashboard folder: `Pipeline Backend`
 
 ## 15. Maintenance notes
 

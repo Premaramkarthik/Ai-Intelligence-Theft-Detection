@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from src.core.config import Settings
 from src.core.logger.logger import get_logger
 from src.models.camera import CameraRecord
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.opencv_pipeline.buffering.frame_buffer import FrameBuffer
 from src.opencv_pipeline.buffering.synchronizer import MultiCameraSynchronizer
 from src.opencv_pipeline.calibration.service import CalibrationService
@@ -57,7 +57,7 @@ class OpenCvPipelineRuntime:
         camera_service: CameraService,
         tracking_kafka_producer: TrackingKafkaProducerService,
         inference_manager: InferenceManager,
-        metrics_recorder: MetricsRecorder | None = None,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
         websocket_manager: WebSocketManager | None = None,
         webrtc_registry: WebRTCRegistry | None = None,
     ) -> None:
@@ -117,7 +117,6 @@ class OpenCvPipelineRuntime:
                 if settings.tracking_identity_store_token is not None
                 else None
             ),
-            metrics_recorder=self._metrics,
         )
         self._identity_service = IdentityAssignmentService(
             identity_store,
@@ -149,6 +148,11 @@ class OpenCvPipelineRuntime:
         self._active_cameras: dict[str, _ActiveCamera] = {}
         self._camera_inference_controls: dict[str, tuple[bool, str]] = {}
         self._last_frame_seen_at: dict[str, datetime] = {}
+        self._last_active_tracks: dict[str, int] = {}
+        self._last_queue_latency_ms: dict[str, float] = {}
+        self._last_decode_time_ms: dict[str, float] = {}
+        self._last_stream_fps: dict[str, float] = {}
+        self._last_reconnect_attempts: dict[str, int] = {}
         self._synchronizer = MultiCameraSynchronizer([], settings.opencv_pipeline_sync_tolerance_ms)
         self._sync_camera_ids: tuple[str, ...] = ()
         self._running = False
@@ -166,6 +170,7 @@ class OpenCvPipelineRuntime:
             return
         self._identity_service.ensure_ready()
         await self.refresh_cameras()
+        self._metrics.set_active_cameras(len(self._active_cameras))
         self._running = True
 
     async def stop(self) -> None:
@@ -179,6 +184,7 @@ class OpenCvPipelineRuntime:
         self._identity_service.close()
         self._synchronizer.close()
         self._sync_camera_ids = ()
+        self._metrics.set_active_cameras(0)
 
     def close(self) -> None:
         """Release runtime-owned buffering resources."""
@@ -214,11 +220,16 @@ class OpenCvPipelineRuntime:
 
                 packet = await self._frame_buffer.get()
                 if packet.camera_id not in self._active_cameras:
+                    self._metrics.record_frame_dropped(packet.camera_id, reason="inactive_camera")
                     packet.release()
                     continue
 
+                queue_latency_ms = (
+                    perf_counter_ns() - packet.monotonic_ns
+                ) / 1_000_000.0
+                self._last_queue_latency_ms[packet.camera_id] = queue_latency_ms
+                self._metrics.set_stream_queue_latency_ms(packet.camera_id, queue_latency_ms)
                 self._last_frame_seen_at[packet.camera_id] = packet.captured_at
-                self._metrics.record_frame_received(packet.camera_id)
                 self._refresh_sync_group(packet.captured_at, packet.camera_id)
                 bundle = self._synchronizer.submit(packet)
                 if bundle is None:
@@ -257,6 +268,7 @@ class OpenCvPipelineRuntime:
                 retry_max_delay_seconds=(
                     self._settings.opencv_pipeline_capture_retry_max_delay_seconds
                 ),
+                metrics_recorder=self._metrics,
             )
             worker.start()
             self._active_cameras[camera_id] = _ActiveCamera(source=source, worker=worker)
@@ -265,6 +277,9 @@ class OpenCvPipelineRuntime:
         await self._sync_inference_controls(camera_records)
         if topology_changed:
             self._refresh_sync_group(utc_now(), None)
+        self._metrics.set_active_cameras(len(self._active_cameras))
+        self._metrics.set_stream_worker_count(len(self._active_cameras))
+        self._metrics.set_tracking_worker_count(len(self._active_cameras))
 
     async def sync_inference_controls(self) -> None:
         """Refresh per-camera inference settings without rebuilding capture topology."""
@@ -288,6 +303,15 @@ class OpenCvPipelineRuntime:
         self._synchronizer.remove_camera(camera_id)
         self._last_frame_seen_at.pop(camera_id, None)
         self._camera_inference_controls.pop(camera_id, None)
+        self._last_active_tracks.pop(camera_id, None)
+        self._last_queue_latency_ms.pop(camera_id, None)
+        self._last_decode_time_ms.pop(camera_id, None)
+        self._last_stream_fps.pop(camera_id, None)
+        self._last_reconnect_attempts.pop(camera_id, None)
+        self._metrics.set_stream_worker_up(camera_id, False)
+        self._metrics.set_tracking_worker_up(camera_id, False)
+        self._metrics.set_tracking_active_tracks(camera_id, 0)
+        self._metrics.set_inference_queue_depth(camera_id, 0)
         identity_events = self._identity_service.remove_camera(camera_id)
         if identity_events:
             try:
@@ -306,6 +330,9 @@ class OpenCvPipelineRuntime:
             discarded_frames,
             len(identity_events),
         )
+        self._metrics.set_active_cameras(len(self._active_cameras))
+        self._metrics.set_stream_worker_count(len(self._active_cameras))
+        self._metrics.set_tracking_worker_count(len(self._active_cameras))
 
     async def _sync_inference_controls(self, camera_records: list[CameraRecord]) -> None:
         """Apply persisted per-camera inference settings to active worker cameras."""
@@ -432,6 +459,7 @@ class OpenCvPipelineRuntime:
             [processed_frame.working_bgr for processed_frame in prepared_frames]
         )
         detection_latency_ms = (perf_counter_ns() - detection_started_at) / 1_000_000.0
+        self._metrics.observe_detection_latency(detection_latency_ms)
 
         tracked_assignments: list[tuple[object, list[object]]] = []
         tracking_total_latency_ms = 0.0
@@ -450,6 +478,16 @@ class OpenCvPipelineRuntime:
 
         reid_latency_ms = await self._reidentifier.enrich_tracks(tracked_assignments)
         identity_events, identity_latency_ms = await self._identity_service.assign(tracked_assignments)
+        self._metrics.observe_tracking_latency(
+            tracking_total_latency_ms / max(len(prepared_frames), 1)
+        )
+        self._metrics.observe_reid_latency(reid_latency_ms)
+        self._metrics.observe_identity_assignment_latency(identity_latency_ms)
+        for event in identity_events:
+            self._metrics.increment_tracking_identity_resolution(
+                event.camera_id,
+                matched_existing=event.matched_existing,
+            )
 
         outputs: list[PipelineOutput] = []
         for processed_frame, motion_summary, detections, tracks in zip(
@@ -480,23 +518,23 @@ class OpenCvPipelineRuntime:
                 identity_latency_ms=identity_latency_ms,
             )
             output.annotated_bgr = self._annotator.annotate(output)
-            outputs.append(output)
+            self._last_active_tracks[processed_frame.packet.camera_id] = len(tracks)
+            self._metrics.increment_tracking_processed_frames(processed_frame.packet.camera_id)
+            self._metrics.set_tracking_worker_up(processed_frame.packet.camera_id, True)
+            self._metrics.set_tracking_active_tracks(processed_frame.packet.camera_id, len(tracks))
             self._metrics.observe_frame_processing_latency(
                 processed_frame.packet.camera_id,
                 output.pipeline_latency_ms,
             )
-            self._metrics.increment_tracking_processed_frames(
+            self._metrics.observe_tracking_identity_lookup_duration(
                 processed_frame.packet.camera_id,
-                1,
+                identity_latency_ms / 1000.0,
             )
-            self._metrics.increment_tracking_published_frames(
-                processed_frame.packet.camera_id,
-                1,
-            )
-            self._metrics.set_tracking_active_tracks(
-                processed_frame.packet.camera_id,
-                len(tracks),
-            )
+            worker_snapshot = self._active_cameras[processed_frame.packet.camera_id].worker.health_snapshot()
+            self._last_decode_time_ms[processed_frame.packet.camera_id] = worker_snapshot.decode_time_ms
+            self._last_stream_fps[processed_frame.packet.camera_id] = worker_snapshot.current_fps
+            self._last_reconnect_attempts[processed_frame.packet.camera_id] = worker_snapshot.reconnect_attempts
+            outputs.append(output)
 
         if outputs:
             publish_results = await asyncio.gather(
@@ -510,6 +548,18 @@ class OpenCvPipelineRuntime:
                         output.processed_frame.packet.camera_id,
                         result,
                     )
+                    self._metrics.record_frame_dropped(
+                        output.processed_frame.packet.camera_id,
+                        reason="publish_failed",
+                    )
+                    self._metrics.set_stream_worker_up(
+                        output.processed_frame.packet.camera_id,
+                        False,
+                    )
+                    continue
+                self._metrics.increment_tracking_published_frames(
+                    output.processed_frame.packet.camera_id
+                )
 
         published_event_keys = {
             (event.camera_id, event.local_track_id, event.event_type.value, event.occurred_at)

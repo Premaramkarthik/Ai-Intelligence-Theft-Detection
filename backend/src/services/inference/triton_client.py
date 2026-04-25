@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from src.core.logger.logger import get_logger
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.services.inference.logging import (
     log_inference_event,
     log_inference_exception,
@@ -32,6 +33,7 @@ class TritonInferenceClient:
         url: str,
         max_in_flight: int = 8,
         reconnect_interval_seconds: float = 5.0,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
     ) -> None:
         self._url = url
         self._max_in_flight = max_in_flight
@@ -42,6 +44,7 @@ class TritonInferenceClient:
         self._last_connect_attempt_at: float | None = None
         self._last_connect_error: str | None = None
         self._logger = get_logger(__name__)
+        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
 
     async def connect(self) -> None:
         """Create the gRPC channel and verify server liveness."""
@@ -93,6 +96,8 @@ class TritonInferenceClient:
             await self._safe_close_client_locally(locals().get("client"))
             self._client = None
             self._last_connect_error = str(exc)
+            self._metrics_recorder.set_triton_connected(False)
+            self._metrics_recorder.increment_triton_connect_failure()
             log_inference_exception(
                 self._logger,
                 logging.ERROR,
@@ -107,6 +112,7 @@ class TritonInferenceClient:
 
         self._client = client
         self._last_connect_error = None
+        self._metrics_recorder.set_triton_connected(True)
         log_inference_event(
             self._logger,
             logging.INFO,
@@ -123,6 +129,7 @@ class TritonInferenceClient:
         if self._client is not None:
             await self._client.close()
             self._client = None
+            self._metrics_recorder.set_triton_connected(False)
             log_inference_event(
                 self._logger,
                 logging.INFO,
@@ -161,7 +168,7 @@ class TritonInferenceClient:
             self._logger,
             logging.DEBUG,
             "inference.triton_request_started",
-            "Submitting Triton inference request.",
+            "Submitting Triton gRPC inference request.",
             triton_url=self._url,
             model_name=model_name,
             inputs=summarize_named_arrays(inputs),
@@ -175,7 +182,11 @@ class TritonInferenceClient:
 
         try:
             async with self._semaphore:
-                response = await self._client.infer(model_name=model_name, inputs=triton_inputs)
+                self._metrics_recorder.increment_triton_inflight_requests()
+                try:
+                    response = await self._client.infer(model_name=model_name, inputs=triton_inputs)
+                finally:
+                    self._metrics_recorder.decrement_triton_inflight_requests()
         except Exception as exc:  # pylint: disable=broad-except
             if self._is_connection_error(exc):
                 await self._reset_client()
@@ -207,14 +218,14 @@ class TritonInferenceClient:
             raise
 
         outputs = {
-            output.name(): response.as_numpy(output.name())
-            for output in response.get_output_names()
+            name: response.as_numpy(name)
+            for name in response.get_output_names()
         }
         log_inference_event(
             self._logger,
             logging.DEBUG,
             "inference.triton_response_received",
-            "Received Triton inference response.",
+            "Received Triton gRPC inference response.",
             triton_url=self._url,
             model_name=model_name,
             outputs=summarize_named_arrays(outputs),
@@ -227,6 +238,7 @@ class TritonInferenceClient:
 
         client = self._client
         self._client = None
+        self._metrics_recorder.set_triton_connected(False)
         await self._safe_close_client_locally(client)
 
     async def _safe_close_client_locally(self, client: Any) -> None:

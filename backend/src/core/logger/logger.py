@@ -64,6 +64,11 @@ SUBSYSTEM_LOG_SPECS: tuple[_SubsystemLogSpec, ...] = (
         logger_prefixes=("src.services.inference",),
         structured_event_prefixes=("inference.",),
     ),
+    _SubsystemLogSpec(
+        name="prediction",
+        logger_prefixes=("src.services.inference.prediction",),
+        structured_event_prefixes=("inference.prediction_",),
+    ),
 )
 
 

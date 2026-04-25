@@ -40,16 +40,16 @@ class InferenceOverlayCache:
     def get(self, camera_id: str, local_track_id: str) -> _InferenceRecord | None:
         return self._data.get((camera_id, local_track_id))
 
+    def items_for_camera(self, camera_id: str) -> list[tuple[str, _InferenceRecord]]:
+        return [
+            (local_track_id, record)
+            for (record_camera_id, local_track_id), record in self._data.items()
+            if record_camera_id == camera_id
+        ]
+
     def remove_camera(self, camera_id: str) -> None:
         for key in [k for k in self._data if k[0] == camera_id]:
             del self._data[key]
-
-
-_ALERT_COLORS: dict[str, tuple[int, int, int]] = {
-    "normal": (50, 220, 50),
-    "warning": (0, 200, 255),
-    "alert": (0, 60, 230),
-}
 
 
 class CameraFrameKafkaEventPayload(BaseModel):
@@ -104,18 +104,38 @@ class FrameAnnotator:
 
         for track in output.tracks:
             cv2.rectangle(frame, (track.left, track.top), (track.left + track.width, track.top + track.height), (30, 200, 70), 2)
-            id_label = track.persistent_id or track.track_id
-            cv2.putText(frame, f"{id_label} {track.confidence:.2f}", (track.left, max(24, track.top - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+            id_label = f"person_{track.track_id}"
+            _draw_text_with_background(
+                frame,
+                f"{id_label} {track.confidence:.2f}",
+                (track.left, max(24, track.top - 8)),
+            )
 
-            if self._inference_cache is not None:
-                result = self._inference_cache.get(camera_id, track.track_id)
-                if result is not None:
-                    color = _ALERT_COLORS.get(result.alert_level, (255, 255, 255))
-                    cv2.putText(frame, f"{result.label}  {result.score:.0%}  [{result.alert_level}]", (track.left, track.top + track.height + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.50, color, 2)
-
-        motion = output.motion
-        cv2.putText(frame, f"motion={motion.mean_magnitude:.2f} fg={motion.foreground_ratio:.2%} tracks={len(output.tracks)}", (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 255), 2)
+        if self._inference_cache is not None:
+            self._draw_prediction_panel(frame, camera_id)
         return frame
+
+    def _draw_prediction_panel(self, frame: Any, camera_id: str) -> None:
+        """Render latest prediction labels in the top-left corner."""
+
+        prediction_items = self._inference_cache.items_for_camera(camera_id)
+        if not prediction_items:
+            return
+
+        sorted_items = sorted(
+            prediction_items,
+            key=lambda item: item[1].score,
+            reverse=True,
+        )
+        y = 24
+        for local_track_id, record in sorted_items[:5]:
+            text = (
+                f"prediction: {record.label}  "
+                f"value: {record.score:.4f}  "
+                f"track: {local_track_id}"
+            )
+            _draw_text_with_background(frame, text, (12, y))
+            y += 24
 
 
 class OutputDispatcher:
@@ -300,3 +320,47 @@ def _motion_payload(motion: MotionSummary) -> dict[str, float | bool]:
         "foreground_ratio": motion.foreground_ratio,
         "is_motion_consistent": motion.is_motion_consistent,
     }
+
+
+def _draw_text_with_background(
+    frame: Any,
+    text: str,
+    origin: tuple[int, int],
+    *,
+    font_scale: float = 0.50,
+    thickness: int = 1,
+    text_color: tuple[int, int, int] = (0, 0, 0),
+    background_color: tuple[int, int, int] = (255, 255, 255),
+    padding: int = 4,
+) -> None:
+    """Draw readable overlay text using black text on a light background."""
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    (text_width, text_height), baseline = cv2.getTextSize(
+        text,
+        font,
+        font_scale,
+        thickness,
+    )
+    x, y = origin
+    top = max(0, y - text_height - padding)
+    bottom = min(frame.shape[0], y + baseline + padding)
+    left = max(0, x - padding)
+    right = min(frame.shape[1], x + text_width + padding)
+    cv2.rectangle(
+        frame,
+        (left, top),
+        (right, bottom),
+        background_color,
+        thickness=-1,
+    )
+    cv2.putText(
+        frame,
+        text,
+        (x, y),
+        font,
+        font_scale,
+        text_color,
+        thickness,
+        cv2.LINE_AA,
+    )

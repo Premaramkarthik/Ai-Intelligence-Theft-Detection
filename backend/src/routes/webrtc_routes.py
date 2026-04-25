@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import perf_counter
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.services.webrtc.registry import WebRTCRegistry
 from src.services.webrtc.video_track import CameraVideoStreamTrack
 
@@ -44,6 +46,7 @@ async def _cleanup(
     camera_id: str,
     track: CameraVideoStreamTrack,
     registry: WebRTCRegistry,
+    metrics_recorder: PrometheusMetrics | NullMetricsRecorder,
 ) -> None:
     """Ordered teardown: stop track → remove from registry → close PC → remove from global set.
 
@@ -51,6 +54,7 @@ async def _cleanup(
     cleanly via CancelledError rather than being destroyed mid-await.
     """
     _active_pcs.discard(pc)
+    metrics_recorder.set_webrtc_peer_connections(len(_active_pcs))
     track.stop()
     await registry.remove_track(camera_id, track)
     if pc.connectionState != "closed":
@@ -81,9 +85,11 @@ async def create_webrtc_offer(
 ) -> SdpAnswer:
     container = request.app.state.container
     registry: WebRTCRegistry = container.webrtc_registry
+    metrics_recorder = getattr(request.app.state, "metrics_recorder", None) or NullMetricsRecorder()
 
     active_ids = {c.id for c in await container.camera_service.list_active_camera_records()}
     if camera_id not in active_ids:
+        metrics_recorder.increment_webrtc_offer("not_found")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Camera {camera_id!r} is not active.",
@@ -92,10 +98,12 @@ async def create_webrtc_offer(
     track = await registry.create_track(camera_id)
     pc = RTCPeerConnection(configuration=_RTC_CONFIG)
     _active_pcs.add(pc)
+    metrics_recorder.set_webrtc_peer_connections(len(_active_pcs))
     pc.addTrack(track)
 
     # --- ICE gathering event so we can wait below ---
     gather_done = asyncio.Event()
+    ice_started_at = perf_counter()
 
     @pc.on("icegatheringstatechange")
     def _on_ice_gather() -> None:
@@ -110,29 +118,36 @@ async def create_webrtc_offer(
             "webrtc: connection state=%s camera=%s", pc.connectionState, camera_id
         )
         if pc.connectionState in ("failed", "closed", "disconnected"):
-            await _cleanup(pc, camera_id, track, registry)
+            await _cleanup(pc, camera_id, track, registry, metrics_recorder)
 
-    # --- SDP exchange ---
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer.sdp, type=offer.type))
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+    try:
+        # --- SDP exchange ---
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=offer.sdp, type=offer.type))
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
 
-    # Wait for the server's ICE gathering to complete before returning the SDP.
-    # Without this wait the answer may contain no usable candidates and the
-    # browser will fail to reach the STUN-reflexive address.
-    if pc.iceGatheringState != "complete":
-        try:
-            await asyncio.wait_for(gather_done.wait(), timeout=_ICE_GATHER_TIMEOUT_S)
-        except asyncio.TimeoutError:
-            _log.warning(
-                "webrtc: ICE gathering timed out after %.1fs camera=%s — returning partial SDP",
-                _ICE_GATHER_TIMEOUT_S,
-                camera_id,
-            )
+        # Wait for the server's ICE gathering to complete before returning the SDP.
+        # Without this wait the answer may contain no usable candidates and the
+        # browser will fail to reach the STUN-reflexive address.
+        if pc.iceGatheringState != "complete":
+            try:
+                await asyncio.wait_for(gather_done.wait(), timeout=_ICE_GATHER_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                _log.warning(
+                    "webrtc: ICE gathering timed out after %.1fs camera=%s — returning partial SDP",
+                    _ICE_GATHER_TIMEOUT_S,
+                    camera_id,
+                )
 
-    _log.info(
-        "webrtc: SDP answer ready camera=%s candidates_gathered=%s",
-        camera_id,
-        pc.iceGatheringState,
-    )
-    return SdpAnswer(sdp=pc.localDescription.sdp, type=pc.localDescription.type)
+        metrics_recorder.observe_webrtc_ice_gather_duration(perf_counter() - ice_started_at)
+        metrics_recorder.increment_webrtc_offer("success")
+        _log.info(
+            "webrtc: SDP answer ready camera=%s candidates_gathered=%s",
+            camera_id,
+            pc.iceGatheringState,
+        )
+        return SdpAnswer(sdp=pc.localDescription.sdp, type=pc.localDescription.type)
+    except Exception:
+        metrics_recorder.increment_webrtc_offer("failed")
+        await _cleanup(pc, camera_id, track, registry, metrics_recorder)
+        raise

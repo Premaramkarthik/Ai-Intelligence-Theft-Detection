@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.core.config import Settings
 from src.core.db import Database
-from src.observability.metrics import MetricsRecorder
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.services.inference.event_repository import InferenceEventRepository
 from src.services.inference.manager import InferenceManager
 from src.services.presentation.websocket_manager import WebSocketManager
@@ -16,7 +16,7 @@ def create_inference_runtime_services(
     database: Database,
     websocket_manager: WebSocketManager,
     tracking_kafka_producer: TrackingKafkaProducerService,
-    metrics_recorder: MetricsRecorder,
+    metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
 ) -> InferenceManager:
     """Build and return an ``InferenceManager`` wired to shared infrastructure.
 
@@ -32,7 +32,6 @@ def create_inference_runtime_services(
             and ``inference.alert`` events.
         tracking_kafka_producer: The shared Kafka producer service; used to
             publish inference results to ``camera.ai_results``.
-        metrics_recorder: Prometheus / null recorder for queue-depth metrics.
     """
     event_repository = InferenceEventRepository(database.pool)
     kafka_publisher = tracking_kafka_producer.inference_publisher(
@@ -42,7 +41,7 @@ def create_inference_runtime_services(
         event_repository=event_repository,
         websocket_manager=websocket_manager,
         kafka_publisher=kafka_publisher,
-        metrics_recorder=metrics_recorder,
         triton_url=settings.triton_url,
         triton_reconnect_interval_seconds=settings.triton_reconnect_interval_seconds,
+        metrics_recorder=metrics_recorder,
     )

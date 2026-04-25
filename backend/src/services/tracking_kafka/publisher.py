@@ -6,7 +6,7 @@ from typing import Any
 
 from aiokafka import AIOKafkaProducer
 
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.schemas.tracking_events import (
     TrackingKafkaEventPayload,
     TrackingKafkaTrackPayload,
@@ -21,10 +21,8 @@ class KafkaTrackingUpdatePublisher:  # pylint: disable=too-few-public-methods
         self,
         producer: AIOKafkaProducer,
         topic: str,
-        metrics_recorder: MetricsRecorder | None = None,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
     ) -> None:
-        """Create a Kafka publisher for tracking update payloads."""
-
         self._producer = producer
         self._topic = topic
         self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
@@ -39,7 +37,6 @@ class KafkaTrackingUpdatePublisher:  # pylint: disable=too-few-public-methods
         frame: Any = None,
     ) -> None:
         del frame
-        """Publish one camera-scoped tracking snapshot to Kafka."""
 
         payload = TrackingKafkaEventPayload(
             camera_id=camera_id,

@@ -4,7 +4,6 @@ asyncpg
 fastapi
 numpy
 opencv-python
-prometheus-client
 psutil
 pydantic
 pydantic-settings

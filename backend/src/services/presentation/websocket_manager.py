@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
 
 from fastapi import WebSocket
-from starlette.websockets import WebSocketDisconnect
 
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
 from src.schemas.common import WebSocketEnvelope
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 
 
 class WebSocketManager:
     """Track websocket subscriptions and broadcast backend events."""
 
-    def __init__(self, metrics_recorder: MetricsRecorder | None = None) -> None:
-        """Create a websocket registry optionally instrumented with metrics."""
-
+    def __init__(
+        self,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
+    ) -> None:
         self._connections: dict[WebSocket, str | None] = {}
         self._lock = asyncio.Lock()
         self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
@@ -48,6 +49,7 @@ class WebSocketManager:
         """
 
         payload = message.model_dump(mode="json")
+        started_at = perf_counter()
 
         # 1. Snapshot relevant connections (lock held only for dict read).
         async with self._lock:
@@ -71,14 +73,16 @@ class WebSocketManager:
                 return ws
 
         results = await asyncio.gather(*(_send(ws) for ws in targets))
+        self._metrics_recorder.observe_websocket_broadcast_duration(
+            message.type,
+            perf_counter() - started_at,
+        )
         stale_connections: list[WebSocket] = [ws for ws in results if ws is not None]
 
         if not stale_connections:
             return
 
-        # 3. Evict stale connections under a brief re-lock.
         async with self._lock:
             for websocket in stale_connections:
-                self._connections.pop(websocket, None)
-        for _ in stale_connections:
-            self._metrics_recorder.decrement_websocket_connections()
+                if self._connections.pop(websocket, None) is not None:
+                    self._metrics_recorder.decrement_websocket_connections()

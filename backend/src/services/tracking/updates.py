@@ -223,17 +223,16 @@ class InferenceIngressPublisher:
         )
         now = datetime.now(timezone.utc)
         dispatched_tracks = 0
-        skipped_tracks_without_persistent_id = 0
         for track in tracks:
-            if track.persistent_id is None:
-                skipped_tracks_without_persistent_id += 1
-                continue
+            # Use the Milvus-assigned persistent_id when available; fall back to
+            # track_id so inference runs even when Milvus identity isn't resolved yet.
+            inference_id = track.persistent_id or track.track_id
             crop = crop_ltwh(frame, track.left, track.top, track.width, track.height)
             sample = InferenceIngressSample(
                 camera_id=camera_id,
                 stream_name=stream_name,
                 local_track_id=track.track_id,
-                persistent_id=track.persistent_id,
+                persistent_id=inference_id,
                 sampled_at=now,
                 left=track.left,
                 top=track.top,
@@ -257,6 +256,5 @@ class InferenceIngressPublisher:
             stream_name=stream_name,
             total_tracks=len(tracks),
             dispatched_tracks=dispatched_tracks,
-            skipped_tracks_without_persistent_id=skipped_tracks_without_persistent_id,
             sampled_at=now.isoformat(),
         )

@@ -16,7 +16,6 @@ import numpy as np
 from pymilvus import DataType, MilvusClient
 
 from src.core.logger.logger import get_logger
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
 from src.utils.async_blocking import run_blocking_in_daemon_thread
 
 
@@ -60,7 +59,6 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         similarity_threshold: float,
         search_limit: int,
         token: str | None = None,
-        metrics_recorder: MetricsRecorder | None = None,
         max_concurrent_batches: int = 4,
     ) -> None:  # pylint: disable=too-many-arguments
         self._uri = uri
@@ -70,7 +68,6 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         self._similarity_threshold = similarity_threshold
         self._search_limit = max(1, search_limit)
         self._token = token
-        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
         self._client: MilvusClient | None = None
         self._lock = Lock()
         self._healthy = True
@@ -170,14 +167,6 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
             raise
 
         self._mark_healthy()
-        self._metrics_recorder.observe_tracking_identity_lookup_duration(
-            camera_id,
-            perf_counter() - lookup_started_at,
-        )
-        self._metrics_recorder.increment_tracking_identity_resolution(
-            camera_id,
-            matched_existing,
-        )
         self._logger.debug(
             "Milvus identity resolved and stored.",
             extra={
@@ -474,9 +463,7 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                 raise ValueError("Milvus hit missing 'distance' field")
             similarity = float(raw_distance)
         except (TypeError, ValueError) as exc:
-            self._metrics_recorder.increment_tracking_identity_resolution(
-                "<parse_error>", False
-            )
+
             return 0.0, f"person_{uuid4().hex[:12]}", False
 
         if similarity >= self._similarity_threshold:
@@ -484,9 +471,6 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                 identity_id = _extract_identity_id(best)
                 return similarity, identity_id, True
             except (KeyError, ValueError) as exc:
-                self._metrics_recorder.increment_tracking_identity_resolution(
-                    "<parse_error>", False
-                )
                 return 0.0, f"person_{uuid4().hex[:12]}", False
 
         # No match above threshold — create a new identity.
@@ -592,7 +576,6 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
         recovered = not self._healthy
         self._healthy = True
         self._last_error = None
-        self._metrics_recorder.set_dependency_health("milvus_identity_store", True)
         if recovered:
             self._logger.info(
                 "Milvus identity store recovered.",
@@ -615,7 +598,6 @@ class MilvusIdentityStore:  # pylint: disable=too-many-instance-attributes
                 self._client = None
         self._healthy = False
         self._last_error = str(exc)
-        self._metrics_recorder.set_dependency_health("milvus_identity_store", False)
         self._logger.error(
             "Milvus identity store marked unhealthy.",
             exc_info=(type(exc), exc, exc.__traceback__),

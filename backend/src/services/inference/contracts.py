@@ -18,7 +18,7 @@ class InferenceIngressSample:
     camera_id: str
     stream_name: str
     local_track_id: str
-    persistent_id: str          # must be "assigned" before queuing
+    persistent_id: str          # persistent identity when available, else local track id
     sampled_at: datetime
     left: int
     top: int
@@ -28,7 +28,7 @@ class InferenceIngressSample:
     age_frames: int
     consecutive_hits: int
     frames_since_update: int
-    persistent_id_state: str    # only "assigned" samples are dispatched
+    persistent_id_state: str    # tracking identity state at enqueue time
 
 
 @dataclass(slots=True)
@@ -54,8 +54,8 @@ class InferenceWorkerConfig:
     triton_url: str = "localhost:8001"
     triton_max_in_flight: int = 8               # per-strategy bounded concurrency
     triton_reconnect_interval_seconds: float = 5.0
-    temporal_buffer_size: int = 16
-    dispatch_min_consecutive_hits: int = 4
+    temporal_buffer_size: int = 1
+    dispatch_min_consecutive_hits: int = 1
     dispatch_min_crop_width: int = 32
     dispatch_min_crop_height: int = 64
     identity_gap_reset_seconds: float = 2.0

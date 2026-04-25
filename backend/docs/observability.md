@@ -1,10 +1,10 @@
 # Observability
 
-This backend exposes Prometheus metrics on a dedicated listener and ships Grafana-ready provisioning for dashboards and alert rules.
+This backend exposes Prometheus metrics on a dedicated listener and includes a ready-to-run Prometheus + Grafana stack under `backend/docker-compose.yaml`.
 
 ## Metrics Endpoint
 
-The backend starts a dedicated Prometheus HTTP endpoint with `prometheus_client.start_http_server(...)`.
+The FastAPI process starts a dedicated metrics HTTP listener with `prometheus_client.start_http_server(...)`.
 
 Default endpoint:
 
@@ -19,102 +19,112 @@ Configuration lives in `src/core/config.py`:
 - `METRICS_PORT`
 - `METRICS_COLLECTION_INTERVAL_SECONDS`
 
-## Application Metrics
+## Local Stack
 
-- `frames_received_total{camera_id="..."}`
-- `frames_dropped_total{camera_id="..."}`
-- `frame_processing_latency_ms_bucket{camera_id="..."}`
-- `queue_size`
+Start the observability services from the `backend/` directory:
 
-## System Metrics
-
-- `system_cpu_usage_percent`
-- `process_cpu_usage_percent`
-- `system_memory_usage_bytes`
-- `process_memory_usage_bytes`
-- `system_network_receive_bytes_total`
-- `system_network_transmit_bytes_total`
-
-## Prometheus Setup
-
-Use:
-
-- [prometheus.yml.tmpl](/home/karthik/Downloads/pipeline_opencv/backend/observability/prometheus/prometheus.yml.tmpl)
-- [alerts.yml](/home/karthik/Downloads/pipeline_opencv/backend/observability/prometheus/alerts.yml)
-
-The local setup uses host networking for Prometheus and Grafana so Prometheus can scrape the backend metrics listener directly at `127.0.0.1:9109`. The `5s` scrape interval is a reasonable default for live worker and queue visibility without excessive overhead.
-
-## Grafana Setup
-
-Provisioning files:
-
-- [prometheus.yml](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/provisioning/datasources/prometheus.yml)
-- [dashboards.yml](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/provisioning/dashboards/dashboards.yml)
-- [opencv_pipeline.json](/home/karthik/Downloads/pipeline_opencv/backend/observability/grafana/dashboards/opencv_pipeline.json)
-
-Manual Grafana flow:
-
-1. Add a Prometheus data source pointed at `http://127.0.0.1:9090`.
-2. Import `observability/grafana/dashboards/opencv_pipeline.json`.
-3. Save the dashboard in a shared folder.
-
-## PromQL Queries
-
-FPS:
-
-```promql
-rate(frames_received_total[1m])
+```bash
+docker compose up -d prometheus grafana
 ```
 
-Frame drops:
+Then open:
+
+- Prometheus: `http://localhost:9090`
+- Grafana: `http://localhost:3001`
+
+Default Grafana credentials:
+
+- username: `admin`
+- password: `admin`
+
+Override them with `GRAFANA_ADMIN_USER` and `GRAFANA_ADMIN_PASSWORD` in `backend/.env`.
+
+## Provisioned Assets
+
+- `observability/prometheus/prometheus.yml`
+- `observability/prometheus/alerts.yml`
+- `observability/grafana/provisioning/datasources/prometheus.yml`
+- `observability/grafana/provisioning/dashboards/dashboards.yml`
+- `observability/grafana/dashboards/opencv_pipeline.json`
+
+Grafana provisions the Prometheus data source automatically and loads the dashboard into the `Pipeline Backend` folder.
+
+## Scrape Targets
+
+The provisioned Prometheus server scrapes:
+
+- the backend metrics endpoint at `host.docker.internal:9109`
+- Triton metrics at `triton:8002`
+- Kafka JMX metrics at `kafka:7071`
+- Prometheus itself at `prometheus:9090`
+
+Because the backend usually runs on the host machine while Prometheus runs in Docker, `host.docker.internal` is used for the backend target.
+
+## Dashboard Coverage
+
+The provisioned Grafana dashboard includes:
+
+- active cameras and worker health
+- WebSocket connection count
+- Triton connectivity
+- decoded FPS by camera
+- frame drop rate by camera
+- p95 frame processing latency
+- tracking active tracks
+- inference queue depth
+- inference request rate by model and strategy
+- p95 inference execution latency
+- API request rate
+- CPU and memory usage
+- dependency health
+
+## Useful PromQL Queries
+
+Decoded FPS by camera:
 
 ```promql
-rate(frames_dropped_total[1m])
+sum by (camera_id) (rate(stream_decoded_frames_total[1m]))
 ```
 
-Latency:
+Frame drops by camera:
 
 ```promql
-histogram_quantile(0.95, rate(frame_processing_latency_ms_bucket[1m]))
+sum by (camera_id) (rate(frames_dropped_total[5m]))
 ```
 
-CPU:
+P95 frame processing latency:
 
 ```promql
-system_cpu_usage_percent
+histogram_quantile(0.95, sum by (camera_id, le) (rate(frame_processing_latency_ms_bucket[5m])))
 ```
 
-Memory:
+Inference request rate:
 
 ```promql
-process_memory_usage_bytes
+sum by (strategy, model_name, outcome) (rate(inference_requests_total[5m]))
 ```
 
-Process CPU:
+P95 inference execution latency:
 
 ```promql
-process_cpu_usage_percent
-```
-
-Queue size:
-
-```promql
-queue_size
+histogram_quantile(0.95, sum by (strategy, model_name, le) (rate(inference_execution_duration_seconds_bucket[5m])))
 ```
 
 ## Alerts
 
-The provided alerts cover:
+The bundled alert rules cover:
 
-- high CPU usage
-- rapid RSS growth
-- high frame drop rate
-- high p95 frame processing latency
+- backend metrics endpoint down
+- Triton metrics endpoint down
+- elevated frame drop rate
+- elevated p95 frame processing latency
+- inference queue backlog
+- high backend RSS memory
 
-## Official References
+These alerts are evaluated by Prometheus and appear in the Prometheus alerts UI even without an Alertmanager service.
 
-- https://prometheus.io/docs/instrumenting/clientlibs/
-- https://prometheus.io/docs/practices/histograms/
-- https://prometheus.io/docs/visualization/grafana/
-- https://grafana.com/docs/grafana/latest/datasources/prometheus/
-- https://grafana.com/docs/grafana/latest/dashboards/
+## Notes
+
+- Make sure the FastAPI backend is running before opening Grafana, otherwise the backend Prometheus target will show as down.
+- The dashboard uses the actual metric names exposed by `src/observability/metrics.py`, not placeholder names.
+- If you move the backend metrics endpoint off `9109`, update `observability/prometheus/prometheus.yml` to match.

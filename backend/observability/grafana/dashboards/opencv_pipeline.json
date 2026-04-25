@@ -15,8 +15,12 @@
       }
     ]
   },
-  "editable": true,
+  "description": "Operational dashboard for the FastAPI backend, OpenCV streaming pipeline, tracking, and inference services.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
+  "id": null,
+  "links": [],
   "panels": [
     {
       "datasource": {
@@ -25,80 +29,50 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps"
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
+        "h": 4,
+        "w": 6,
         "x": 0,
         "y": 0
       },
       "id": 1,
-      "targets": [
-        {
-          "expr": "sum by (route) (rate(backend_http_requests_total[5m]))",
-          "legendFormat": "{{route}}",
-          "refId": "A"
-        }
-      ],
-      "title": "API Request Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "overrides": []
+        "textMode": "auto"
       },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 0
-      },
-      "id": 2,
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(backend_http_request_duration_seconds_bucket[5m])))",
-          "legendFormat": "{{route}}",
+          "expr": "active_cameras",
+          "legendFormat": "active",
           "refId": "A"
         }
       ],
-      "title": "API P95 Latency",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 0
-      },
-      "id": 3,
-      "targets": [
-        {
-          "expr": "backend_websocket_connections_current",
-          "refId": "A"
-        }
-      ],
-      "title": "Active WebSocket Connections",
+      "title": "Active Cameras",
       "type": "stat"
     },
     {
@@ -108,26 +82,51 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "fps"
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 8
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
       },
-      "id": 4,
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
       "targets": [
         {
-          "expr": "sum by (camera_id) (rate(frames_received_total{camera_id=~\"$camera_id\"}[1m]))",
-          "legendFormat": "{{camera_id}}",
+          "expr": "stream_worker_count",
+          "legendFormat": "workers",
           "refId": "A"
         }
       ],
-      "title": "Sampled FPS",
-      "type": "timeseries"
+      "title": "Stream Workers",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -136,20 +135,166 @@
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "backend_websocket_connections_current",
+          "legendFormat": "connections",
+          "refId": "A"
+        }
+      ],
+      "title": "WebSocket Connections",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "Down"
+                },
+                "1": {
+                  "text": "Up"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "triton_connected",
+          "legendFormat": "triton",
+          "refId": "A"
+        }
+      ],
+      "title": "Triton Connectivity",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
           "unit": "fps"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 8
+        "w": 12,
+        "x": 0,
+        "y": 4
       },
       "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "expr": "sum by (camera_id) (rate(stream_decoded_frames_total{camera_id=~\"$camera_id\"}[1m]))",
+          "expr": "sum by (camera_id) (rate(stream_decoded_frames_total{camera_id=~\"$camera\"}[1m]))",
           "legendFormat": "{{camera_id}}",
           "refId": "A"
         }
@@ -164,25 +309,48 @@
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
           "unit": "ops"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 8
+        "w": 12,
+        "x": 12,
+        "y": 4
       },
       "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "expr": "sum by (camera_id) (rate(frames_dropped_total{camera_id=~\"$camera_id\"}[1m]))",
+          "expr": "sum by (camera_id) (rate(frames_dropped_total{camera_id=~\"$camera\"}[5m]))",
           "legendFormat": "{{camera_id}}",
           "refId": "A"
         }
       ],
-      "title": "Dropped Frames",
+      "title": "Frame Drop Rate",
       "type": "timeseries"
     },
     {
@@ -192,30 +360,48 @@
       },
       "fieldConfig": {
         "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
           "unit": "ms"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
-        "y": 16
+        "y": 12
       },
       "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "expr": "stream_queue_latency_ms{camera_id=~\"$camera_id\"}",
+          "expr": "histogram_quantile(0.95, sum by (camera_id, le) (rate(frame_processing_latency_ms_bucket{camera_id=~\"$camera\"}[5m])))",
           "legendFormat": "{{camera_id}}",
           "refId": "A"
-        },
-        {
-          "expr": "stream_decode_time_ms{camera_id=~\"$camera_id\"}",
-          "legendFormat": "{{camera_id}} decode",
-          "refId": "B"
         }
       ],
-      "title": "Stream Queue / Decode Latency",
+      "title": "P95 Frame Processing Latency",
       "type": "timeseries"
     },
     {
@@ -225,25 +411,47 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "s"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          }
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 16
+        "w": 12,
+        "x": 12,
+        "y": 12
       },
       "id": 8,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "expr": "stream_last_frame_age_seconds{camera_id=~\"$camera_id\"}",
+          "expr": "tracking_active_tracks{camera_id=~\"$camera\"}",
           "legendFormat": "{{camera_id}}",
           "refId": "A"
         }
       ],
-      "title": "Stream Last Frame Age",
+      "title": "Tracking Active Tracks",
       "type": "timeseries"
     },
     {
@@ -253,30 +461,47 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          }
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 16
+        "w": 12,
+        "x": 0,
+        "y": 20
       },
       "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "expr": "stream_worker_up{camera_id=~\"$camera_id\"}",
+          "expr": "inference_queue_depth{camera_id=~\"$camera\"}",
           "legendFormat": "{{camera_id}}",
           "refId": "A"
-        },
-        {
-          "expr": "tracking_worker_up{camera_id=~\"$camera_id\"}",
-          "legendFormat": "{{camera_id}} tracked",
-          "refId": "B"
         }
       ],
-      "title": "Worker Up",
+      "title": "Inference Queue Depth",
       "type": "timeseries"
     },
     {
@@ -286,25 +511,48 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "none"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "reqps"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 24
+        "w": 12,
+        "x": 12,
+        "y": 20
       },
       "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "expr": "tracking_active_tracks{camera_id=~\"$camera_id\"}",
-          "legendFormat": "{{camera_id}}",
+          "expr": "sum by (strategy, model_name, outcome) (rate(inference_requests_total[5m]))",
+          "legendFormat": "{{strategy}} / {{model_name}} / {{outcome}}",
           "refId": "A"
         }
       ],
-      "title": "Active Tracks",
+      "title": "Inference Request Rate",
       "type": "timeseries"
     },
     {
@@ -314,58 +562,99 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 24
-      },
-      "id": 11,
-      "targets": [
-        {
-          "expr": "sum by (camera_id) (rate(tracking_processed_frames_total{camera_id=~\"$camera_id\"}[1m]))",
-          "legendFormat": "{{camera_id}} processed",
-          "refId": "A"
-        },
-        {
-          "expr": "sum by (camera_id) (rate(tracking_published_frames_total{camera_id=~\"$camera_id\"}[1m]))",
-          "legendFormat": "{{camera_id}} published",
-          "refId": "B"
-        }
-      ],
-      "title": "Tracking Throughput",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
           "unit": "s"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 24
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (strategy, model_name, le) (rate(inference_execution_duration_seconds_bucket[5m])))",
+          "legendFormat": "{{strategy}} / {{model_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "P95 Inference Execution Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
       },
       "id": 12,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (camera_id, le) (rate(tracking_identity_lookup_duration_seconds_bucket{camera_id=~\"$camera_id\"}[5m])))",
-          "legendFormat": "{{camera_id}}",
+          "expr": "sum by (route, method, status) (rate(backend_http_requests_total[5m]))",
+          "legendFormat": "{{method}} {{route}} {{status}}",
           "refId": "A"
         }
       ],
-      "title": "Re-ID P95 Lookup Latency",
+      "title": "API Request Rate",
       "type": "timeseries"
     },
     {
@@ -375,58 +664,53 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "ops"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "percent"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 12,
         "x": 0,
-        "y": 32
+        "y": 36
       },
       "id": 13,
-      "targets": [
-        {
-          "expr": "sum by (result, camera_id) (rate(tracking_identity_resolutions_total{camera_id=~\"$camera_id\"}[5m]))",
-          "legendFormat": "{{camera_id}} {{result}}",
-          "refId": "A"
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
         }
-      ],
-      "title": "Re-ID Resolution Outcomes",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
       },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 32
-      },
-      "id": 14,
       "targets": [
         {
-          "expr": "rate(tracking_kafka_messages_published_total[5m])",
-          "legendFormat": "tracking publish",
+          "expr": "system_cpu_usage_percent",
+          "legendFormat": "system",
           "refId": "A"
         },
         {
-          "expr": "rate(stream_kafka_messages_consumed_total[5m])",
-          "legendFormat": "stream consume",
+          "expr": "process_cpu_usage_percent",
+          "legendFormat": "process",
           "refId": "B"
         }
       ],
-      "title": "Kafka App Message Rate",
+      "title": "CPU Usage",
       "type": "timeseries"
     },
     {
@@ -436,17 +720,97 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "bytes"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 32
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "system_memory_usage_bytes",
+          "legendFormat": "system",
+          "refId": "A"
+        },
+        {
+          "expr": "process_memory_usage_bytes",
+          "legendFormat": "process",
+          "refId": "B"
+        }
+      ],
+      "title": "Memory Usage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "max": 1,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 44
       },
       "id": 15,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
           "expr": "backend_dependency_health",
@@ -455,310 +819,22 @@
         }
       ],
       "title": "Dependency Health",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "Bps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 40
-      },
-      "id": 16,
-      "targets": [
-        {
-          "expr": "sum by (name) (rate(paths_bytes_received[1m]))",
-          "legendFormat": "{{name}} rx",
-          "refId": "A"
-        },
-        {
-          "expr": "sum by (name) (rate(paths_bytes_sent[1m]))",
-          "legendFormat": "{{name}} tx",
-          "refId": "B"
-        }
-      ],
-      "title": "MediaMTX Path Throughput",
       "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 40
-      },
-      "id": 17,
-      "targets": [
-        {
-          "expr": "sum by (name) (paths_readers)",
-          "legendFormat": "{{name}}",
-          "refId": "A"
-        }
-      ],
-      "title": "MediaMTX Path Readers",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 40
-      },
-      "id": 18,
-      "targets": [
-        {
-          "expr": "up{job=~\"rtsp_camera_backend|mediamtx|milvus|triton|kafka_jmx|node|postgres_exporter|dcgm_exporter|loki|alloy\"}",
-          "legendFormat": "{{job}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Prometheus Scrape Health",
-      "type": "bargauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 48
-      },
-      "id": 19,
-      "targets": [
-        {
-          "expr": "histogram_quantile(0.95, sum by (model_name, le) (rate(inference_latency_seconds_bucket[5m])))",
-          "legendFormat": "{{model_name}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Inference P95 Latency",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 48
-      },
-      "id": 20,
-      "targets": [
-        {
-          "expr": "inference_active_tracks_total{camera_id=~\"$camera_id\"}",
-          "legendFormat": "{{camera_id}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Active Inference Tracks",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 48
-      },
-      "id": 21,
-      "targets": [
-        {
-          "expr": "sum by (camera_id, reason) (rate(inference_frames_dropped_total{camera_id=~\"$camera_id\"}[5m]))",
-          "legendFormat": "{{camera_id}} {{reason}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Inference Frame Drop Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 56
-      },
-      "id": 22,
-      "targets": [
-        {
-          "expr": "sum by (camera_id, label) (rate(label_predictions_total{camera_id=~\"$camera_id\"}[5m]))",
-          "legendFormat": "{{camera_id}} {{label}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Label Prediction Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 56
-      },
-      "id": 23,
-      "targets": [
-        {
-          "expr": "decision_ema_score{camera_id=~\"$camera_id\"}",
-          "legendFormat": "{{camera_id}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Decision EMA Score",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 56
-      },
-      "id": 24,
-      "targets": [
-        {
-          "expr": "sum by (camera_id, from_label, to_label) (rate(label_transitions_total{camera_id=~\"$camera_id\"}[5m]))",
-          "legendFormat": "{{camera_id}} {{from_label}}→{{to_label}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Label Transition Rate",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 64
-      },
-      "id": 25,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": true,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": true
-      },
-      "targets": [
-        {
-          "expr": "{component=~\"decision_engine|triton_client|pose_extractor\"}",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "Inference Event Logs",
-      "type": "logs"
     }
   ],
-  "refresh": "5s",
-  "schemaVersion": 39,
+  "refresh": "10s",
+  "schemaVersion": 40,
   "tags": [
     "prometheus",
     "grafana",
-    "opencv-pipeline",
-    "tracking",
+    "opencv",
+    "streaming",
     "inference"
   ],
   "templating": {
     "list": [
       {
+        "allValue": ".*",
         "current": {
           "selected": true,
           "text": "All",
@@ -768,26 +844,33 @@
           "type": "prometheus",
           "uid": "prometheus"
         },
-        "definition": "label_values(stream_worker_up, camera_id)",
+        "definition": "label_values(frames_received_total, camera_id)",
+        "hide": 0,
         "includeAll": true,
+        "label": "Camera",
         "multi": true,
-        "name": "camera_id",
+        "name": "camera",
         "options": [],
         "query": {
-          "query": "label_values(stream_worker_up, camera_id)",
-          "refId": "Prometheus-camera_id-Variable-Query"
+          "qryType": 1,
+          "query": "label_values(frames_received_total, camera_id)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 1,
+        "regex": "",
+        "sort": 1,
         "type": "query"
       }
     ]
   },
   "time": {
-    "from": "now-15m",
+    "from": "now-30m",
     "to": "now"
   },
+  "timepicker": {},
   "timezone": "browser",
-  "title": "OpenCV Camera Backend Observability",
-  "uid": "opencv-camera-backend-observability",
-  "version": 3
+  "title": "OpenCV Pipeline Observability",
+  "uid": "opencv-pipeline-observability",
+  "version": 1,
+  "weekStart": ""
 }

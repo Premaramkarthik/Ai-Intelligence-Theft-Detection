@@ -57,11 +57,10 @@ services:
 
   triton:
     image: nvcr.io/nvidia/tritonserver:24.08-py3
-    command: ["tritonserver", "--model-repository=/models/triton", "--model-control-mode=explicit", "--load-model=vjepa_finetune", "--load-model=cnn_transformer", "--disable-auto-complete-config", "--backend-config=onnxruntime,default-max-batch-size=0", "--log-verbose=1", "--allow-grpc=true", "--allow-http=true", "--metrics-port=8002"]
+    command: ["tritonserver", "--model-repository=/models/triton", "--model-control-mode=explicit", "--load-model=vjepa_finetune", "--load-model=cnn_transformer", "--disable-auto-complete-config", "--backend-config=onnxruntime,default-max-batch-size=0", "--log-verbose=1", "--allow-grpc=true", "--allow-http=false", "--metrics-port=8002"]
     ports:
-      - "8000:8000"
-      - "8001:8001"
-      - "8002:8002"
+      - "9001:8001"   # gRPC  — backend triton_url must use 9001
+      - "9002:8002"   # metrics
     shm_size: '1gb'
     ulimits:
       memlock: -1
@@ -134,100 +133,48 @@ services:
     networks:
       - backend_net
 
-  node-exporter:
-    image: prom/node-exporter:latest
-    pid: host
-    command:
-      - "--path.rootfs=/host"
-      - "--path.udev.data=/host/run/udev/data"
-      - "--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|host|etc)($|/)"
-      - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$"
-    volumes:
-      # Docker Desktop on Windows rejects mount propagation flags like rslave here.
-      # A plain read-only bind is enough to keep the observability stack starting.
-      - /:/host:ro
-    networks:
-      - backend_net
-    restart: unless-stopped
-
-
-  postgres-exporter:
-    image: quay.io/prometheuscommunity/postgres-exporter:latest
-    command:
-      - "--config.file=/etc/postgres_exporter/postgres_exporter.yml"
-    environment:
-      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DATA_SOURCE_NAME:-postgresql://postgres:postgres@host.docker.internal:5432/postgres?sslmode=disable}
-    volumes:
-      - ./observability/postgres_exporter/postgres_exporter.yml:/etc/postgres_exporter/postgres_exporter.yml:ro
-    networks:
-      - backend_net
-    restart: unless-stopped
-
-  loki:
-    image: grafana/loki:latest
-    command:
-      - "-config.file=/etc/loki/config.yaml"
-    volumes:
-      - ./observability/loki/config.yaml:/etc/loki/config.yaml:ro
-      - ./runtime/loki:/loki
-    networks:
-      - backend_net
-    restart: unless-stopped
-
-  alloy:
-    image: grafana/alloy:latest
-    command:
-      - run
-      - --server.http.listen-addr=0.0.0.0:12345
-      - /etc/alloy/config.alloy
-    volumes:
-      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      - loki
-    networks:
-      - backend_net
-    restart: unless-stopped
-
   prometheus:
-    image: prom/prometheus:latest
-    entrypoint: ["/bin/sh", "-ec"]
+    image: prom/prometheus
     command:
-      - |
-        sed -e "s|__PROMETHEUS_SCRAPE_TARGET__|host.docker.internal:9109|g" \
-          /etc/prometheus/prometheus.yml.tmpl > /tmp/prometheus.yml
-        exec /bin/prometheus --config.file=/tmp/prometheus.yml --storage.tsdb.path=/prometheus
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
     ports:
       - "9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - ./observability/prometheus/prometheus.yml.tmpl:/etc/prometheus/prometheus.yml.tmpl:ro
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
     depends_on:
       - kafka
-      - node-exporter
-      - postgres-exporter
-      - loki
-      - alloy
+      - triton
+    restart: unless-stopped
     networks:
       - backend_net
 
   grafana:
-    image: grafana/grafana:latest
-    environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_SERVER_HTTP_PORT: 3001
+    image: grafana/grafana
     ports:
-      - "3001:3001"
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
-      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
     depends_on:
       - prometheus
-      - loki
+    restart: unless-stopped
     networks:
       - backend_net
 
 networks:
   backend_net:
+
+volumes:
+  prometheus_data:
+  grafana_data:

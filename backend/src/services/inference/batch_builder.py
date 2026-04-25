@@ -15,6 +15,18 @@ _VJEPA_CROP_H = 256
 _VJEPA_CROP_W = 256
 
 
+def _prepare_temporal_window(frames: list[Any], *, required: int) -> list[Any]:
+    """Return exactly ``required`` frames, padding short windows by repetition."""
+
+    if not frames:
+        raise ValueError("Inference batch builder requires at least one frame crop.")
+    if len(frames) >= required:
+        return list(frames[-required:])
+    padded = list(frames)
+    padded.extend([frames[-1]] * (required - len(frames)))
+    return padded
+
+
 def _resize_crop(crop: Any, *, h: int, w: int) -> np.ndarray:
     """Resize a HWC uint8 ndarray to ``(h, w, 3)`` and normalise to FP32."""
 
@@ -33,6 +45,9 @@ class BatchBuilder:
     - ``cnn_transformer`` expects ``input`` shaped ``(1, 16, 3, 224, 224)``
     - ``vjepa_probe`` maps to ``vjepa_finetune`` and expects
       ``pixel_values_videos`` shaped ``(1, 16, 3, 256, 256)``
+
+    Short temporal windows are padded by repeating the most recent crop so
+    inference can start immediately when a person first appears.
     """
 
     def build(
@@ -52,27 +67,19 @@ class BatchBuilder:
     def _build_cnn_transformer_tensor(self, frames: list[Any]) -> np.ndarray:
         """Build the CNN transformer tensor as ``(1, T, C, H, W)``."""
 
+        prepared_frames = _prepare_temporal_window(frames, required=_CNN_TEMPORAL_WINDOW)
         resized = np.stack(
-            [_resize_crop(frame, h=_CNN_CROP_H, w=_CNN_CROP_W) for frame in frames],
+            [_resize_crop(frame, h=_CNN_CROP_H, w=_CNN_CROP_W) for frame in prepared_frames],
             axis=0,
         )  # (T, H, W, C)
-        if resized.shape[0] != _CNN_TEMPORAL_WINDOW:
-            raise ValueError(
-                "cnn_transformer expects exactly "
-                f"{_CNN_TEMPORAL_WINDOW} frames, got {resized.shape[0]}."
-            )
         return resized.transpose(0, 3, 1, 2)[np.newaxis]  # (1, T, C, H, W)
 
     def _build_vjepa_tensor(self, frames: list[Any]) -> np.ndarray:
         """Build the VJEPA tensor as ``(1, T, C, H, W)``."""
 
+        prepared_frames = _prepare_temporal_window(frames, required=_VJEPA_TEMPORAL_WINDOW)
         resized = np.stack(
-            [_resize_crop(frame, h=_VJEPA_CROP_H, w=_VJEPA_CROP_W) for frame in frames],
+            [_resize_crop(frame, h=_VJEPA_CROP_H, w=_VJEPA_CROP_W) for frame in prepared_frames],
             axis=0,
         )  # (T, H, W, C)
-        if resized.shape[0] != _VJEPA_TEMPORAL_WINDOW:
-            raise ValueError(
-                f"vjepa_probe expects exactly {_VJEPA_TEMPORAL_WINDOW} frames, "
-                f"got {resized.shape[0]}."
-            )
         return resized.transpose(0, 3, 1, 2)[np.newaxis]  # (1, T, C, H, W)

@@ -11,7 +11,7 @@ from aiokafka.errors import KafkaError
 
 from src.core.config import Settings
 from src.core.logger.logger import get_logger
-from src.observability.metrics import MetricsRecorder, NullMetricsRecorder
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.schemas.common import WebSocketEnvelope
 from src.services.presentation.websocket_manager import WebSocketManager
 
@@ -44,17 +44,17 @@ class StreamEventConsumer:
         settings: Settings,
         stream_service: object | None,
         websocket_manager: WebSocketManager,
-        metrics_recorder: MetricsRecorder | None = None,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
     ) -> None:
         self._settings = settings
         self._stream_service = stream_service
         self._websocket_manager = websocket_manager
-        self._metrics = metrics_recorder or NullMetricsRecorder()
         self._logger = get_logger(__name__)
         self._consumer: AIOKafkaConsumer | None = None
         self._task: asyncio.Task[None] | None = None
         self._healthy = not settings.kafka_enabled
         self._last_error: str | None = None
+        self._metrics_recorder = metrics_recorder or NullMetricsRecorder()
 
     async def start(self) -> None:
         """Start the Kafka consumer when Kafka integration is enabled."""
@@ -118,13 +118,15 @@ class StreamEventConsumer:
             async for message in self._consumer:
                 try:
                     await self._handle_message(message.topic, message.value)
-                    self._metrics.increment_stream_kafka_messages_consumed()
                     self._healthy = True
                     self._last_error = None
+                    self._metrics_recorder.increment_stream_kafka_messages_consumed(
+                        message.topic
+                    )
                 except Exception as exc:  # pylint: disable=broad-except
                     self._healthy = False
                     self._last_error = _format_exception(exc)
-                    self._metrics.increment_stream_kafka_consumer_failures()
+                    self._metrics_recorder.increment_stream_kafka_consumer_failures()
                     self._logger.warning(
                         "Stream event consumer failed to handle topic %s: %s",
                         message.topic,
@@ -135,7 +137,7 @@ class StreamEventConsumer:
         except Exception as exc:  # pylint: disable=broad-except
             self._healthy = False
             self._last_error = _format_exception(exc)
-            self._metrics.increment_stream_kafka_consumer_failures()
+            self._metrics_recorder.increment_stream_kafka_consumer_failures()
             self._logger.warning("Stream event consumer loop failed: %s", exc)
 
     async def _handle_message(self, topic: str, payload: Any) -> None:

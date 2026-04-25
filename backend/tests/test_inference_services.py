@@ -143,10 +143,10 @@ class TestInferenceIngressScheduler:
         sched.ingest(_make_sample())
         assert sched.queue.qsize() == 1
 
-    def test_gate_rejects_wrong_state(self) -> None:
+    def test_gate_allows_pending_identity_state(self) -> None:
         sched = self._make_scheduler(temporal_buffer_size=1)
         sched.ingest(_make_sample(persistent_id_state="pending"))
-        assert sched.queue.qsize() == 0
+        assert sched.queue.qsize() == 1
 
     def test_gate_rejects_insufficient_consecutive_hits(self) -> None:
         sched = self._make_scheduler(
@@ -197,6 +197,12 @@ class TestBatchBuilder:
         white = [np.full((64, 32, 3), 255, dtype=np.uint8)]
         tensors = builder.build(white, "cnn_transformer")
         assert float(tensors["input"].max()) == pytest.approx(1.0, abs=1e-3)
+
+    def test_short_windows_are_padded_for_vjepa(self) -> None:
+        builder = BatchBuilder()
+        crops = [np.zeros((64, 32, 3), dtype=np.uint8) for _ in range(2)]
+        tensors = builder.build(crops, "vjepa_probe")
+        assert tensors["pixel_values_videos"].shape == (1, 16, 3, 256, 256)
 
 
 # ---------------------------------------------------------------------------

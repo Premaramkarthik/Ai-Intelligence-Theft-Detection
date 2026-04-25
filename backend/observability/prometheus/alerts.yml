@@ -1,83 +1,56 @@
 groups:
-  - name: rtsp_camera_backend_alerts
+  - name: pipeline_backend.rules
     rules:
-      - alert: HighSystemCpuUsage
-        expr: system_cpu_usage_percent > 85
+      - alert: BackendMetricsUnavailable
+        expr: up{job="backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Backend metrics endpoint is unavailable.
+          description: Prometheus has been unable to scrape the FastAPI metrics endpoint for at least one minute.
+
+      - alert: TritonMetricsUnavailable
+        expr: up{job="triton"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Triton metrics endpoint is unavailable.
+          description: Prometheus has been unable to scrape the Triton metrics endpoint for at least two minutes.
+
+      - alert: PipelineFrameDropRateHigh
+        expr: sum by (camera_id) (rate(frames_dropped_total[5m])) > 2
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: High system CPU usage detected
-          description: System CPU usage has remained above 85% for 5 minutes.
+          summary: Frame drop rate is elevated.
+          description: Camera {{ $labels.camera_id }} is dropping more than two frames per second over the last five minutes.
 
-      - alert: BackendProcessMemoryLeakSuspected
-        expr: increase(process_memory_usage_bytes[30m]) > 536870912
+      - alert: PipelineProcessingLatencyHigh
+        expr: histogram_quantile(0.95, sum by (camera_id, le) (rate(frame_processing_latency_ms_bucket[5m]))) > 500
         for: 10m
         labels:
           severity: warning
         annotations:
-          summary: Backend memory usage is increasing rapidly
-          description: Backend RSS increased by more than 512 MiB over 30 minutes.
+          summary: Frame processing latency is elevated.
+          description: Camera {{ $labels.camera_id }} has p95 frame processing latency above 500 ms for ten minutes.
 
-      - alert: HighFrameDropRate
-        expr: sum(rate(frames_dropped_total[5m])) > 5
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: Frame drop rate is elevated
-          description: The realtime pipeline is dropping more than 5 sampled frames per second.
-
-      - alert: HighFrameProcessingLatencyP95
-        expr: histogram_quantile(0.95, sum by (le) (rate(frame_processing_latency_ms_bucket[5m]))) > 100
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: P95 frame processing latency is too high
-          description: The 95th percentile frame processing latency exceeded 100 ms.
-
-      - alert: HighInferenceLatencyP95
-        expr: histogram_quantile(0.95, sum by (model_name, le) (rate(inference_latency_seconds_bucket[5m]))) > 0.5
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: P95 inference latency is too high
-          description: The 95th percentile Triton inference latency exceeded 500 ms.
-
-      - alert: HighInferenceFrameDropRate
-        expr: sum(rate(inference_frames_dropped_total[1m])) > 5
-        for: 2m
+      - alert: InferenceQueueBacklogHigh
+        expr: max by (camera_id) (inference_queue_depth) > 25
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: Inference frame drop rate is elevated
-          description: More than 5 inference ingest frames per second are being dropped.
+          summary: Inference queue backlog is elevated.
+          description: Camera {{ $labels.camera_id }} has an inference queue depth above 25 for ten minutes.
 
-      - alert: TritonModelNotReady
-        expr: min(triton_model_ready) < 1
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: Triton model is not ready
-          description: At least one configured Triton model is not ready to serve requests.
-
-      - alert: InferenceErrorRateHigh
-        expr: sum(rate(inference_requests_total{status="error"}[5m])) > 1
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: Inference error rate is elevated
-          description: The inference plane is returning more than 1 error per second.
-
-      - alert: ActiveInferenceTracksHigh
-        expr: max by (camera_id) (inference_active_tracks_total) > 25
-        for: 5m
+      - alert: BackendProcessMemoryHigh
+        expr: process_memory_usage_bytes > 2147483648
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: Active inference tracks exceeded the configured ceiling
-          description: One or more cameras are carrying more than 25 active inference tracks.
+          summary: Backend memory usage is elevated.
+          description: Backend RSS memory has remained above 2 GiB for ten minutes.

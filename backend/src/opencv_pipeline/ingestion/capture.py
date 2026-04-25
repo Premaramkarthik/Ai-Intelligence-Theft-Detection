@@ -5,10 +5,12 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 import cv2
 
 from src.core.logger.logger import get_logger
+from src.observability.metrics import NullMetricsRecorder, PrometheusMetrics
 from src.opencv_pipeline.buffering.frame_buffer import FrameBuffer
 from src.opencv_pipeline.contracts import FramePacket, FrameSourceConfig, utc_now
 
@@ -21,6 +23,10 @@ class CaptureHealthSnapshot:
     healthy: bool
     last_error: str | None
     sequence_number: int
+    reconnect_attempts: int = 0
+    current_fps: float = 0.0
+    decode_time_ms: float = 0.0
+    last_frame_at: datetime | None = None
 
 
 class VideoCaptureWorker:
@@ -33,6 +39,7 @@ class VideoCaptureWorker:
         *,
         retry_initial_delay_seconds: float = 0.5,
         retry_max_delay_seconds: float = 5.0,
+        metrics_recorder: PrometheusMetrics | NullMetricsRecorder | None = None,
     ) -> None:
         self._source = source
         self._frame_buffer = frame_buffer
@@ -45,8 +52,14 @@ class VideoCaptureWorker:
         self._running = threading.Event()
         self._capture: cv2.VideoCapture | None = None
         self._logger = get_logger(__name__)
+        self._metrics = metrics_recorder or NullMetricsRecorder()
         self._sequence_number = 0
         self._last_error: str | None = None
+        self._reconnect_attempts = 0
+        self._current_fps = 0.0
+        self._last_decode_time_ms = 0.0
+        self._last_frame_at: datetime | None = None
+        self._last_frame_monotonic: float | None = None
 
     @property
     def camera_id(self) -> str:
@@ -84,6 +97,10 @@ class VideoCaptureWorker:
             healthy=self._last_error is None,
             last_error=self._last_error,
             sequence_number=self._sequence_number,
+            reconnect_attempts=self._reconnect_attempts,
+            current_fps=self._current_fps,
+            decode_time_ms=self._last_decode_time_ms,
+            last_frame_at=self._last_frame_at,
         )
 
     def _run(self) -> None:
@@ -92,26 +109,53 @@ class VideoCaptureWorker:
             try:
                 if self._capture is None or not self._capture.isOpened():
                     self._capture = self._open_capture()
+                decode_started_at = time.perf_counter()
                 frame_grabbed, frame = self._capture.read()
                 if not frame_grabbed or frame is None:
                     raise RuntimeError("blank frame grabbed")
                 frame = self._normalize_frame(frame)
+                self._last_decode_time_ms = (time.perf_counter() - decode_started_at) * 1000.0
                 self._last_error = None
+                captured_at = utc_now()
                 packet = FramePacket(
                     camera_id=self._source.camera_id,
                     stream_name=self._source.stream_name,
                     sequence_number=self._sequence_number,
-                    captured_at=utc_now(),
+                    captured_at=captured_at,
                     monotonic_ns=time.perf_counter_ns(),
                     frame_bgr=frame,
                     width=frame.shape[1],
                     height=frame.shape[0],
                 )
                 self._sequence_number += 1
-                self._frame_buffer.publish(packet)
+                published = self._frame_buffer.publish(packet)
+                self._metrics.record_frame_received(self._source.camera_id)
+                self._metrics.increment_stream_decoded_frames(self._source.camera_id)
+                self._metrics.set_stream_decode_time_ms(
+                    self._source.camera_id,
+                    self._last_decode_time_ms,
+                )
+                self._last_frame_at = captured_at
+                current_monotonic = time.perf_counter()
+                if self._last_frame_monotonic is not None:
+                    elapsed = current_monotonic - self._last_frame_monotonic
+                    if elapsed > 0:
+                        self._current_fps = 1.0 / elapsed
+                self._last_frame_monotonic = current_monotonic
+                self._metrics.set_stream_current_fps(self._source.camera_id, self._current_fps)
+                if not published:
+                    self._metrics.record_frame_dropped(
+                        self._source.camera_id,
+                        reason="buffer_rejected",
+                    )
                 delay_seconds = self._retry_initial_delay_seconds
             except Exception as exc:  # pylint: disable=broad-except
                 self._last_error = str(exc)
+                self._reconnect_attempts += 1
+                self._metrics.set_stream_reconnect_attempts(
+                    self._source.camera_id,
+                    self._reconnect_attempts,
+                )
                 self._logger.warning(
                     "Capture worker for %s failed: %s",
                     self._source.camera_id,
