@@ -1,3 +1,4 @@
+# Ai Intelligence Theft Detection
 # Real-Time AI Video Intelligence & Person Tracking Platform
 
 A multi-camera video intelligence platform that ingests live RTSP feeds, detects and tracks people in real time, resolves persistent identities across reconnects and cameras, and streams the annotated video plus structured events out over WebSocket and Kafka.
