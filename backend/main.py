@@ -34,7 +34,7 @@
 # """
 
 
-# # python main.py --rtsp-url "rtsp://admin:admin123@192.168.1.158:554/subStream1" --camera-name "Front Gate"
+# # python main.py --rtsp-url "rtsp://<user>:<password>@<camera-ip>:554/<stream-path>" --camera-name "Front Gate"
 
 # from __future__ import annotations
 
